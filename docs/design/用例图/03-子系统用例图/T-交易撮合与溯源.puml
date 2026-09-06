@@ -1,0 +1,58 @@
+@startuml T-交易撮合与溯源
+' 民生甄选 · 子系统用例图 L3 · T 交易撮合与溯源（UC-SUB-T-01 ~ T-10）
+' T 模块 21 用例按功能点拆分（单图 5~15），本图含 T-01 ~ T-10
+title 民生甄选 · 子系统用例图 · T 交易撮合与溯源
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+actor "消费者" as CONSUMER
+actor "监管人员" as REGU
+
+rectangle "T 交易撮合与溯源" {
+  usecase "UC-SUB-T-01 核验品类资质并入驻供应商" as T01
+  usecase "UC-SUB-T-02 审核商品上架并关联批次" as T02
+  usecase "UC-SUB-T-03 浏览跨行业选品广场" as T03
+  usecase "UC-SUB-T-04 查看商品详情与供应商主页" as T04
+  usecase "UC-SUB-T-05 评定供应商信用分" as T05
+  usecase "UC-SUB-T-06 授予放心供应商标识" as T06
+  usecase "UC-SUB-T-07 申诉供应商扣分" as T07
+  usecase "UC-SUB-T-08 生成溯源批次码并上报环节" as T08
+  usecase "UC-SUB-T-09 扫码验真查看全链" as T09
+  usecase "UC-SUB-T-10 存证溯源并预警异常" as T10
+}
+
+SUPPLIER --> T01
+SUPPLIER --> T02
+SUPPLIER --> T04
+SUPPLIER --> T05
+SUPPLIER --> T06
+SUPPLIER --> T07
+SUPPLIER --> T08
+SUPPLIER --> T09
+BUYER --> T03
+BUYER --> T04
+CONSUMER --> T09
+REGU --> T10
+
+note bottom of T01
+  入驻核验 include OCR（UC-SUB-K-01，跨模块）
+end note
+note bottom of T10
+  存证由 P-02 支撑（跨模块）
+end note
+@enduml

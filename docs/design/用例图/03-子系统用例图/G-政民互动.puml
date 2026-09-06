@@ -1,0 +1,43 @@
+@startuml G-政民互动
+' 民生甄选 · 子系统用例图 L3 · G 政民互动（UC-SUB-G-01 ~ G-03）
+title 民生甄选 · 子系统用例图 · G 政民互动
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "政府" as GOV
+actor "监管人员" as REGU
+
+rectangle "G 政民互动" {
+  usecase "UC-SUB-G-01 提交并承办群众诉求" as G01
+  usecase "UC-SUB-G-02 提交并答复群众建议" as G02
+  usecase "UC-SUB-G-03 限时办结并公示结果" as G03
+}
+
+CONSUMER --> G01
+CONSUMER --> G02
+GOV --> G01
+GOV --> G02
+GOV --> G03
+REGU --> G03
+
+note bottom of G01
+  12345 不可接，工单体系自建+线下流转
+end note
+note bottom of G03
+  承接投诉升级（UC-SUB-D-02 未解决时）
+end note
+@enduml

@@ -1,0 +1,41 @@
+# ============================================================
+# CODEOWNERS 示例 — 敏感目录强制双审
+# 放到仓库根目录: .github/CODEOWNERS
+# 配合分支保护 "Require review from Code Owners" 生效
+# 团队名按实际修改 (org/team); 个人建议用团队而非个人, 避免单点
+# ============================================================
+
+# --- 认证/授权/支付: 必须 security-team + 业务 owner 双审 ---
+/auth/                    @org/security-team @org/backend-owners
+/auth/**                  @org/security-team @org/backend-owners
+/identity/                @org/security-team @org/backend-owners
+/payment/                 @org/security-team @org/fintech-owners
+/billing/                 @org/security-team @org/fintech-owners
+
+# --- 密钥与配置 ---
+/secrets/**               @org/security-team @org/platform-owners
+config/prod/**            @org/security-team @org/platform-owners
+config/staging/**         @org/security-team @org/platform-owners
+
+# --- CI/CD 与部署配置 (CI 本身是攻击面) ---
+.github/**                @org/platform-owners @org/security-team
+Dockerfile*               @org/platform-owners @org/security-team
+docker-compose*.yml       @org/platform-owners @org/security-team
+*.tf                      @org/platform-owners @org/security-team
+
+# --- 依赖清单变更 ---
+package.json              @org/backend-owners @org/security-team
+package-lock.json         @org/backend-owners
+requirements*.txt         @org/backend-owners
+pyproject.toml            @org/backend-owners
+go.mod                    @org/backend-owners
+go.sum                    @org/backend-owners
+renovate.json             @org/security-team
+
+# --- 安全相关文件 ---
+.gitleaks.toml            @org/security-team
+.semgrep.yaml             @org/security-team
+.trivyignore              @org/security-team
+
+# --- 默认兜底: 所有文件至少 backend-owners 评审 ---
+*                         @org/backend-owners

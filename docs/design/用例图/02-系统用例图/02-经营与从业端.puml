@@ -1,0 +1,61 @@
+@startuml 02-经营与从业端
+' 民生甄选 · 系统用例图 L2 · 经营与从业端（UC-SYS-M01 ~ M11）
+title 民生甄选 · 系统用例图 · 经营与从业端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+actor "产废单位" as WASTEUNIT
+actor "收运企业" as COLLECTOR
+
+rectangle "经营与从业端系统（功能边界）" {
+  usecase "UC-SYS-M01 入驻平台并建档" as M01
+  usecase "UC-SYS-M02 维护店铺档案与公示" as M02
+  usecase "UC-SYS-M03 建立并维护从业档案" as M03
+  usecase "UC-SYS-M04 响应投诉与申诉" as M04
+  usecase "UC-SYS-M05 发布招工与求职" as M05
+  usecase "UC-SYS-M06 保障工资与结算零工" as M06
+  usecase "UC-SYS-M07 互评劳务信用" as M07
+  usecase "UC-SYS-M08 选品采购与担保交易" as M08
+  usecase "UC-SYS-M09 登记餐厨垃圾去向" as M09
+  usecase "UC-SYS-M10 参与行业交流与推广" as M10
+  usecase "UC-SYS-M11 收运餐厨垃圾并建信用" as M11
+}
+
+MERCHANT --> M01
+MERCHANT --> M02
+MERCHANT --> M04
+MERCHANT --> M05
+MERCHANT --> M06
+MERCHANT --> M07
+MERCHANT --> M08
+MERCHANT --> M09
+MERCHANT --> M10
+WORKER --> M03
+WORKER --> M05
+WORKER --> M06
+WORKER --> M07
+WASTEUNIT --> M09
+COLLECTOR --> M11
+
+note bottom of M01
+  入驻核验 include 证照 OCR（UC-SUB-K-01），在规约追溯列表达
+end note
+note bottom of M08
+  商户兼任采购方（31 §2.5），采购动作见供应链端
+end note
+@enduml

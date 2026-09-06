@@ -1,0 +1,39 @@
+@startuml H-民生建设监督
+' 民生甄选 · 子系统用例图 L3 · H 民生建设监督（UC-SUB-H-01 ~ H-02）
+title 民生甄选 · 子系统用例图 · H 民生建设监督
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "政府" as GOV
+actor "消费者" as CONSUMER
+
+rectangle "H 民生建设监督" {
+  usecase "UC-SUB-H-01 公开民生项目并同步进度" as H01
+  usecase "UC-SUB-H-02 回应群众意见" as H02
+}
+
+GOV --> H01
+GOV --> H02
+CONSUMER --> H01
+CONSUMER --> H02
+
+note bottom of H01
+  发布计划/资金/工期/责任部门并公开，进度图文/视频/数据同步
+end note
+note bottom of H02
+  群众提意见→建设方限时回应→记录公示
+end note
+@enduml

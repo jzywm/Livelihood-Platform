@@ -1,0 +1,46 @@
+@startuml D-交易与维权
+' 民生甄选 · 子系统用例图 L3 · D 交易与维权（UC-SUB-D-01 ~ D-03）
+title 民生甄选 · 子系统用例图 · D 交易与维权
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "商户" as MERCHANT
+actor "监管人员" as REGU
+actor "平台运营方" as OPER
+
+rectangle "D 交易与维权" {
+  usecase "UC-SUB-D-01 提示预付卡风险" as D01
+  usecase "UC-SUB-D-02 受理消费投诉并反馈进度" as D02
+  usecase "UC-SUB-D-03 申诉恶意差评并识别职业索赔" as D03
+}
+
+CONSUMER --> D01
+CONSUMER --> D02
+MERCHANT --> D01
+MERCHANT --> D02
+MERCHANT --> D03
+REGU --> D02
+OPER --> D02
+OPER --> D03
+
+note bottom of D02
+  未解决延伸升级市监办结（UC-SUB-G-03，跨模块 extend）
+end note
+note bottom of D03
+  AI 识别辅助、人工确认后处置（C8 红线）
+end note
+@enduml

@@ -1,0 +1,62 @@
+@startuml A-信用与监管
+' 民生甄选 · 子系统用例图 L3 · A 信用与监管内核（UC-SUB-A-01 ~ A-08）
+title 民生甄选 · 子系统用例图 · A 信用与监管内核
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+actor "监管人员" as REGU
+actor "平台运营方" as OPER
+
+rectangle "A 信用与监管内核" {
+  usecase "UC-SUB-A-01 核验证照并建立商户档案" as A01
+  usecase "UC-SUB-A-02 查询一店一档" as A02
+  usecase "UC-SUB-A-03 维护商户档案并标记异常" as A03
+  usecase "UC-SUB-A-04 公示商品/服务价格" as A04
+  usecase "UC-SUB-A-05 标注未成年人禁入承诺" as A05
+  usecase "UC-SUB-A-06 核验履历并建立从业档案" as A06
+  usecase "UC-SUB-A-07 评定信用分并公示红黑榜" as A07
+  usecase "UC-SUB-A-08 预警风险并分级监管" as A08
+}
+
+CONSUMER --> A02
+CONSUMER --> A04
+CONSUMER --> A07
+MERCHANT --> A01
+MERCHANT --> A03
+MERCHANT --> A04
+MERCHANT --> A05
+MERCHANT --> A07
+WORKER --> A06
+WORKER --> A07
+REGU --> A02
+REGU --> A03
+REGU --> A05
+REGU --> A08
+OPER --> A07
+
+A02 ..> A04 : <<include>>
+A08 ..> A03 : <<extend>>
+
+note bottom of A01
+  核验 = 人工核验 + OCR 预审（UC-SUB-K-01，跨模块）
+end note
+note bottom of A03
+  异常双向推送（商户提醒 + 监管预警），触发 A-08
+end note
+@enduml

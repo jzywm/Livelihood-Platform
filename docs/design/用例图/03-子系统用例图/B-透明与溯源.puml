@@ -1,0 +1,43 @@
+@startuml B-透明与溯源
+' 民生甄选 · 子系统用例图 L3 · B 透明与溯源（UC-SUB-B-01 ~ B-03）
+title 民生甄选 · 子系统用例图 · B 透明与溯源
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "供应商" as SUPPLIER
+actor "商户" as MERCHANT
+actor "消费者" as CONSUMER
+actor "监管人员" as REGU
+
+rectangle "B 透明与溯源" {
+  usecase "UC-SUB-B-01 贯通全链溯源并标注断链" as B01
+  usecase "UC-SUB-B-02 公开服务过程" as B02
+  usecase "UC-SUB-B-03 公示抽检结果" as B03
+}
+
+SUPPLIER --> B01
+MERCHANT --> B02
+CONSUMER --> B01
+CONSUMER --> B02
+CONSUMER --> B03
+REGU --> B01
+REGU --> B03
+
+note bottom of B01
+  全链=农户生产→流通→终端→消费；农户端 M3 扩展（非确认角色）；
+  M1 基础版由 T-08/T-09 承担
+end note
+@enduml

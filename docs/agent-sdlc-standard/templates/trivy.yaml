@@ -1,0 +1,38 @@
+# ============================================================
+# Trivy 扫描配置 (G2/G4 镜像与文件系统漏洞扫描)
+# 文档: https://aquasecurity.github.io/trivy/
+# CI 中使用 (见 release.yml): aquasecurity/trivy-action
+# ============================================================
+
+# 阻断阈值: 仅 CRITICAL 与 HIGH 触发失败
+severity: CRITICAL,HIGH
+
+# 忽略"上游尚未修复"的漏洞(避免被无修复方案的 CVE 卡死)
+# 注意: 忽略必须逐条记录理由到 .trivyignore
+ignore-unfixed: true
+
+# 扫描到阻断级别漏洞时以非零退出(门禁失败)
+exit-code: 1
+
+# 跳过目录(依赖缓存、生成物)
+skip-dirs:
+  - node_modules
+  - vendor
+  - dist
+  - .git
+
+# 跳过文件
+skip-files:
+  - "**/*_test.go"
+  - "**/tests/**"
+  - "*.min.js"
+
+# 白名单文件(每条记录理由, 由安全负责人维护)
+ignorefile: .trivyignore
+
+# 扫描类型(按需)
+# scan:
+#   scanners:
+#     - vuln          # 漏洞
+#     - secret        # 密钥
+#     - misconfig     # IaC 错误配置

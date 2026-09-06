@@ -1,0 +1,48 @@
+@startuml 01-消费与民生域
+' 民生甄选 · 业务用例图 L1 · 消费与民生域（UC-BIZ-01 ~ UC-BIZ-08）
+' 面向业务干系人，描述端到端业务目标；依据 31 §2.6 + 32 §2
+title 民生甄选 · 业务用例图 · 消费与民生域
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "政府" as GOV
+
+rectangle "消费与民生域（业务目标）" {
+  usecase "UC-BIZ-01 放心选购商户" as B01
+  usecase "UC-BIZ-02 透明明白消费" as B02
+  usecase "UC-BIZ-03 投诉维权追进度" as B03
+  usecase "UC-BIZ-04 反映民生诉求" as B04
+  usecase "UC-BIZ-05 建言献策" as B05
+  usecase "UC-BIZ-06 监督民生项目" as B06
+  usecase "UC-BIZ-07 承办限时办结" as B07
+  usecase "UC-BIZ-08 回应民意公开项目" as B08
+}
+
+CONSUMER --> B01
+CONSUMER --> B02
+CONSUMER --> B03
+CONSUMER --> B04
+CONSUMER --> B05
+CONSUMER --> B06
+GOV --> B07
+GOV --> B08
+
+B03 ..> B02 : <<extend>>
+note right of B03
+  消费遇坑后延伸维权（业务层建模关系）
+end note
+@enduml

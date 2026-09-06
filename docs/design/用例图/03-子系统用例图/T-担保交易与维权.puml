@@ -1,0 +1,54 @@
+@startuml T-担保交易与维权
+' 民生甄选 · 子系统用例图 L3 · T 担保交易与维权（UC-SUB-T-11 ~ T-16，引用 T-05）
+title 民生甄选 · 子系统用例图 · T 担保交易与维权
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+actor "平台运营方" as OPER
+
+rectangle "T 担保交易与维权" {
+  usecase "UC-SUB-T-11 担保交易并托管货款" as T11
+  usecase "UC-SUB-T-12 验收到货并处置拒收退款" as T12
+  usecase "UC-SUB-T-13 互评交易并联动信用" as T13
+  usecase "UC-SUB-T-14 处置履约异常并防刷单" as T14
+  usecase "UC-SUB-T-15 仲裁争议并公示结果" as T15
+  usecase "UC-SUB-T-16 投诉假货并闭环处理" as T16
+  usecase "UC-SUB-T-05 评定供应商信用分" as T05
+}
+
+SUPPLIER --> T11
+SUPPLIER --> T12
+SUPPLIER --> T13
+SUPPLIER --> T15
+BUYER --> T11
+BUYER --> T12
+BUYER --> T13
+BUYER --> T16
+OPER --> T14
+OPER --> T15
+
+T13 ..> T05 : <<include>>
+T15 ..> T12 : <<extend>>
+
+note bottom of T05
+  UC-SUB-T-05 主图见 T-交易撮合与溯源（此处为互评联动引用）
+end note
+note bottom of T16
+  复用投诉直达机制（UC-SUB-D-02，跨模块）
+end note
+@enduml

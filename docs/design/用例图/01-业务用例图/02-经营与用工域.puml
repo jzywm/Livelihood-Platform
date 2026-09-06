@@ -1,0 +1,45 @@
+@startuml 02-经营与用工域
+' 民生甄选 · 业务用例图 L1 · 经营与用工域（UC-BIZ-09 ~ UC-BIZ-15）
+title 民生甄选 · 业务用例图 · 经营与用工域
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+
+rectangle "经营与用工域（业务目标）" {
+  usecase "UC-BIZ-09 合规入驻经营" as B09
+  usecase "UC-BIZ-10 透明公示响应维权" as B10
+  usecase "UC-BIZ-11 诚信获客" as B11
+  usecase "UC-BIZ-12 合规用工招工" as B12
+  usecase "UC-BIZ-13 证明自我能力" as B13
+  usecase "UC-BIZ-14 获得劳动报酬" as B14
+  usecase "UC-BIZ-15 找好工作" as B15
+}
+
+MERCHANT --> B09
+MERCHANT --> B10
+MERCHANT --> B11
+MERCHANT --> B12
+WORKER --> B12
+WORKER --> B13
+WORKER --> B14
+WORKER --> B15
+
+note bottom of B11
+  消费者以「群众点评」参与诚信生态（31 §2.6 E-02），为次要参与者
+end note
+@enduml

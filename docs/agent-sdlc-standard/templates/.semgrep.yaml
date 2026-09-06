@@ -1,0 +1,54 @@
+# ============================================================
+# Semgrep 项目配置 (G2 SAST)
+# CI 调用示例 (见 .github/workflows/pr-checks.yml):
+#   semgrep scan --config .semgrep.yaml \
+#     --config=p/owasp-top-ten --config=p/security-audit --config=p/ci
+# 说明: 本文件同时作为 semgrep CI(App) 的项目配置; 自定义规则从第 31 行开始
+# ============================================================
+
+# 扫描范围(按项目调整; 缩小范围可提升速度)
+include:
+  - src
+  - lib
+  - app
+
+# 忽略路径
+exclude:
+  - node_modules
+  - vendor
+  - dist
+  - build
+  - .venv
+  - "*.min.js"
+  - "*.lock"
+
+# 以下为自定义规则示例(使用前请按项目语言验证)
+# 更完整的规则集直接引用官方: p/owasp-top-ten, p/security-audit, p/ci
+rules:
+  - id: no-hardcoded-secrets
+    languages: [python, javascript, typescript, go, java]
+    severity: ERROR
+    message: >
+      检测到疑似硬编码密钥/密码。密钥必须通过环境变量或密钥管理系统注入,
+      禁止写入源码。参见 docs/02-安全基线.md 第 2 节。
+    patterns:
+      - pattern-either:
+          - pattern: $X = "$SECRET"
+          - pattern: password="$SECRET"
+          - pattern: api_key="$SECRET"
+      - metavariable-pattern:
+          metavariable: $SECRET
+          pattern-regex: (?i).*(passw|secret|token|api[-_]?key|apikey).*
+      - pattern-not: $X = "${{ VAR }}"   # 允许模板变量(按项目调整)
+    fix: os.environ.get("$SECRET")
+
+  - id: no-unsafe-sql-concat
+    languages: [python, javascript, typescript]
+    severity: ERROR
+    message: 检测到 SQL 字符串拼接,存在注入风险。必须使用参数化查询/预编译语句。
+    patterns:
+      - pattern-either:
+          - pattern: $DB.execute("...$USER_INPUT..." + $X)
+          - pattern: $DB.query(f"...{ $X }...")
+    metadata:
+      cwe: "CWE-89"

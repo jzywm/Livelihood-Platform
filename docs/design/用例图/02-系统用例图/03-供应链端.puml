@@ -1,0 +1,59 @@
+@startuml 03-供应链端
+' 民生甄选 · 系统用例图 L2 · 供应链端（UC-SYS-S01 ~ S11）
+title 民生甄选 · 系统用例图 · 供应链端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+
+rectangle "供应链端系统（功能边界）" {
+  usecase "UC-SYS-S01 入驻供应商并核验资质" as S01
+  usecase "UC-SYS-S02 上架商品并生成溯源" as S02
+  usecase "UC-SYS-S03 浏览选品与查看详情" as S03
+  usecase "UC-SYS-S04 辅助采购决策" as S04
+  usecase "UC-SYS-S05 担保交易与货款托管" as S05
+  usecase "UC-SYS-S06 验收到货与拒收退款" as S06
+  usecase "UC-SYS-S07 互评交易并联动信用" as S07
+  usecase "UC-SYS-S08 投诉假货并闭环" as S08
+  usecase "UC-SYS-S09 扫码验真溯源" as S09
+  usecase "UC-SYS-S10 管理供应商信用与申诉" as S10
+  usecase "UC-SYS-S11 仲裁交易争议" as S11
+}
+
+SUPPLIER --> S01
+SUPPLIER --> S02
+SUPPLIER --> S05
+SUPPLIER --> S07
+SUPPLIER --> S10
+SUPPLIER --> S11
+BUYER --> S03
+BUYER --> S04
+BUYER --> S05
+BUYER --> S06
+BUYER --> S07
+BUYER --> S08
+BUYER --> S09
+BUYER --> S11
+
+S11 ..> S06 : <<extend>>
+note right of S11
+  验收分歧时延伸争议仲裁（32 T-15「验收争议进入存证仲裁」）
+end note
+note bottom of S05
+  担保交易 include 分账结算（UC-SUB-I-04），平台运营方提供结算通道（次要参与者）
+end note
+@enduml

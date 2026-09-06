@@ -1,0 +1,37 @@
+# ============================================================
+# G3 合并后验证: 主分支 (main) 全量检查
+# 目的: 合并动作本身被验证, 保证 main 始终可发布
+# 复制到仓库: .github/workflows/merge-gate.yml
+# 并在分支保护 required status checks 中加入本工作流
+# ============================================================
+name: merge-gate
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-main:
+    name: Verify Main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: 干净安装
+        run: npm ci
+      - name: 全量构建
+        run: npm run build
+      - name: 全量测试
+        run: npm test
+      - name: 全量覆盖率门槛 (main ≥ 80%)
+        run: npx nyc check-coverage --lines 80 --functions 80 --branches 75
+      - name: 密钥终检 (main 全历史)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" \
+            zricethezav/gitleaks:latest detect --source /src --verbose

@@ -1,0 +1,55 @@
+@startuml I-平台账户系统
+' 民生甄选 · 子系统用例图 L3 · I 平台账户系统（UC-SUB-I-01 ~ I-05）
+title 民生甄选 · 子系统用例图 · I 平台账户系统
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+actor "平台运营方" as OPER
+
+rectangle "I 平台账户系统" {
+  usecase "UC-SUB-I-01 注册实名账户并记账" as I01
+  usecase "UC-SUB-I-02 互评劳务信用" as I02
+  usecase "UC-SUB-I-03 代付工资并保障到账" as I03
+  usecase "UC-SUB-I-04 分账结算商品购买" as I04
+  usecase "UC-SUB-I-05 结算零工劳务" as I05
+}
+
+MERCHANT --> I01
+MERCHANT --> I02
+MERCHANT --> I03
+MERCHANT --> I05
+WORKER --> I01
+WORKER --> I02
+WORKER --> I03
+WORKER --> I05
+SUPPLIER --> I01
+SUPPLIER --> I04
+BUYER --> I01
+BUYER --> I04
+OPER --> I01
+OPER --> I04
+
+note bottom of I01
+  通用基础设施·全角色共用（31 §2.6）；钱包=纯记账簿
+end note
+note bottom of I03
+  持牌机构代付、平台不碰钱；取代原 C1 专户托管口径
+end note
+@enduml

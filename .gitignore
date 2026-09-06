@@ -1,0 +1,43 @@
+# ---- Node / 前端 ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.*
+!.env.example
+
+# ---- uniapp ----
+unpackage/
+
+# ---- Electron ----
+release/
+out/
+
+# ---- Java / Maven ----
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.iml
+
+# ---- 日志 ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- 工具 / 环境(不纳入业务工程) ----
+.downloads/
+.dsh/
+.npm-cache/
+.npm-cache-tmp/

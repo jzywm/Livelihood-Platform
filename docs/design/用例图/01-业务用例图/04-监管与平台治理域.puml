@@ -1,0 +1,38 @@
+@startuml 04-监管与平台治理域
+' 民生甄选 · 业务用例图 L1 · 监管与平台治理域（UC-BIZ-22 ~ UC-BIZ-27）
+title 民生甄选 · 业务用例图 · 监管与平台治理域
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "监管人员" as REGU
+actor "平台运营方" as OPER
+
+rectangle "监管与平台治理域（业务目标）" {
+  usecase "UC-BIZ-22 智慧监管商户" as B22
+  usecase "UC-BIZ-23 透明执法公示" as B23
+  usecase "UC-BIZ-24 风险防范预警" as B24
+  usecase "UC-BIZ-25 建立平台信任" as B25
+  usecase "UC-BIZ-26 稳步扩展试点" as B26
+  usecase "UC-BIZ-27 治理 AI 服务" as B27
+}
+
+REGU --> B22
+REGU --> B23
+REGU --> B24
+OPER --> B25
+OPER --> B26
+OPER --> B27
+@enduml

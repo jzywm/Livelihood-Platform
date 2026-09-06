@@ -1,0 +1,109 @@
+# ============================================================
+# G2 门禁: PR 检查 (SAST / SCA / 构建 / 测试 / 覆盖率 / 密钥复验)
+# 复制到仓库: .github/workflows/pr-checks.yml
+# 然后在 Settings → Branches 将此工作流设为 required status check
+# 语言相关步骤(node/npm)按项目技术栈替换
+# ============================================================
+name: pr-checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- 1. Lint + 格式 + pre-commit 复验 (G0 的 CI 兜底) ----------
+  lint:
+    name: Lint / Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: pre-commit 复验
+        uses: pre-commit/action@v3.0.1
+      - name: ESLint (零警告)
+        run: |
+          npm ci
+          npx eslint . --max-warnings 0
+
+  # ---------- 2. 单元测试 + 覆盖率门禁 ----------
+  unit-tests:
+    name: Unit Tests / Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: 运行测试并统计覆盖率
+        run: npm test -- --coverage
+      - name: 覆盖率门禁 (新代码 ≥ 80%)
+        run: npx nyc check-coverage --lines 80 --functions 80 --branches 75
+
+  # ---------- 3. SAST: Semgrep (OWASP Top 10 + 安全审计) ----------
+  sast:
+    name: SAST Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep 扫描
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" semgrep/semgrep:latest \
+            semgrep scan \
+            --config=/src/.semgrep.yaml \
+            --config=p/owasp-top-ten \
+            --config=p/security-audit \
+            --config=p/ci \
+            --error /src
+
+  # ---------- 4. 密钥扫描复验 (G0 兜底, 全历史) ----------
+  secret-scan:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks 全历史扫描
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" \
+            zricethezav/gitleaks:latest detect --source /src --verbose
+
+  # ---------- 5. SCA: 依赖漏洞 + 依赖变更评审 ----------
+  sca:
+    name: SCA / Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 依赖变更评审 (阻断 HIGH+)
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+      - name: npm audit 复验
+        run: |
+          npm ci
+          npm audit --audit-level=high
+
+  # ---------- 6. 构建 ----------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build

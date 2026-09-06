@@ -1,0 +1,71 @@
+# ============================================================
+# G0 门禁:提交前本地检查 (pre-commit)
+# 安装: pip install pre-commit
+# 启用: pre-commit install
+# 升级 hooks: pre-commit autoupdate
+# 说明: 语言相关的 hook 按项目技术栈增删; CI 中由 pr-checks.yml 复验
+# ============================================================
+repos:
+  # --- 通用基础检查 ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace            # 行尾空白
+      - id: end-of-file-fixer              # 文件末尾换行
+      - id: check-yaml                     # YAML 语法
+      - id: check-json                     # JSON 语法
+      - id: check-merge-conflict           # 冲突标记残留
+      - id: detect-private-key             # 私钥文件
+      - id: check-added-large-files        # 大文件(>1MB 拦截)
+        args: ["--maxkb=1024"]
+      - id: forbid-new-submodules
+
+  # --- 密钥扫描:防 token/密码进仓库 (G0 核心) ---
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  # --- 提交信息规范: Conventional Commits (G0) ---
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  # ============================================================
+  # 以下为语言示例,按项目技术栈保留/删除
+  # ============================================================
+
+  # --- Python: ruff (lint + format) ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # --- Node/TypeScript: eslint ---
+  # - repo: https://github.com/pre-commit/mirrors-eslint
+  #   rev: v9.8.0
+  #   hooks:
+  #     - id: eslint
+  #       files: \.[jt]sx?$
+  #       additional_dependencies:
+  #         - eslint@9.8.0
+  #         - eslint-config-prettier@9.1.0
+  #         - typescript@5.5.4
+  #         - typescript-eslint@8.0.0
+
+  # --- Go: gofmt / go vet ---
+  # - repo: https://github.com/dnephin/pre-commit-golang
+  #   rev: v0.5.1
+  #   hooks:
+  #     - id: go-fmt
+  #     - id: go-vet
+
+  # --- 秘密/凭据弱扫描 (可选, 与 gitleaks 互补) ---
+  # - repo: https://github.com/awslabs/git-secrets
+  #   rev: master
+  #   hooks:
+  #     - id: git-secrets

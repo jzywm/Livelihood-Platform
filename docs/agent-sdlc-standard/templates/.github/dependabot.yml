@@ -1,0 +1,43 @@
+# ============================================================
+# Dependabot 配置 (依赖自动升级; 如使用 Renovate 可二选一)
+# 放到仓库根目录: .github/dependabot.yml
+# 文档: https://docs.github.com/code-security/dependabot
+# ============================================================
+
+version: 2
+updates:
+  # --- 应用依赖 (示例为 npm, 按技术栈替换: pip / maven / gomod / cargo ...) ---
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "org/security-reviewers"   # 安全负责人团队 (按实际 team slug 修改)
+    labels:
+      - "dependencies"
+      - "security"
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+      # 安全更新永远单独出 PR, 不进入分组
+
+  # --- GitHub Actions 自身也要保持更新 (CI 也是攻击面) ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "ci"
+      - "dependencies"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+# 注: Dependabot security updates(已知漏洞升级)默认开启,
+#     优先级最高、立即开 PR、门禁通过即可合入 —— 不要 disable。

@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="2840" viewBox="0 0 1240 2840" font-family="'Microsoft YaHei','PingFang SC',sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#546E7A"/>
+    </marker>
+    <marker id="arrR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C62828"/>
+    </marker>
+    <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1565C0"/>
+    </marker>
+  </defs>
+
+  <!-- 标题 -->
+  <text x="620" y="32" text-anchor="middle" font-size="26" font-weight="bold" fill="#1A237E">软件开发全生命周期流程图</text>
+  <text x="620" y="58" text-anchor="middle" font-size="14" fill="#546E7A">从需求分析到停止使用 —— 完整开发流程与决策循环</text>
+
+  <!-- 阶段分组背景 -->
+  <g stroke-width="1.5">
+    <rect x="40" y="70" width="1160" height="330" rx="14" fill="#EAF2FE" stroke="#BBD3F8"/>
+    <rect x="40" y="430" width="1160" height="330" rx="14" fill="#E7F5EC" stroke="#BCE3CB"/>
+    <rect x="40" y="790" width="1160" height="390" rx="14" fill="#FEF7E0" stroke="#F9E4A8"/>
+    <rect x="40" y="1210" width="1160" height="290" rx="14" fill="#FCE8E6" stroke="#F5C6C2"/>
+    <rect x="40" y="1530" width="1160" height="370" rx="14" fill="#E0F4F1" stroke="#B5E5DE"/>
+    <rect x="40" y="1930" width="1160" height="390" rx="14" fill="#F6ECFD" stroke="#E0C6F5"/>
+    <rect x="40" y="2350" width="1160" height="410" rx="14" fill="#ECEFF1" stroke="#CFD8DC"/>
+  </g>
+  <g font-size="17" font-weight="bold" fill="#37474F">
+    <text x="62" y="104">一、需求分析阶段</text>
+    <text x="62" y="464">二、设计阶段</text>
+    <text x="62" y="824">三、编码实现阶段</text>
+    <text x="62" y="1244">四、测试阶段</text>
+    <text x="62" y="1564">五、发布上线阶段</text>
+    <text x="62" y="1964">六、运维与迭代阶段</text>
+    <text x="62" y="2384">七、停止使用(EOL)阶段</text>
+  </g>
+
+  <!-- 执行环节(圆角矩形) -->
+  <g stroke-width="2">
+    <g fill="#FFFFFF">
+      <rect x="460" y="73" width="280" height="54" rx="10" stroke="#1A73E8"/>
+      <rect x="460" y="153" width="280" height="54" rx="10" stroke="#1A73E8"/>
+      <rect x="460" y="233" width="280" height="54" rx="10" stroke="#1A73E8"/>
+      <rect x="460" y="443" width="280" height="54" rx="10" stroke="#188038"/>
+      <rect x="460" y="533" width="280" height="54" rx="10" stroke="#188038"/>
+      <rect x="460" y="803" width="280" height="54" rx="10" stroke="#F9AB00"/>
+      <rect x="460" y="893" width="280" height="54" rx="10" stroke="#F9AB00"/>
+      <rect x="460" y="983" width="280" height="54" rx="10" stroke="#F9AB00"/>
+      <rect x="460" y="1223" width="280" height="54" rx="10" stroke="#D93025"/>
+      <rect x="460" y="1313" width="280" height="54" rx="10" stroke="#D93025"/>
+      <rect x="460" y="1543" width="280" height="54" rx="10" stroke="#00897B"/>
+      <rect x="460" y="1633" width="280" height="54" rx="10" stroke="#00897B"/>
+      <rect x="460" y="1823" width="280" height="54" rx="10" stroke="#00897B"/>
+      <rect x="460" y="1943" width="280" height="54" rx="10" stroke="#7B1FA2"/>
+      <rect x="460" y="2363" width="280" height="54" rx="10" stroke="#607D8B"/>
+      <rect x="460" y="2443" width="280" height="54" rx="10" stroke="#607D8B"/>
+      <rect x="460" y="2523" width="280" height="54" rx="10" stroke="#607D8B"/>
+      <rect x="460" y="2603" width="280" height="54" rx="10" stroke="#607D8B"/>
+      <rect x="460" y="2683" width="280" height="54" rx="10" stroke="#607D8B"/>
+    </g>
+    <g text-anchor="middle" fill="#263238">
+      <text x="600" y="105" font-size="16" font-weight="bold">需求收集</text>
+      <text x="600" y="185" font-size="16" font-weight="bold">需求分析</text>
+      <text x="600" y="256" font-size="16" font-weight="bold">编写需求文档</text>
+      <text x="600" y="276" font-size="12.5" fill="#607D8B">PRD · 产品需求文档</text>
+      <text x="600" y="466" font-size="16" font-weight="bold">概要设计</text>
+      <text x="600" y="486" font-size="12.5" fill="#607D8B">架构设计 · 技术选型</text>
+      <text x="600" y="556" font-size="16" font-weight="bold">详细设计</text>
+      <text x="600" y="576" font-size="12.5" fill="#607D8B">模块 · 数据库 · 接口</text>
+      <text x="600" y="835" font-size="16" font-weight="bold">编码实现</text>
+      <text x="600" y="925" font-size="16" font-weight="bold">代码审查 + 单元测试</text>
+      <text x="600" y="945" font-size="12.5" fill="#607D8B">静态检查 · 覆盖率</text>
+      <text x="600" y="1015" font-size="16" font-weight="bold">持续集成构建</text>
+      <text x="600" y="1035" font-size="12.5" fill="#607D8B">编译 · 自动化检查</text>
+      <text x="600" y="1255" font-size="16" font-weight="bold">系统测试</text>
+      <text x="600" y="1275" font-size="12.5" fill="#607D8B">功能 · 性能 · 安全</text>
+      <text x="600" y="1345" font-size="16" font-weight="bold">缺陷修复与回归测试</text>
+      <text x="600" y="1575" font-size="16" font-weight="bold">部署预发布环境</text>
+      <text x="600" y="1595" font-size="12.5" fill="#607D8B">冒烟测试</text>
+      <text x="600" y="1665" font-size="16" font-weight="bold">灰度发布</text>
+      <text x="600" y="1685" font-size="12.5" fill="#607D8B">小流量验证</text>
+      <text x="600" y="1855" font-size="16" font-weight="bold">正式上线</text>
+      <text x="600" y="1875" font-size="12.5" fill="#607D8B">全量发布</text>
+      <text x="600" y="1975" font-size="16" font-weight="bold">监控 · 告警 · 用户反馈</text>
+      <text x="600" y="1995" font-size="12.5" fill="#607D8B">数据分析</text>
+      <text x="600" y="2395" font-size="16" font-weight="bold">停用评估</text>
+      <text x="600" y="2415" font-size="12.5" fill="#607D8B">替代方案 · 成本 · 影响</text>
+      <text x="600" y="2475" font-size="16" font-weight="bold">数据迁移与备份</text>
+      <text x="600" y="2555" font-size="16" font-weight="bold">通知用户 · 下架公告</text>
+      <text x="600" y="2635" font-size="16" font-weight="bold">停止服务 · 数据归档</text>
+      <text x="600" y="2715" font-size="16" font-weight="bold">资源释放 · 数据销毁</text>
+      <text x="600" y="2735" font-size="12.5" fill="#607D8B">彻底下线</text>
+    </g>
+  </g>
+
+  <!-- 判断决策(菱形) -->
+  <g stroke="#F9A825" stroke-width="2" fill="#FFF9C4">
+    <polygon points="505,350 695,350 600,385 600,315"/>
+    <polygon points="505,670 695,670 600,705 600,635"/>
+    <polygon points="505,1100 695,1100 600,1135 600,1065"/>
+    <polygon points="505,1430 695,1430 600,1465 600,1395"/>
+    <polygon points="505,1750 695,1750 600,1785 600,1715"/>
+    <polygon points="505,2070 695,2070 600,2105 600,2035"/>
+    <polygon points="505,2170 695,2170 600,2205 600,2135"/>
+  </g>
+  <g text-anchor="middle" font-size="14" fill="#5D4037">
+    <text x="600" y="344" font-weight="bold">需求评审</text><text x="600" y="362">通过?</text>
+    <text x="600" y="664" font-weight="bold">设计评审</text><text x="600" y="682">通过?</text>
+    <text x="600" y="1094" font-weight="bold">构建测试</text><text x="600" y="1112">通过?</text>
+    <text x="600" y="1424" font-weight="bold">验收测试</text><text x="600" y="1442">通过?</text>
+    <text x="600" y="1744" font-weight="bold">灰度验证</text><text x="600" y="1762">通过?</text>
+    <text x="600" y="2064" font-weight="bold">发现问题或</text><text x="600" y="2082">新需求?</text>
+    <text x="600" y="2164" font-weight="bold">是否停用?</text>
+  </g>
+
+  <!-- 主流程箭头(向下) -->
+  <g stroke="#546E7A" stroke-width="2" fill="none" marker-end="url(#arr)">
+    <line x1="600" y1="127" x2="600" y2="153"/>
+    <line x1="600" y1="207" x2="600" y2="233"/>
+    <line x1="600" y1="287" x2="600" y2="315"/>
+    <line x1="600" y1="385" x2="600" y2="443"/>
+    <line x1="600" y1="497" x2="600" y2="533"/>
+    <line x1="600" y1="587" x2="600" y2="635"/>
+    <line x1="600" y1="705" x2="600" y2="803"/>
+    <line x1="600" y1="857" x2="600" y2="893"/>
+    <line x1="600" y1="947" x2="600" y2="983"/>
+    <line x1="600" y1="1037" x2="600" y2="1065"/>
+    <line x1="600" y1="1135" x2="600" y2="1223"/>
+    <line x1="600" y1="1277" x2="600" y2="1313"/>
+    <line x1="600" y1="1367" x2="600" y2="1395"/>
+    <line x1="600" y1="1465" x2="600" y2="1543"/>
+    <line x1="600" y1="1597" x2="600" y2="1633"/>
+    <line x1="600" y1="1687" x2="600" y2="1715"/>
+    <line x1="600" y1="1785" x2="600" y2="1823"/>
+    <line x1="600" y1="1877" x2="600" y2="1943"/>
+    <line x1="600" y1="1997" x2="600" y2="2035"/>
+    <line x1="600" y1="2105" x2="600" y2="2135"/>
+    <line x1="600" y1="2205" x2="600" y2="2363"/>
+    <line x1="600" y1="2417" x2="600" y2="2443"/>
+    <line x1="600" y1="2497" x2="600" y2="2523"/>
+    <line x1="600" y1="2577" x2="600" y2="2603"/>
+    <line x1="600" y1="2657" x2="600" y2="2683"/>
+  </g>
+
+  <!-- 循环回退箭头(否) -->
+  <g stroke="#C62828" stroke-width="2" fill="none" marker-end="url(#arrR)">
+    <path d="M505,350 H340 V260 H460"/>
+    <path d="M505,670 H340 V560 H460"/>
+    <path d="M505,1100 H340 V830 H460"/>
+    <path d="M505,1430 H340 V1340 H460"/>
+    <path d="M505,1750 H340 V1660 H460"/>
+  </g>
+  <g font-size="13" fill="#C62828">
+    <text x="400" y="340" text-anchor="middle">否 · 修改需求</text>
+    <text x="400" y="660" text-anchor="middle">否 · 修改设计</text>
+    <text x="400" y="1090" text-anchor="middle">否 · 修复代码</text>
+    <text x="400" y="1420" text-anchor="middle">否 · 修复缺陷</text>
+    <text x="400" y="1740" text-anchor="middle">否 · 修复后重试</text>
+  </g>
+
+  <!-- 迭代循环(回到需求阶段) -->
+  <path d="M505,2070 H340 V100 H460" stroke="#1565C0" stroke-width="2.5" fill="none" stroke-dasharray="8,5" marker-end="url(#arrB)"/>
+  <text x="400" y="2060" text-anchor="middle" font-size="13" font-weight="bold" fill="#1565C0">是 · 迭代开发(新需求/问题)</text>
+
+  <!-- 继续运维循环 -->
+  <path d="M695,2170 H900 V1970 H740" stroke="#546E7A" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <text x="800" y="2160" text-anchor="middle" font-size="13" fill="#546E7A">否 · 继续运维</text>
+
+  <!-- 判定结果标注 -->
+  <g font-size="14" font-weight="bold">
+    <text x="612" y="410" fill="#2E7D32">是</text>
+    <text x="612" y="754" fill="#2E7D32">是</text>
+    <text x="612" y="1179" fill="#2E7D32">是</text>
+    <text x="612" y="1504" fill="#2E7D32">是</text>
+    <text x="612" y="1804" fill="#2E7D32">是</text>
+    <text x="612" y="2120" fill="#C62828">否</text>
+    <text x="612" y="2284" fill="#2E7D32">是</text>
+  </g>
+
+  <!-- 图例说明 -->
+  <text x="62" y="2802" font-size="13" fill="#607D8B">说明:圆角矩形 = 执行环节;菱形 = 判断决策;「是」向下进入下一环节;「否」沿红色箭头回到对应环节循环;「迭代开发」虚线回到需求阶段开启新一轮;</text>
+  <text x="62" y="2826" font-size="13" fill="#607D8B">停止使用前必须先完成数据迁移与备份,下线后数据按留存策略归档或销毁。</text>
+</svg>

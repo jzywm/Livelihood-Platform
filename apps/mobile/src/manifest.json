@@ -1,0 +1,28 @@
+{
+  "name": "民生甄选",
+  "appid": "",
+  "description": "民生综合服务平台移动端",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3
+  },
+  "quickapp": {},
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false
+    },
+    "usingComponents": true
+  },
+  "h5": {
+    "title": "民生甄选",
+    "router": {
+      "mode": "hash"
+    }
+  },
+  "vueVersion": "3"
+}

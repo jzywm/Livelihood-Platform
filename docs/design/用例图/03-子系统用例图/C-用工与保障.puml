@@ -1,0 +1,37 @@
+@startuml C-用工与保障
+' 民生甄选 · 子系统用例图 L3 · C 用工与保障（UC-SUB-C-01）
+' 去重：C1 工资保障并入 I-03；C3 从业履历并入 A-06
+title 民生甄选 · 子系统用例图 · C 用工与保障
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+
+rectangle "C 用工与保障" {
+  usecase "UC-SUB-C-01 核验入职年龄防童工" as C01
+}
+
+MERCHANT --> C01
+WORKER --> C01
+
+note bottom of C01
+  年龄<16 自动拦截警示并留痕；与一人一档（A-06）联动
+end note
+note bottom of WORKER
+  从业人员为核验对象（31 §2.6「防童工年龄核验 C-01」）
+end note
+@enduml

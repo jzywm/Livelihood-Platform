@@ -1,0 +1,29 @@
+# ============================================================
+# Gitleaks 配置 (G0 密钥扫描)
+# 文档: https://github.com/gitleaks/gitleaks
+# 本地: pre-commit 自动调用; CI: pr-checks.yml 的 secret-scan job 复验
+# 修改本文件后 CI 会重新生效(该文件本身建议由 security-team 拥有, 见 CODEOWNERS)
+# ============================================================
+
+title = "企业密钥扫描基线"
+
+[extend]
+# 使用 Gitleaks 内置默认规则(覆盖常见云厂商 AK/SK、GitHub token、私钥等)
+useDefault = true
+
+[allowlist]
+description = "测试与示例文件白名单(从严控制, 每项需说明理由)"
+paths = [
+  '''(^|/)test[^/]*/''',          # 测试目录(仍需人工确认不泄漏真实密钥)
+  '''(^|/)(tests?|__tests__|fixtures?)/''',
+  '''\.md$''',                    # 文档中的示例值(建议仅针对专门的 examples 文件)
+  '''(^|/)examples?/''',
+]
+regexes = [
+  '''example[_-]?(key|token|secret|password|api)''',  # 示例命名
+  '''xxxxxxxx''',                  # 掩码占位
+  '''changeme''',
+  '''your[_-]?(key|token|secret|password)''',
+  '''(AKIA)AAAAAAAAAAAAAAAA''',   # 无效的示例 AWS key
+]
+# 注意: 禁止用 allowlist 豁免真实格式的密钥; 白名单改动需安全负责人评审

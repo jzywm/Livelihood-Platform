@@ -1,0 +1,51 @@
+@startuml T-餐厨与扩展
+' 民生甄选 · 子系统用例图 L3 · T 餐厨与扩展（UC-SUB-T-17 ~ T-21）
+title 民生甄选 · 子系统用例图 · T 餐厨与扩展
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "产废单位" as WASTEUNIT
+actor "收运企业" as COLLECTOR
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+actor "消费者" as CONSUMER
+actor "平台运营方" as OPER
+
+rectangle "T 餐厨与扩展" {
+  usecase "UC-SUB-T-17 登记餐厨垃圾去向" as T17
+  usecase "UC-SUB-T-18 建立收运企业信用档案" as T18
+  usecase "UC-SUB-T-19 配置扩展品类资质门槛" as T19
+  usecase "UC-SUB-T-20 消费者选购并扫码验真" as T20
+  usecase "UC-SUB-T-21 辅助采购决策" as T21
+}
+
+WASTEUNIT --> T17
+COLLECTOR --> T17
+COLLECTOR --> T18
+SUPPLIER --> T19
+CONSUMER --> T20
+BUYER --> T21
+
+note bottom of T17
+  产废登记→白名单收运扫码交接→处理厂接收，全链留痕
+end note
+note bottom of T20
+  平台定位 B2B 为主、B2C 为延伸（细节待确认）
+end note
+note bottom of T21
+  只撮合不代下单/不代定价；衔接担保下单（T-11）
+end note
+@enduml

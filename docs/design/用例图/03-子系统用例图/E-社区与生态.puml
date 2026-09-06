@@ -1,0 +1,46 @@
+@startuml E-社区与生态
+' 民生甄选 · 子系统用例图 L3 · E 社区与生态（UC-SUB-E-01 ~ E-03）
+title 民生甄选 · 子系统用例图 · E 社区与生态
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "从业人员" as WORKER
+actor "消费者" as CONSUMER
+
+rectangle "E 社区与生态" {
+  usecase "UC-SUB-E-01 参与行业圈层交流" as E01
+  usecase "UC-SUB-E-02 免费推广优质小店" as E02
+  usecase "UC-SUB-E-03 发布招工与求职" as E03
+}
+
+MERCHANT --> E01
+MERCHANT --> E02
+MERCHANT --> E03
+WORKER --> E01
+WORKER --> E03
+CONSUMER --> E02
+
+note bottom of E01
+  参与者来自功能描述「同行业商户/从业者」
+end note
+note bottom of E02
+  免费、群众点评、信用加权、非竞价
+end note
+note bottom of E03
+  与 I-05 零工结算联动
+end note
+@enduml

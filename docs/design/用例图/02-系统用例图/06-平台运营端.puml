@@ -1,0 +1,57 @@
+@startuml 06-平台运营端
+' 民生甄选 · 系统用例图 L2 · 平台运营端（UC-SYS-O01 ~ O11）
+title 民生甄选 · 系统用例图 · 平台运营端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "平台运营方" as OPER
+
+rectangle "平台运营端系统（功能边界）" {
+  usecase "UC-SYS-O01 公示平台费率" as O01
+  usecase "UC-SYS-O02 存证出证平台证据" as O02
+  usecase "UC-SYS-O03 划定试点并扩展行业" as O03
+  usecase "UC-SYS-O04 替代政务对接并双轨切换" as O04
+  usecase "UC-SYS-O05 承诺平台定位与信任背书" as O05
+  usecase "UC-SYS-O06 导入存量商户并冷启动" as O06
+  usecase "UC-SYS-O07 运营信用与交易风控" as O07
+  usecase "UC-SYS-O08 统一 AI 网关并治理" as O08
+  usecase "UC-SYS-O09 提供实名账户与记账" as O09
+  usecase "UC-SYS-O10 提供助手通用能力" as O10
+  usecase "UC-SYS-O11 提供画像中心与四权" as O11
+}
+
+OPER --> O01
+OPER --> O02
+OPER --> O03
+OPER --> O04
+OPER --> O05
+OPER --> O06
+OPER --> O07
+OPER --> O08
+OPER --> O09
+OPER --> O10
+OPER --> O11
+
+note bottom of O09
+  通用基础设施·全角色共用（31 §2.6），支撑各端，不设业务用例
+end note
+note bottom of O10
+  含助手模块级能力 J-04/J-05/J-06（随 M1）
+end note
+note bottom of O11
+  画像中心/四权（J-07/J-08）全角色共用；不杀熟、未成年人画像
+end note
+@enduml

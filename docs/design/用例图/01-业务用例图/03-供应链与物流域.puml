@@ -1,0 +1,50 @@
+@startuml 03-供应链与物流域
+' 民生甄选 · 业务用例图 L1 · 供应链与物流域（UC-BIZ-16 ~ UC-BIZ-21）
+title 民生甄选 · 业务用例图 · 供应链与物流域
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "供应商" as SUPPLIER
+actor "采购方" as BUYER
+actor "产废单位" as WASTEUNIT
+actor "收运企业" as COLLECTOR
+actor "货主" as SHIPPER
+actor "货运司机" as DRIVER
+
+rectangle "供应链与物流域（业务目标）" {
+  usecase "UC-BIZ-16 放心供货" as B16
+  usecase "UC-BIZ-17 放心采购" as B17
+  usecase "UC-BIZ-18 假货维权" as B18
+  usecase "UC-BIZ-19 餐厨合规处置" as B19
+  usecase "UC-BIZ-20 放心运货" as B20
+  usecase "UC-BIZ-21 运费保障结算" as B21
+}
+
+SUPPLIER --> B16
+BUYER --> B17
+BUYER --> B18
+WASTEUNIT --> B19
+COLLECTOR --> B19
+SHIPPER --> B20
+SHIPPER --> B21
+DRIVER --> B20
+DRIVER --> B21
+
+B18 ..> B17 : <<extend>>
+note right of B18
+  采购遇假货后延伸维权（业务层建模关系）
+end note
+@enduml

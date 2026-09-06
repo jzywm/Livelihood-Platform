@@ -1,0 +1,45 @@
+@startuml 04-物流货运端
+' 民生甄选 · 系统用例图 L2 · 物流货运端（UC-SYS-L01 ~ L05）
+' 网约车/出租车明确不做
+title 民生甄选 · 系统用例图 · 物流货运端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "货主" as SHIPPER
+actor "货运司机" as DRIVER
+
+rectangle "物流货运端系统（功能边界）" {
+  usecase "UC-SYS-L01 发布货源与自由接单" as L01
+  usecase "UC-SYS-L02 查看在途位置并存证轨迹" as L02
+  usecase "UC-SYS-L03 核验司机资质与信用" as L03
+  usecase "UC-SYS-L04 托管并结算运费" as L04
+  usecase "UC-SYS-L05 公示货运费率" as L05
+}
+
+SHIPPER --> L01
+SHIPPER --> L02
+SHIPPER --> L04
+SHIPPER --> L05
+DRIVER --> L01
+DRIVER --> L02
+DRIVER --> L03
+DRIVER --> L04
+DRIVER --> L05
+
+note bottom of L04
+  运费结算 include 代付结算（UC-SUB-I-03），共用结算体系
+end note
+@enduml

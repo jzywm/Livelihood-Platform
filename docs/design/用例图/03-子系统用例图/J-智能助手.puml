@@ -1,0 +1,63 @@
+@startuml J-智能助手
+' 民生甄选 · 子系统用例图 L3 · J 智能助手（UC-SUB-J-01 ~ J-13）
+' 「民生小助手」为公共服务能力，不单列为参与者
+title 民生甄选 · 子系统用例图 · J 智能助手
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "平台运营方" as OPER
+
+rectangle "J 智能助手" {
+  usecase "UC-SUB-J-01 提供分角色使用指导" as J01
+  usecase "UC-SUB-J-02 导航到目标页面" as J02
+  usecase "UC-SUB-J-03 推荐商品并说明理由" as J03
+  usecase "UC-SUB-J-04 理解多轮对话上下文" as J04
+  usecase "UC-SUB-J-05 兜底并转人工反馈" as J05
+  usecase "UC-SUB-J-06 管控内容安全与幻觉" as J06
+  usecase "UC-SUB-J-07 构建个人画像中心" as J07
+  usecase "UC-SUB-J-08 管理画像并行使四权" as J08
+  usecase "UC-SUB-J-09 增强个性化推荐" as J09
+  usecase "UC-SUB-J-10 推送个性化信息" as J10
+  usecase "UC-SUB-J-11 提供个性化使用引导" as J11
+  usecase "UC-SUB-J-12 治理助手服务" as J12
+  usecase "UC-SUB-J-13 澄清式导购选品" as J13
+}
+
+CONSUMER --> J01
+CONSUMER --> J02
+CONSUMER --> J03
+CONSUMER --> J07
+CONSUMER --> J08
+CONSUMER --> J09
+CONSUMER --> J10
+CONSUMER --> J11
+CONSUMER --> J13
+OPER --> J04
+OPER --> J05
+OPER --> J06
+OPER --> J12
+
+J09 ..> J03 : <<include>>
+J13 ..> J02 : <<include>>
+
+note bottom of J01
+  通用基础设施·全角色共用（J-01/J-02/J-07/J-08），此处连消费者为代表参与者
+end note
+note bottom of J04
+  J-04/J-05/J-06 为助手模块级能力（随 M1）
+end note
+@enduml

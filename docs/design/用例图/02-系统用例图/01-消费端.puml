@@ -1,0 +1,53 @@
+@startuml 01-消费端
+' 民生甄选 · 系统用例图 L2 · 消费端（UC-SYS-C01 ~ C10）
+' 面向产品/架构，描述消费端系统功能边界
+title 民生甄选 · 系统用例图 · 消费端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+
+rectangle "消费端系统（功能边界）" {
+  usecase "UC-SYS-C01 查询商户信用与公示信息" as C01
+  usecase "UC-SYS-C02 发起消费投诉维权" as C02
+  usecase "UC-SYS-C03 扫码溯源验真" as C03
+  usecase "UC-SYS-C04 反映诉求与建议" as C04
+  usecase "UC-SYS-C05 监督民生项目" as C05
+  usecase "UC-SYS-C06 获得个性化推荐与导购" as C06
+  usecase "UC-SYS-C07 参与群众点评" as C07
+  usecase "UC-SYS-C08 接收预付卡风险提示" as C08
+  usecase "UC-SYS-C09 选购商品并扫码验真" as C09
+  usecase "UC-SYS-C10 图像问答答疑" as C10
+}
+
+CONSUMER --> C01
+CONSUMER --> C02
+CONSUMER --> C03
+CONSUMER --> C04
+CONSUMER --> C05
+CONSUMER --> C06
+CONSUMER --> C07
+CONSUMER --> C08
+CONSUMER --> C09
+CONSUMER --> C10
+
+note right of C02
+  商家 48h 未解决时延伸至 UC-SYS-G05 升级市监办结（跨端 extend）
+end note
+note bottom of C06
+  画像中心/四权为通用基础设施（归平台运营端 O11）
+end note
+@enduml

@@ -1,0 +1,43 @@
+@startuml P-平台级能力
+' 民生甄选 · 子系统用例图 L3 · P 平台级能力（UC-SUB-P-01 ~ P-06）
+title 民生甄选 · 子系统用例图 · P 平台级能力
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "平台运营方" as OPER
+actor "监管人员" as REGU
+
+rectangle "P 平台级能力" {
+  usecase "UC-SUB-P-01 公示平台费率与抽成" as P01
+  usecase "UC-SUB-P-02 存证并出证平台证据" as P02
+  usecase "UC-SUB-P-03 划定试点范围并扩展行业" as P03
+  usecase "UC-SUB-P-04 替代政务对接并双轨切换" as P04
+  usecase "UC-SUB-P-05 承诺平台定位与信任背书" as P05
+  usecase "UC-SUB-P-06 导入存量商户并冷启动" as P06
+}
+
+OPER --> P01
+OPER --> P02
+OPER --> P03
+OPER --> P04
+OPER --> P05
+OPER --> P06
+REGU --> P02
+
+note bottom of P02
+  监管端调取存证出证（31 §2.6「存证出证 P-02」）
+end note
+@enduml

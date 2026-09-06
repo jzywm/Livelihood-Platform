@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "labels": ["dependencies", "renovate"],
+  "timezone": "Asia/Shanghai",
+  "schedule": ["every weekend"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 3,
+  "packageRules": [
+    {
+      "description": "patch/minor 且非 0.x: 门禁全绿则自动合并",
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^0\\./",
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "platformAutomerge": true
+    },
+    {
+      "description": "major 升级必须人工评审",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["major-upgrade"]
+    },
+    {
+      "description": "0.x 视为 breaking, 人工评审",
+      "matchCurrentVersion": "/^0\\./",
+      "automerge": false
+    },
+    {
+      "description": "安全漏洞升级: 不排队, 立即开 PR",
+      "matchDepNames": ["*"],
+      "vulnerabilityAlerts": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "schedule": [],
+    "automerge": false
+  },
+  "osvVulnerabilityAlerts": true
+}

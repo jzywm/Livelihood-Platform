@@ -1,0 +1,51 @@
+@startuml K-AI能力中心
+' 民生甄选 · 子系统用例图 L3 · K AI 能力中心（UC-SUB-K-01 ~ K-06）
+title 民生甄选 · 子系统用例图 · K AI 能力中心
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "商户" as MERCHANT
+actor "供应商" as SUPPLIER
+actor "监管人员" as REGU
+actor "消费者" as CONSUMER
+actor "平台运营方" as OPER
+
+rectangle "K AI 能力中心" {
+  usecase "UC-SUB-K-01 OCR 核验证照" as K01
+  usecase "UC-SUB-K-02 统一 AI 网关与治理" as K02
+  usecase "UC-SUB-K-03 审核视觉合规图片" as K03
+  usecase "UC-SUB-K-04 图像问答答疑" as K04
+  usecase "UC-SUB-K-05 识别后厨直播异常" as K05
+  usecase "UC-SUB-K-06 预测并预警风险商户" as K06
+}
+
+MERCHANT --> K01
+MERCHANT --> K05
+SUPPLIER --> K01
+REGU --> K01
+REGU --> K03
+REGU --> K05
+REGU --> K06
+CONSUMER --> K04
+OPER --> K02
+
+note bottom of K01
+  入驻核验（A-01/T-01）include OCR 预审（跨模块）
+end note
+note bottom of K05
+  联动 B-02 后厨直播；需商户授权；处置监管人工确认
+end note
+@enduml

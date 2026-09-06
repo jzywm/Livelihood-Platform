@@ -1,0 +1,48 @@
+@startuml 05-政务监管端
+' 民生甄选 · 系统用例图 L2 · 政务监管端（UC-SYS-G01 ~ G07）
+title 民生甄选 · 系统用例图 · 政务监管端
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "监管人员" as REGU
+actor "政府" as GOV
+
+rectangle "政务监管端系统（功能边界）" {
+  usecase "UC-SYS-G01 查询辖区商户档案" as G01
+  usecase "UC-SYS-G02 接收预警并分级监管" as G02
+  usecase "UC-SYS-G03 公示抽检并审核视觉合规" as G03
+  usecase "UC-SYS-G04 存证出证并预警溯源" as G04
+  usecase "UC-SYS-G05 承办诉求并限时办结" as G05
+  usecase "UC-SYS-G06 答复建议并公开民生项目" as G06
+  usecase "UC-SYS-G07 预测并预警风险商户" as G07
+}
+
+REGU --> G01
+REGU --> G02
+REGU --> G03
+REGU --> G04
+REGU --> G05
+REGU --> G07
+GOV --> G05
+GOV --> G06
+
+note right of G05
+  接收消费端 C02 投诉升级（跨端 extend）后限时办结
+end note
+note bottom of G03
+  视觉审核 AI 只标记不决策（C8 红线）
+end note
+@enduml

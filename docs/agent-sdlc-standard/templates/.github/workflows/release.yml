@@ -1,0 +1,100 @@
+# ============================================================
+# G4 发布门: 打 tag v* 触发
+# 流程: 版本校验 → 构建(含 SBOM+provenance) → Trivy 扫描(高危阻断)
+#       → SBOM 生成 → cosign 签名 → 发布 Release(附产物)
+# 复制到仓库: .github/workflows/release.yml
+# 前置: 仓库已配置 ghcr.io 权限 (Settings → Packages); 镜像按项目调整
+# ============================================================
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write        # 创建 Release
+  id-token: write        # cosign keyless 签名 (OIDC)
+  packages: write        # 推送 ghcr.io 镜像
+  security-events: write # 上传 Trivy SARIF
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- 1. 版本一致性校验 ----------
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error:: tag v${VERSION} 与 package.json ${PKG_VERSION} 不一致"
+            exit 1
+          fi
+
+      # ---------- 2. 构建镜像 (含 SBOM + SLSA provenance) ----------
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+          sbom: true        # 构建时生成 SBOM (attach 到镜像)
+          provenance: true  # SLSA provenance
+
+      # ---------- 3. 镜像漏洞扫描 (高危阻断) ----------
+      - name: Trivy 镜像扫描
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1          # 发现高危 → 门禁失败
+          ignore-unfixed: true  # 与 trivy.yaml 一致 (白名单见 .trivyignore)
+      - name: 上传扫描结果 (Security 标签页)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      # ---------- 4. 生成 SBOM (CycloneDX, 独立归档) ----------
+      - name: 生成 SBOM
+        uses: anchore/sbom-action@v0.17.2
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom-${{ github.ref_name }}
+
+      # ---------- 5. 签名 (cosign keyless) ----------
+      - name: 安装 cosign
+        uses: sigstore/cosign-installer@v3.6.0
+      - name: 签名镜像
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+      - name: 签名 SBOM
+        run: |
+          cosign sign-blob --yes sbom.cdx.json \
+            --output-signature sbom.cdx.json.sig \
+            --output-certificate sbom.cdx.json.pem
+
+      # ---------- 6. 发布 Release (附 SBOM 与签名) ----------
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true   # 由 conventional commits 生成
+          files: |
+            sbom.cdx.json
+            sbom.cdx.json.sig
+            sbom.cdx.json.pem
