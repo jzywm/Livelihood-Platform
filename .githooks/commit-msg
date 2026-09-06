@@ -1,0 +1,23 @@
+#!/bin/sh
+# ============================================================
+# commit-msg · 提交信息门禁(Conventional Commits)
+# 格式:<type>(<scope>): <subject>
+# type ∈ feat / fix / perf / refactor / docs / test / chore / ci / build / style
+# 说明:[AI] 标记由 AI Skill 校验(hook 无法区分人/机),此处仅强制格式。
+# ============================================================
+
+RED='\033[31m'
+RESET='\033[0m'
+
+msg_file="$1"
+head=$(head -n 1 "$msg_file")
+
+if ! printf '%s\n' "$head" | grep -Eq '^(feat|fix|perf|refactor|docs|test|chore|ci|build|style)(\([^)]*\))?: .+'; then
+  printf "${RED}[block]${RESET} 提交信息不符合 Conventional Commits 格式。\n"
+  printf '期望: <type>(<scope>): <subject>\n'
+  printf 'type ∈ feat/fix/perf/refactor/docs/test/chore/ci/build/style;subject 用中文描述。\n'
+  printf '示例: feat(auth): 新增 OIDC 回调处理\n'
+  exit 1
+fi
+
+exit 0

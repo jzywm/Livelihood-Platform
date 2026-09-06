@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "民生甄选 · 页面流程（关键用户路径）",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "purchase",
+        "label": "选购下单主路径",
+        "focus": ["login", "home", "market", "product", "checkout"],
+        "note": "登录/实名 → 首页 → 选品广场 → 商品详情 → 加购结算 → 下单成功"
+      },
+      {
+        "id": "findshop",
+        "label": "找好店与维权",
+        "focus": ["home", "shops", "shopdetail", "complaint"],
+        "note": "从首页找好店、看一店一档、就地发起投诉（≤3 步）"
+      },
+      {
+        "id": "login-gate",
+        "label": "登录 · 实名拦截",
+        "focus": ["checkout", "login"],
+        "note": "未登录在结算前被拦截，登录/实名后返回继续"
+      },
+      {
+        "id": "scenes",
+        "label": "角色落地三工作台",
+        "focus": ["login", "workspace", "supervise"],
+        "note": "登录按主角色落入消费 / 经营 / 监管工作台"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "entry", "label": "进入（登录 · 首页）" },
+    { "id": "purchase", "label": "消费 · 选购下单" },
+    { "id": "findshop", "label": "消费 · 找好店维权" },
+    { "id": "merchant", "label": "经营场景" },
+    { "id": "supervision", "label": "监管场景" }
+  ],
+  "phases": [
+    { "id": "enter", "label": "进入", "fromCol": 0, "toCol": 1 },
+    { "id": "browse", "label": "浏览", "fromCol": 2, "toCol": 3 },
+    { "id": "deal", "label": "办理", "fromCol": 4, "toCol": 5 }
+  ],
+  "mainPath": ["login", "home", "market", "product", "checkout"],
+  "nodes": [
+    { "id": "login", "lane": "entry", "col": 0, "type": "security", "label": "登录 / 实名", "sublabel": "/auth/login", "tag": "M1" },
+    { "id": "home", "lane": "entry", "col": 1, "type": "frontend", "label": "首页", "sublabel": "消费工作台", "tag": "/" },
+    { "id": "market", "lane": "purchase", "col": 2, "type": "frontend", "label": "选品广场", "sublabel": "/market", "tag": "M2" },
+    { "id": "product", "lane": "purchase", "col": 3, "type": "frontend", "label": "商品详情", "sublabel": "/products/:id", "tag": "M2" },
+    { "id": "checkout", "lane": "purchase", "col": 5, "type": "frontend", "label": "下单成功", "sublabel": "结算 · /orders", "tag": "M2" },
+    { "id": "shops", "lane": "findshop", "col": 1, "width": 64, "type": "frontend", "label": "找好店", "sublabel": "/shops", "tag": "M1" },
+    { "id": "shopdetail", "lane": "findshop", "col": 3, "width": 76, "type": "frontend", "label": "一店一档", "sublabel": "/shops/:id", "tag": "M1" },
+    { "id": "complaint", "lane": "findshop", "col": 5, "type": "frontend", "label": "发起投诉", "sublabel": "/complaints/new", "tag": "M1" },
+    { "id": "workspace", "lane": "merchant", "col": 2, "type": "frontend", "label": "经营工作台", "sublabel": "/workspace", "tag": "M1" },
+    { "id": "supervise", "lane": "supervision", "col": 2, "type": "frontend", "label": "监管工作台", "sublabel": "/supervise", "tag": "M1" }
+  ],
+  "edges": [
+    { "from": "login", "to": "home", "role": "main" },
+    { "from": "home", "to": "market", "role": "main", "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "market", "to": "product", "role": "main" },
+    { "from": "product", "to": "checkout", "label": "加购 · 结算", "role": "main" },
+    { "from": "home", "to": "shops", "label": "找好店", "role": "branch", "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "shops", "to": "shopdetail", "role": "branch" },
+    { "from": "shopdetail", "to": "complaint", "label": "投诉", "role": "branch" },
+    { "from": "login", "to": "workspace", "label": "商户", "role": "branch", "fromSide": "bottom", "toSide": "left", "via": [[88, 491]] },
+    { "from": "login", "to": "supervise", "label": "监管", "role": "branch", "fromSide": "right", "toSide": "left", "via": [[150, 119], [150, 615]] }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "选购下单主路径",
+      "items": ["登录/实名 → 首页 → 选品广场 → 商品详情 → 加购结算 → 下单成功", "选品广场与订单为 M2 交付（首期农资 + 食材）", "下单后进入「我的订单 /orders」，48h 验收 · 退款"]
+    },
+    {
+      "dot": "rose",
+      "title": "登录 · 实名拦截",
+      "items": ["未登录在结算前被拦截，登录/实名后返回继续", "登录仅走微信/支付宝实名回传，不接受人工证件降级（R-02）", "登录态、钱包、个人中心跨场景共享"]
+    },
+    {
+      "dot": "cyan",
+      "title": "三场景工作台",
+      "items": ["登录按主角色落入消费 / 经营 / 监管工作台", "一人多角色、跨场景零切换；RBAC 决定菜单可见", "扫码验真、费率公示、消息、个人中心为顶部全局入口"]
+    }
+  ]
+}

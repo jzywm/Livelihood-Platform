@@ -1,0 +1,78 @@
+#!/bin/sh
+# ============================================================
+# pre-commit · 提交前物理门禁(G0 本地层 · 方案 B)
+# 确定性检查:合并冲突标记 / 行尾空白 / 大文件 / 私钥与高置信密钥 / .env 真实文件
+# 任一命中 → exit 1 阻断提交;修复后重新 commit。
+# 语义级深检(命名/注释语言/SQL/XSS/测试/[AI] 标记/提交粒度)由 AI Skill(commit-check)负责。
+# 说明:git commit --no-verify 可绕过本地 hook;真正"不可跳过"由 CI G2 兜底(agent-sdlc-standard)。
+# ============================================================
+
+RED='\033[31m'
+YEL='\033[33m'
+RESET='\033[0m'
+fail=0
+
+say() { printf "${RED}[block]${RESET} %s\n" "$1"; }
+
+added_lines() { git diff --cached --unified=0 --no-color | grep -E '^\+' | grep -vE '^\+\+\+'; }
+
+# 1) 合并冲突标记
+if m=$(added_lines | grep -nE '^\+<<<<<<<($| )|^\+=======$|^\+>>>>>>>($| )'); then
+  say "暂存改动仍含合并冲突标记,请先解决冲突:"
+  printf '%s\n' "$m" | sed 's/^/    /'
+  fail=1
+fi
+
+# 2) 行尾空白 / 文件末尾多余空行
+w=$(git diff --cached --check 2>/dev/null)
+if [ -n "$w" ]; then
+  say "存在行尾空白或文件末尾多余空行:"
+  printf '%s\n' "$w" | sed 's/^/    /'
+  fail=1
+fi
+
+# 3) 大文件 >1MB
+big=""
+for f in $(git diff --cached --name-only --diff-filter=ACMR); do
+  [ -f "$f" ] || continue
+  sz=$(wc -c < "$f" 2>/dev/null)
+  sz=${sz:-0}
+  if [ $sz -gt 1048576 ]; then big="${big}    ${f} (${sz} bytes)\n"; fi
+done
+if [ -n "$big" ]; then
+  say "新增大文件(>1MB),请拆分或改用 LFS:"
+  printf '%b' "$big"
+  fail=1
+fi
+
+# 4) 私钥块 / 高置信云密钥
+if s=$(added_lines | grep -nE 'BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'); then
+  say "检出私钥块或云平台密钥,严禁入库:"
+  printf '%s\n' "$s" | sed 's/^/    /'
+  fail=1
+fi
+
+# 5) 疑似硬编码凭据(粗筛,疑似命中请确认;精确判定由 AI Skill 负责)
+P='(password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key|client[_-]?secret)[[:space:]]*[:=][[:space:]]*[^[:space:]#]{8,}'
+EX='process\.env|os\.environ|System\.getenv|getenv|\$\{|example|changeme|your_|placeholder|mock|fixture|REDACTED|xxx'
+if s2=$(added_lines | grep -inE "$P" | grep -viE "$EX"); then
+  say "疑似硬编码凭据(若为测试 fixture / .env.example 等误报,请确认后提交):"
+  printf '%s\n' "$s2" | sed 's/^/    /'
+  fail=1
+fi
+
+# 6) 真实 .env 文件(仅允许 .env.example)
+e=$(git diff --cached --name-only --diff-filter=A | grep -E '(^|/)\.env(\..*)?$' | grep -v '\.env\.example$')
+if [ -n "$e" ]; then
+  say "提交了真实 .env 文件(可能含密钥),只应提交 .env.example:"
+  printf '%s\n' "$e" | sed 's/^/    /'
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  printf "${RED}提交被阻断。${RESET}请修复上述项后重新 commit;若为误报请先确认,而非直接 --no-verify。\n"
+  exit 1
+fi
+
+printf "${YEL}[commit-check]${RESET} 本地 hook 门禁通过(语义级深检由 AI Skill 完成)。\n"
+exit 0
