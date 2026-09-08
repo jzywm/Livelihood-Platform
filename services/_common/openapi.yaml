@@ -1,0 +1,205 @@
+openapi: 3.0.3
+info:
+  title: 民生甄选 · OpenAPI 公共组件
+  version: 1.0.0
+  description: |
+    全平台 13 个微服务共用的 OpenAPI 组件（单一事实源）。
+    包含：统一响应包络 Envelope、分页 PageResult、鉴权安全方案、错误码、分页/幂等参数、通用错误响应。
+    各服务文档通过相对路径 $ref 引用本文件（如 ../../_common/openapi.yaml）。
+    本文件不定义任何业务 schema；业务 schema 请在各服务 openapi.yaml 中定义。
+    口径来源：PDD §6.2（API 约定与错误码）。
+paths: {}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT 鉴权（access 短时效 + refresh 轮换 + Redis 吊销）+ RBAC 六方角色。
+        管理端二次鉴权；敏感操作（发薪/分账/申诉/执法/导出）需 MFA。
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 页码，从 1 开始
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: 每页条数，上限 100
+      required: false
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 幂等键，资金类写操作强制；重复提交返回原结果（code=3008 幂等键冲突）
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+        example: 7f3a2b1c-9d8e-4f0a-8b7c-6d5e4f3a2b1c
+
+  responses:
+    BadRequest:
+      description: 参数错误（code=1xxx）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 1001
+            message: 参数缺失
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+    Unauthorized:
+      description: 未登录 / Token 失效（code=2001）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 2001
+            message: 未登录或 Token 已失效
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+    Forbidden:
+      description: 无权限 / 水平越权（code=2002）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 2002
+            message: 无权限访问该资源
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+    NotFound:
+      description: 资源不存在（code=3006）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 3006
+            message: 对象不存在
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+    ThirdPartyFailure:
+      description: 第三方/依赖失败（code=4001/4002）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 4002
+            message: 支付通道失败或超时
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+
+  schemas:
+    Envelope:
+      type: object
+      description: |
+        统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。
+        业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。
+        前端可用「code === 0」判断成功。
+      required:
+        - code
+        - message
+        - traceId
+        - timestamp
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: 提示信息（面向用户，可直接展示）
+          example: ok
+        data:
+          description: 业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）
+        traceId:
+          type: string
+          description: 链路追踪 ID，透传 SkyWalking，用于排障
+          example: 3f2a1b9c8d7e6f50
+        timestamp:
+          type: string
+          format: date-time
+          description: 服务端时间（UTC，ISO 8601）
+          example: '2026-01-15T10:30:00Z'
+    ErrorCode:
+      type: integer
+      format: int32
+      description: 平台统一业务码（分段），详见 PDD §6.2
+      enum:
+        - 0    # 成功
+        - 1001 # 参数缺失
+        - 1002 # 参数格式错误
+        - 1003 # 枚举/范围非法
+        - 2001 # 未登录 / Token 失效
+        - 2002 # 无权限 / 越权
+        - 2003 # MFA 未通过
+        - 3001 # 实名未完成
+        - 3002 # 实名不匹配
+        - 3003 # 证照核验不通过
+        - 3004 # 信用分不足
+        - 3005 # 商户未入驻
+        - 3006 # 对象不存在
+        - 3007 # 状态不允许该操作
+        - 3008 # 幂等键冲突
+        - 3009 # 资金对账不一致
+        - 3010 # 违规对象（未成年人）
+        - 4001 # 实名接口失败
+        - 4002 # 支付通道失败 / 超时
+        - 4003 # 大模型 / 视觉 API 失败
+        - 4004 # 短信通道失败
+        - 5000 # 内部错误
+        - 5001 # 数据库错误
+        - 5002 # 依赖超时 / 熔断
+    PageResult:
+      type: object
+      description: |
+        统一分页结果（放在 Envelope.data 内）。
+        业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。
+      required:
+        - list
+        - total
+        - page
+        - pageSize
+      properties:
+        list:
+          type: array
+          description: 当前页数据
+          items: {}
+        total:
+          type: integer
+          format: int64
+          description: 总条数
+          example: 120
+        page:
+          type: integer
+          format: int32
+          description: 当前页码（1 起始）
+          example: 1
+        pageSize:
+          type: integer
+          format: int32
+          description: 每页条数
+          example: 20

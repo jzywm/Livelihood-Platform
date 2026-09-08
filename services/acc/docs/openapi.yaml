@@ -1,0 +1,803 @@
+openapi: 3.0.3
+info:
+  title: 账户服务 ACC · 接口文档
+  version: 1.0.0
+  description: |
+    账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（含 I-06 强实名增强）。
+    口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发
+tags:
+  - name: realname
+    description: 实名认证（I-01 / I-06）
+  - name: wallet
+    description: 钱包记账与流水（I-01）
+  - name: binding
+    description: 收款账户绑定（I-01）
+  - name: funds
+    description: 监管端资金流水审计（I-01）
+  - name: account
+    description: 账号与安全（I-01）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /acc/realname/init:
+    post:
+      tags: [realname]
+      summary: 发起实名（注册/登录入口，触发微信/支付宝授权回传）
+      description: |
+        消费端/经营端一键实名登录入口。流程：一键实名 → 授权协议 → 回传实名信息 → 返回账户。
+        幂等：重复 open_id 幂等返回原账户。第三方实名不可用（R-02）→ 4001，前端明示「流程暂停」，
+        不接受人工证件核验降级。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RealnameInitRequest'
+      responses:
+        '200':
+          description: 成功，返回第三方授权跳转与业务号
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RealnameInitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '502':
+          $ref: '../../_common/openapi.yaml#/components/responses/ThirdPartyFailure'
+  /acc/realname/status:
+    get:
+      tags: [realname]
+      summary: 查询实名状态（回传后轮询状态机）
+      description: |
+        实名回传为异步流程（回调异步落库 + 状态机），前端在 G-02 实名页轮询本接口展示
+        未实名 → 实名中 → 已实名 / 暂停。未登录也可按 bizId 查询。
+      security: []
+      parameters:
+        - name: bizId
+          in: query
+          required: true
+          description: 发起实名时返回的业务号
+          schema:
+            type: string
+            example: rz_7f3a2b1c9d8e
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RealnameStatusResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /acc/realname/enhanced:
+    post:
+      tags: [realname]
+      summary: 强实名增强（NFC 读证 + 人脸活体，I-06，M2）
+      description: |
+        高风险场景（供应商入驻/大额交易）的强实名增强。基础回传路径不变（R-02）。
+        NFC 读卡失败 → 降级基础实名并提示；生物特征最小化 + 加密存储（R-03/R-07），人脸模板不出域。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnhancedRealnameRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EnhancedRealnameResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '422':
+          description: 业务规则不满足（如基础实名未完成 3001）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+  /acc/me:
+    get:
+      tags: [account]
+      summary: 当前用户 + 角色 + 实名状态（脱敏）
+      description: 三端首屏 / G-06 账号与安全页加载当前账户信息；敏感字段脱敏输出（如 138****）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /acc/wallet/flows:
+    get:
+      tags: [wallet]
+      summary: 本人钱包流水分页查询（按月分表路由）
+      description: |
+        纯记账簿流水，只增不改、长期留痕（R-04）。本人分页查询，水平越权（IDOR）校验。
+        跨月查询走分表路由。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: type
+          in: query
+          required: false
+          description: 流水类型筛选
+          schema:
+            $ref: '#/components/schemas/FlowType'
+        - name: from
+          in: query
+          required: false
+          description: 起止日期（含），ISO 8601
+          schema:
+            type: string
+            format: date
+            example: '2026-01-01'
+        - name: to
+          in: query
+          required: false
+          description: 截止日期（含），ISO 8601
+          schema:
+            type: string
+            format: date
+            example: '2026-01-31'
+      responses:
+        '200':
+          description: 成功，返回分页流水
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/WalletFlowPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /acc/wallet/summary:
+    get:
+      tags: [wallet]
+      summary: 钱包记账簿汇总（入/出/分类合计）
+      description: G-07 钱包页顶部汇总：累计入账、累计出账、各类型笔数合计。纯记账，无真实余额。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/WalletSummary'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /acc/wallet/flows/export:
+    get:
+      tags: [wallet]
+      summary: 导出钱包流水 Excel 账单
+      description: G-07 一键导出。敏感操作，监管/导出类需二次鉴权。
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/FlowType'
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: 成功，返回 Excel 二进制流
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /acc/wallet/bind:
+    post:
+      tags: [binding]
+      summary: 绑定收款账户（持牌通道，幂等）
+      description: |
+        将本人收款账户绑定到持牌支付通道，供后续代付/分账收款。账号与实名不一致 → 3002 拒绝绑定；
+        通道校验失败/超时 → 4002 提示重试；重复绑定同账号 → 幂等返回原绑定。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Binding'
+        '422':
+          description: 实名不匹配（3002）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '502':
+          $ref: '../../_common/openapi.yaml#/components/responses/ThirdPartyFailure'
+  /acc/wallet/bindings:
+    get:
+      tags: [binding]
+      summary: 查询收款账户绑定列表
+      description: G-06 绑定管理 / M-28 展示已绑定与未绑定通道。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Binding'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /acc/wallet/bindings/{bindingId}:
+    put:
+      tags: [binding]
+      summary: 更换收款账户绑定
+      description: M-28 更换收款账户；等同「先校验后替换」，沿用幂等键防重复。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: bnd_9d8e7f6a5b4c
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Binding'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+    delete:
+      tags: [binding]
+      summary: 解绑收款账户
+      description: G-06 解绑已绑定通道；解绑后不再用于代付/分账收款。
+      parameters:
+        - name: bindingId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: bnd_9d8e7f6a5b4c
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bindingId:
+                            type: string
+                            example: bnd_9d8e7f6a5b4c
+                          status:
+                            type: string
+                            example: UNBOUND
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /acc/funds/audit:
+    get:
+      tags: [funds]
+      summary: 监管端资金流水审计（全量 + 对账视图）
+      description: |
+        监管端（R-11）资金流水审计。可见角色：监管。全量流水 + 第三方通道交易号 + 存证哈希，
+        支持日期/对账状态筛选。管理端二次鉴权。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: reconcileStatus
+          in: query
+          required: false
+          description: 对账状态筛选
+          schema:
+            type: string
+            enum: [PENDING, RECONCILED, DIFF]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FundsAuditFlowPage'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /acc/funds/reconcile:
+    post:
+      tags: [funds]
+      summary: 触发资金对账
+      description: 监管端（R-11）触发对账，核对平台记账流水与第三方通道流水，不一致 → 3009。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReconcileResult'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /acc/account/close:
+    post:
+      tags: [account]
+      summary: 账号注销（二次确认）
+      description: G-06 注销账号，danger 操作需二次确认；注销留痕。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCloseRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accountId:
+                            type: string
+                            example: acc_6d5e4f3a2b1c
+                          closedAt:
+                            type: string
+                            format: date-time
+                            example: '2026-01-15T10:30:00Z'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+
+components:
+  schemas:
+    Role:
+      type: string
+      description: 六方角色（以 PRD 六方角色为准）
+      enum: [CONSUMER, MERCHANT, SUPPLIER, WORKER, REGULATOR, OPERATOR]
+    RealNameStatus:
+      type: string
+      description: 实名状态机：未实名 → 实名中 → 已实名 / 暂停
+      enum: [UNREALNAMED, REALNAMING, REALNAMED, SUSPENDED]
+    WalletStatus:
+      type: string
+      description: 钱包记账簿状态
+      enum: [ACTIVE, FROZEN]
+    FlowType:
+      type: string
+      description: 流水类型
+      enum: [PAYROLL, SERVICE_FEE, SPLIT, REFUND, OTHER]
+    FlowDirection:
+      type: string
+      description: 资金方向（记账簿视角）
+      enum: [IN, OUT]
+    FlowStatus:
+      type: string
+      description: 流水状态
+      enum: [SUCCEEDED, PENDING, FAILED]
+    Channel:
+      type: string
+      description: 收款通道
+      enum: [WECHAT, ALIPAY]
+    BindingStatus:
+      type: string
+      description: 绑定状态
+      enum: [BOUND, UNBOUND]
+    RealnameInitRequest:
+      type: object
+      required: [mobile, role]
+      properties:
+        mobile:
+          type: string
+          description: 手机号
+          example: '13800138000'
+        role:
+          $ref: '#/components/schemas/Role'
+    RealnameInitResult:
+      type: object
+      required: [bizId, authorizeUrl, realNameStatus]
+      properties:
+        bizId:
+          type: string
+          description: 业务号，用于后续轮询状态
+          example: rz_7f3a2b1c9d8e
+        authorizeUrl:
+          type: string
+          description: 第三方（微信/支付宝）授权跳转地址
+          example: https://open.weixin.qq.com/connect/oauth2/authorize?appid=xxx
+        realNameStatus:
+          $ref: '#/components/schemas/RealNameStatus'
+        accountId:
+          type: string
+          description: 幂等命中时返回原账户
+          example: acc_6d5e4f3a2b1c
+    RealnameStatusResult:
+      type: object
+      required: [realNameStatus]
+      properties:
+        accountId:
+          type: string
+          example: acc_6d5e4f3a2b1c
+        realNameStatus:
+          $ref: '#/components/schemas/RealNameStatus'
+        realName:
+          type: string
+          description: 实名姓名（脱敏，如 张*三）
+          example: 张*三
+        idNo:
+          type: string
+          description: 证件号（脱敏，如 1301**********1234）
+          example: '1301**********1234'
+    EnhancedRealnameRequest:
+      type: object
+      required: [nfcToken, faceToken]
+      properties:
+        nfcToken:
+          type: string
+          description: NFC 读证返回的加密令牌
+        faceToken:
+          type: string
+          description: 人脸活体比对令牌
+    EnhancedRealnameResult:
+      type: object
+      properties:
+        realNameStatus:
+          $ref: '#/components/schemas/RealNameStatus'
+        level:
+          type: string
+          description: 实名等级
+          enum: [BASE, ENHANCED]
+          example: ENHANCED
+    Account:
+      type: object
+      required: [accountId, role, realNameStatus, walletStatus]
+      properties:
+        accountId:
+          type: string
+          example: acc_6d5e4f3a2b1c
+        role:
+          $ref: '#/components/schemas/Role'
+        realNameStatus:
+          $ref: '#/components/schemas/RealNameStatus'
+        walletStatus:
+          $ref: '#/components/schemas/WalletStatus'
+        mobile:
+          type: string
+          description: 手机号（脱敏，如 138****8000）
+          example: 138****8000
+        realName:
+          type: string
+          description: 实名姓名（脱敏）
+          example: 张*三
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    WalletFlow:
+      type: object
+      required: [flowId, type, direction, amount, status, occurredAt]
+      properties:
+        flowId:
+          type: string
+          example: flw_a1b2c3d4e5f6
+        type:
+          $ref: '#/components/schemas/FlowType'
+        direction:
+          $ref: '#/components/schemas/FlowDirection'
+        amount:
+          type: string
+          description: 金额，字符串小数，避免浮点误差
+          example: '3200.00'
+        status:
+          $ref: '#/components/schemas/FlowStatus'
+        channelOrderNo:
+          type: string
+          description: 第三方通道交易号（R-04 留痕）
+          example: wx202601151030001234
+        bizType:
+          type: string
+          description: 业务类型（代付/分账/服务费等）
+        hash:
+          type: string
+          description: 存证哈希（时间戳 + SHA-256 哈希链）
+          example: a3f2b1c9d8e7f6a5...
+        occurredAt:
+          type: string
+          format: date-time
+          description: 发生时间（UTC）
+          example: '2026-01-15T10:30:00Z'
+    WalletFlowPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/WalletFlow'
+    WalletSummary:
+      type: object
+      required: [totalIn, totalOut]
+      properties:
+        totalIn:
+          type: string
+          description: 累计入账（记账簿口径）
+          example: '8200.00'
+        totalOut:
+          type: string
+          description: 累计出账
+          example: '12.80'
+        byType:
+          type: array
+          description: 各类型合计
+          items:
+            type: object
+            properties:
+              type:
+                $ref: '#/components/schemas/FlowType'
+              count:
+                type: integer
+                format: int64
+                example: 3
+              amount:
+                type: string
+                example: '8200.00'
+    BindRequest:
+      type: object
+      required: [channel, payeeAccount, payeeName]
+      properties:
+        channel:
+          $ref: '#/components/schemas/Channel'
+        payeeAccount:
+          type: string
+          description: 收款账号（对公/对私）
+          example: '6222021234567890'
+        payeeName:
+          type: string
+          description: 收款人姓名/户名，须与实名一致（否则 3002）
+          example: 张三
+    Binding:
+      type: object
+      required: [bindingId, channel, status, createdAt]
+      properties:
+        bindingId:
+          type: string
+          example: bnd_9d8e7f6a5b4c
+        channel:
+          $ref: '#/components/schemas/Channel'
+        payeeAccount:
+          type: string
+          description: 收款账号（脱敏，如 6222********890）
+          example: '6222********890'
+        payeeName:
+          type: string
+          description: 收款人（脱敏）
+          example: 张*三
+        status:
+          $ref: '#/components/schemas/BindingStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    FundsAuditFlow:
+      allOf:
+        - $ref: '#/components/schemas/WalletFlow'
+        - type: object
+          properties:
+            payerId:
+              type: string
+              description: 付款方账户
+            payeeId:
+              type: string
+              description: 收款方账户
+            merchantName:
+              type: string
+              description: 关联商户（监管审计视图）
+            reconcileStatus:
+              type: string
+              enum: [PENDING, RECONCILED, DIFF]
+    FundsAuditFlowPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/FundsAuditFlow'
+    ReconcileRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from:
+          type: string
+          format: date
+          example: '2026-01-01'
+        to:
+          type: string
+          format: date
+          example: '2026-01-31'
+    ReconcileResult:
+      type: object
+      required: [reconcileId, status]
+      properties:
+        reconcileId:
+          type: string
+          example: rec_c1d2e3f4a5b6
+        status:
+          type: string
+          enum: [RUNNING, DONE, DIFF]
+        diffCount:
+          type: integer
+          format: int64
+          description: 对账不一致笔数（>0 时报 3009 提示）
+          example: 0
+    AccountCloseRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: 注销原因（可选，留痕）
+          example: 不再使用
+
+x-external-interfaces:
+  description: 服务端间接口（外部回调/内部），前端勿调，不在上方 paths 中。
+  endpoints:
+    - method: POST
+      path: /acc/realname/callback
+      tags: [realname]
+      summary: 微信/支付宝实名回传回调（服务端验签）
+      description: |
+        第三方实名平台在用户授权后回调本接口。服务端验签 + 幂等 + 异步落库 + 状态机。
+        前端永远不调用此接口。
+      requestBody:
+        description: 第三方回调报文（字段名以通道文档为准）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bizId, openId, name, idNo, pass, sign]
+              properties:
+                bizId:
+                  type: string
+                  description: 平台业务号
+                openId:
+                  type: string
+                  description: 第三方 open_id
+                name:
+                  type: string
+                  description: 实名姓名（加密传输）
+                idNo:
+                  type: string
+                  description: 身份证号（加密传输）
+                pass:
+                  type: boolean
+                  description: 是否实名通过
+                sign:
+                  type: string
+                  description: 通道签名，服务端验签
+      responses:
+        '200':
+          description: 收到并受理（异步处理）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
