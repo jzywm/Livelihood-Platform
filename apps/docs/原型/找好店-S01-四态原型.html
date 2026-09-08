@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>民生甄选 · 找好店（/shops · S-01）四态高保真原型 v0.1</title>
+<!--
+  民生甄选 · 产品原型（单页高保真 · 四态演示）
+  页面：S-01 商户搜索 / 列表（/shops · M1 · A-02/T-03）· IA §3.2
+  状态覆盖：正常态 / 加载态 / 空状态 / 错误态（03-组件与交互规范 §4 四态 MUST）
+  视觉令牌：apps/docs/UI设计规范.md（主题方案 B）+ apps/docs/02-设计令牌.md 命名
+  演示方式：顶部「原型演示工具条」为本原型专用（交付产品时移除），其余即产品页面本身。
+  快速开始：直接用浏览器打开本文件；URL 可带 ?state=normal|loading|empty|error 指定初始状态。
+-->
+<style>
+  /* ============ 1. 设计令牌（Design Tokens，依据 apps/docs/UI设计规范.md §2） ============ */
+  :root{
+    /* 品牌 · 民生蓝 + 暖橙 */
+    --primary:#2E6BE6; --primary-hover:#2454C7; --primary-active:#1D42A0;
+    --primary-bg:#EEF3FE; --primary-border:#B9CFFB; --primary-soft:#DCE8FD;
+    --accent:#FF7A45; --accent-hover:#E8622F; --accent-active:#C04F23; --accent-bg:#FFF3EC;
+    /* 语义色 */
+    --success:#22A06B; --success-bg:#E8F7F0;
+    --warning:#F59E0B; --warning-bg:#FEF4E6;
+    --error:#E5484D;  --error-bg:#FDEBEC;
+    --info:#2E6BE6;   --info-bg:#EEF3FE;
+    /* 信用分语义（UI设计规范 §2.5） */
+    --credit-high:#22A06B; --credit-mid:#F59E0B; --credit-low:#E5484D;
+    /* 中性色 */
+    --white:#FFFFFF; --gray-50:#F7F8FA; --gray-100:#F0F2F5; --gray-200:#E4E7EC;
+    --gray-300:#CDD3DC; --gray-400:#A9B1BE; --gray-500:#7E8796; --gray-600:#5B6470;
+    --gray-700:#3F4753; --gray-900:#151A21;
+    /* 圆角 / 阴影 */
+    --radius-tag:6px; --radius-btn:8px; --radius-card:12px; --radius-dialog:16px;
+    --shadow-e1:0 1px 3px rgba(17,26,42,.06);
+    --shadow-e2:0 4px 12px rgba(17,26,42,.10);
+    --shadow-e3:0 8px 24px rgba(17,26,42,.14);
+    /* 字阶（UI设计规范 §3.2，base 14） */
+    --fs-caption:12px; --fs-small:13px; --fs-body:14px; --fs-h3:16px; --fs-h2:18px; --fs-h1:20px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif;
+    font-size:var(--fs-body); line-height:1.6; color:var(--gray-600);
+    background:var(--gray-50); -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit; cursor:pointer;}
+  button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--primary); outline-offset:2px;}
+  a{color:var(--primary); text-decoration:none;}
+  a:hover{color:var(--primary-hover); text-decoration:underline;}
+  .num{font-variant-numeric:tabular-nums;}
+  .sr-only{position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;}
+
+  /* ============ 2. 演示工具条（原型专用层，非产品） ============ */
+  .demo-bar{
+    position:sticky; top:0; z-index:50;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
+    padding:8px 24px; background:var(--primary-bg); border-bottom:1px solid var(--primary-border);
+    font-size:var(--fs-small); color:var(--gray-700);
+  }
+  .demo-bar .tag{
+    display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:var(--radius-tag);
+    background:var(--primary); color:#fff; font-size:var(--fs-caption); font-weight:600;
+  }
+  .demo-bar .title{font-weight:600; color:var(--gray-900);}
+  .demo-bar .muted{color:var(--gray-500);}
+  .seg{display:inline-flex; background:#fff; border:1px solid var(--gray-200); border-radius:var(--radius-btn); padding:2px; gap:2px;}
+  .seg button{
+    border:0; background:transparent; padding:5px 14px; border-radius:6px;
+    font-size:var(--fs-small); color:var(--gray-600); white-space:nowrap;
+  }
+  .seg button:hover{background:var(--gray-100);}
+  .seg button[aria-pressed="true"]{background:var(--primary); color:#fff; font-weight:600;}
+  .demo-btn{
+    display:inline-flex; align-items:center; gap:4px; padding:5px 12px; border-radius:var(--radius-btn);
+    border:1px solid var(--primary-border); background:#fff; font-size:var(--fs-small); color:var(--primary);
+  }
+  .demo-btn:hover{background:var(--primary-soft);}
+  .demo-btn.is-on{background:var(--primary); color:#fff; border-color:var(--primary);}
+
+  /* ============ 3. 页面总体布局 ============ */
+  .proto-wrap{display:flex; align-items:flex-start; gap:16px; padding:16px 24px 28px; max-width:1440px; margin:0 auto;}
+  .preview-col{flex:1 1 auto; min-width:0;}
+  .shell{background:#fff; border:1px solid var(--gray-200); border-radius:var(--radius-card); overflow:hidden; box-shadow:var(--shadow-e1);}
+  .preview-caption{margin-top:8px; font-size:var(--fs-caption); color:var(--gray-500); line-height:1.7;}
+  .preview-caption code{font-family:inherit; background:var(--gray-100); padding:0 4px; border-radius:4px;}
+
+  /* --- 顶部导航（产品） --- */
+  .topnav{height:56px; display:flex; align-items:center; gap:14px; padding:0 16px; border-bottom:1px solid var(--gray-200); background:#fff;}
+  .brand{display:flex; align-items:center; gap:8px; flex-shrink:0;}
+  .brand .logo-svg{width:26px; height:26px; border-radius:7px; background:var(--primary); display:flex; align-items:center; justify-content:center;}
+  .brand .name{font-size:18px; font-weight:700; color:var(--gray-900); letter-spacing:.5px;}
+  .brand .slogan{font-size:11px; color:var(--gray-400); line-height:1.1;}
+  .scene{
+    display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 10px; border-radius:14px;
+    background:var(--gray-50); border:1px solid var(--gray-200); font-size:var(--fs-small); color:var(--gray-700); white-space:nowrap;
+  }
+  .topsearch{flex:1 1 auto; max-width:420px; min-width:140px; position:relative;}
+  .topsearch input{
+    width:100%; height:36px; padding:0 12px 0 34px; border:1px solid var(--gray-200); border-radius:var(--radius-btn);
+    font-size:var(--fs-body); color:var(--gray-700); background:var(--gray-50);
+  }
+  .topsearch input::placeholder{color:var(--gray-400);}
+  .topsearch input:focus{border-color:var(--primary); background:#fff; box-shadow:0 0 0 3px var(--primary-soft); outline:none;}
+  .topsearch svg{position:absolute; left:10px; top:8px; color:var(--gray-400);}
+  .nav-actions{margin-left:auto; display:flex; align-items:center; gap:12px; font-size:var(--fs-small); color:var(--gray-600); white-space:nowrap;}
+  .btn-scan{
+    display:inline-flex; align-items:center; gap:5px; height:30px; padding:0 12px; border:0;
+    border-radius:var(--radius-btn); background:var(--accent); color:#fff; font-size:var(--fs-small); font-weight:600;
+  }
+  .btn-scan:hover{background:var(--accent-hover);}
+  .nav-actions .link{color:var(--gray-600); display:inline-flex; align-items:center; gap:4px;}
+  .nav-actions .link:hover{color:var(--primary); text-decoration:none;}
+  .bell{position:relative;}
+  .bell .dot{position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:var(--error); border:1.5px solid #fff;}
+  .avatar{width:28px; height:28px; border-radius:50%; background:var(--primary-bg); border:1px solid var(--primary-border); color:var(--primary); display:inline-flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;}
+
+  /* --- 侧边导航（白话分组） --- */
+  .side{width:168px; flex-shrink:0; border-right:1px solid var(--gray-200); padding:12px 8px; background:#fff;}
+  .side .navitem{
+    display:flex; align-items:center; gap:8px; padding:8px 12px; margin-bottom:2px; border-radius:var(--radius-btn);
+    font-size:var(--fs-body); color:var(--gray-600); cursor:pointer; border:0; background:transparent; width:100%; text-align:left;
+  }
+  .side .navitem:hover{background:var(--gray-50); color:var(--gray-900);}
+  .side .navitem.on{background:var(--primary-bg); color:var(--primary); font-weight:600; box-shadow:inset 3px 0 0 var(--primary);}
+  .side .navitem .ic{width:20px; text-align:center; font-size:15px; flex-shrink:0;}
+  .side .navitem small{font-size:11px; color:var(--gray-400); margin-left:auto; font-weight:400;}
+  .side .group-label{padding:8px 12px 4px; font-size:11px; color:var(--gray-400);}
+
+  /* --- 主内容区 --- */
+  .content{flex:1 1 auto; min-width:0; padding:16px 24px 24px; background:var(--gray-50);}
+  .page-head{display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;}
+  .page-head h1{font-size:var(--fs-h1); font-weight:600; color:var(--gray-900); line-height:1.3;}
+  .page-head .desc{margin-top:2px; font-size:var(--fs-small); color:var(--gray-500);}
+  .head-right{margin-left:auto; display:flex; align-items:center; gap:10px; font-size:var(--fs-small); color:var(--gray-500); white-space:nowrap;}
+  .icon-btn{
+    display:inline-flex; align-items:center; gap:4px; height:30px; padding:0 10px; border:1px solid var(--gray-200);
+    background:#fff; border-radius:var(--radius-btn); color:var(--gray-600); font-size:var(--fs-small);
+  }
+  .icon-btn:hover{color:var(--primary); border-color:var(--primary-border); background:var(--primary-bg);}
+  .filters{display:flex; align-items:center; gap:8px; margin-top:12px; flex-wrap:wrap;}
+  .filters .field{
+    display:inline-flex; align-items:center; gap:4px; height:32px; padding:0 12px; border:1px solid var(--gray-200);
+    background:#fff; border-radius:var(--radius-btn); font-size:var(--fs-small); color:var(--gray-700);
+  }
+  .filters .field:hover{border-color:var(--primary-border);}
+  .filters .hint{margin-left:auto; font-size:var(--fs-caption); color:var(--gray-400);}
+  .list-region{margin-top:12px;}
+  .view{display:none;}
+  .view.on{display:block;}
+  .chip-row{display:flex; justify-content:flex-end; margin-bottom:8px;}
+  .view-chip{
+    display:inline-flex; font-size:11px; padding:1px 10px; border-radius:999px; border:1px solid var(--gray-200);
+    background:#fff; color:var(--gray-500);
+  }
+  .view-chip.normal{border-color:var(--success); color:var(--success); background:var(--success-bg);}
+  .view-chip.loading{border-color:var(--info); color:var(--info); background:var(--info-bg);}
+  .view-chip.empty{border-color:var(--warning); color:var(--warning); background:var(--warning-bg);}
+  .view-chip.error{border-color:var(--error); color:var(--error); background:var(--error-bg);}
+
+  /* --- 正常态：商户卡片（信用排序 + 在售商品直览） --- */
+  .merchant-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px;}
+  .m-card{
+    background:#fff; border:1px solid var(--gray-200); border-radius:var(--radius-card);
+    padding:14px 16px; box-shadow:var(--shadow-e1); transition:box-shadow .18s ease-out, transform .18s ease-out;
+    cursor:pointer;
+  }
+  .m-card .m-name{cursor:pointer;}
+  .m-card:hover{box-shadow:var(--shadow-e2); transform:translateY(-1px);}
+  .m-head{display:flex; align-items:center; gap:10px;}
+  .m-ava{
+    width:42px; height:42px; border-radius:10px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:600; color:#fff;
+  }
+  .p-green{background:#2E9E6B;} .p-amber{background:#C98A1B;} .p-orange{background:#E07B2E;}
+  .p-blue{background:#3A6FC0;} .p-slate{background:#5B6470;}
+  .m-titles{min-width:0;}
+  .m-name{display:flex; align-items:center; gap:6px; font-size:15px; font-weight:600; color:var(--gray-900);}
+  .m-name .ok{
+    display:inline-flex; align-items:center; gap:2px; font-size:11px; font-weight:500; color:var(--info);
+    background:var(--info-bg); border-radius:4px; padding:0 5px; line-height:18px; white-space:nowrap;
+  }
+  .m-area{font-size:12px; color:var(--gray-400); margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .m-score{
+    margin-left:auto; flex-shrink:0; text-align:center; border-radius:var(--radius-tag); padding:2px 8px;
+    font-size:13px; font-weight:700; white-space:nowrap;
+  }
+  .m-score b{font-size:16px;}
+  .m-score.high{background:var(--success-bg); color:var(--credit-high);}
+  .m-score.mid{background:var(--warning-bg); color:#B45309;}
+  .m-meta{display:flex; align-items:center; gap:10px; margin-top:9px; font-size:12px; color:var(--gray-500); flex-wrap:wrap;}
+  .m-meta .cat{color:var(--gray-700); background:var(--gray-100); padding:0 7px; border-radius:4px; line-height:19px;}
+  .m-meta .row-sep{color:var(--gray-300);}
+  .m-goods{margin-top:10px; border-top:1px dashed var(--gray-200); padding-top:10px;}
+  .m-goods-label{font-size:11px; color:var(--gray-400); margin-bottom:7px;}
+  .good-row{display:flex; gap:8px;}
+  .good{
+    flex:1 1 0; min-width:0; display:flex; gap:8px; align-items:center;
+    border:1px solid var(--gray-100); border-radius:10px; padding:7px 9px; background:var(--gray-50); text-align:left;
+    transition:border-color .15s, background .15s;
+  }
+  .good:hover{border-color:var(--primary-border); background:#fff; box-shadow:var(--shadow-e1);}
+  .good .thumb{
+    width:40px; height:40px; border-radius:8px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    background:#fff; border:1px solid var(--gray-200); font-size:17px; font-weight:600; color:var(--gray-500);
+  }
+  .good .g-info{min-width:0;}
+  .good .g-name{font-size:13px; font-weight:500; color:var(--gray-900); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .good .g-price{font-size:13px; font-weight:600; color:#B45309; margin-top:1px;}
+  .good .g-price small{font-size:11px; font-weight:400; color:var(--gray-400);}
+  .good .g-tags{display:flex; gap:4px; margin-top:3px;}
+  .g-tag{font-size:10px; line-height:15px; padding:0 4px; border-radius:4px;}
+  .g-tag.trace{color:var(--success); background:var(--success-bg);}
+  .g-tag.test{color:var(--info); background:var(--info-bg);}
+  .m-foot{display:flex; align-items:center; margin-top:11px;}
+  .m-foot .enter{
+    display:inline-flex; align-items:center; gap:3px; border:0; background:transparent; padding:0;
+    font-size:13px; color:var(--primary); font-weight:500;
+  }
+  .m-foot .enter:hover{color:var(--primary-hover); text-decoration:underline;}
+  .m-foot .tip{margin-left:auto; font-size:11px; color:var(--gray-400);}
+
+  /* --- 加载态：骨架屏 --- */
+  .sk{position:relative; overflow:hidden; background:var(--gray-100); border-radius:6px;}
+  .sk::after{
+    content:""; position:absolute; inset:0; transform:translateX(-100%);
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.65),transparent);
+    animation:skShine 1.3s infinite;
+  }
+  @keyframes skShine{to{transform:translateX(100%);}}
+  .sk-card{
+    background:#fff; border:1px solid var(--gray-200); border-radius:var(--radius-card);
+    padding:14px 16px; margin-bottom:14px; box-shadow:var(--shadow-e1);
+  }
+  .sk-row{display:flex; align-items:center; gap:10px;}
+  .sk.ava{width:42px; height:42px; border-radius:10px;}
+  .sk.line{height:13px;}
+  .sk.bar-sm{height:20px; width:64px; border-radius:6px;}
+  .sk.goods{height:56px; border-radius:10px;}
+  .sk-chip{height:20px; width:60px; border-radius:6px;}
+  .load-note{display:flex; align-items:center; gap:6px; margin-top:10px; font-size:12px; color:var(--gray-400);}
+  .load-note .spin{
+    width:12px; height:12px; border-radius:50%; border:2px solid var(--primary-soft); border-top-color:var(--primary);
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* --- 空状态 & 错误态：插图 + 白话文案 + 引导 --- */
+  .state-panel{background:#fff; border:1px solid var(--gray-200); border-radius:var(--radius-card); box-shadow:var(--shadow-e1); padding:56px 24px 48px; text-align:center;}
+  .state-panel .illu{margin:0 auto 18px; width:132px; height:112px; color:var(--gray-300);}
+  .state-panel h2{font-size:var(--fs-h2); font-weight:600; color:var(--gray-900);}
+  .state-panel .sub{margin:8px auto 0; max-width:420px; font-size:var(--fs-body); color:var(--gray-500);}
+  .state-panel .actions{display:flex; justify-content:center; gap:10px; margin-top:22px; flex-wrap:wrap;}
+  .state-panel .err-detail{margin-top:16px; font-size:var(--fs-caption); color:var(--gray-400);}
+  .state-panel .extra-links{margin-top:14px; font-size:var(--fs-small); color:var(--gray-500);}
+  .btn{
+    display:inline-flex; align-items:center; gap:6px; height:38px; padding:0 18px; border-radius:var(--radius-btn);
+    border:1px solid transparent; font-size:var(--fs-body); font-weight:500; white-space:nowrap;
+  }
+  .btn-primary{background:var(--primary); color:#fff;}
+  .btn-primary:hover{background:var(--primary-hover);}
+  .btn-primary:active{background:var(--primary-active);}
+  .btn-ghost{background:#fff; border-color:var(--gray-200); color:var(--gray-700);}
+  .btn-ghost:hover{border-color:var(--primary-border); color:var(--primary); background:var(--primary-bg);}
+  .btn-accent{background:var(--accent); color:#fff;}
+  .btn-accent:hover{background:var(--accent-hover);}
+
+  /* 助手悬浮球（G-10：底部中心常驻，蓝底白问号） */
+  .assistant{
+    position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:40;
+    width:54px; height:54px; border-radius:50%; border:0; background:linear-gradient(135deg,var(--primary),var(--primary-hover));
+    color:#fff; font-size:24px; font-weight:700; box-shadow:var(--shadow-e2);
+  }
+  .assistant:hover{background:var(--primary-active);}
+  .assistant .hint{
+    position:absolute; right:64px; top:50%; transform:translateY(-50%);
+    background:#fff; border:1px solid var(--gray-200); border-radius:8px; box-shadow:var(--shadow-e1);
+    font-size:12px; color:var(--gray-600); padding:3px 10px; white-space:nowrap;
+    opacity:0; pointer-events:none; transition:opacity .15s;
+  }
+  .assistant:hover .hint{opacity:1;}
+
+  /* Toast */
+  .toasts{position:fixed; right:20px; bottom:20px; z-index:90; display:flex; flex-direction:column; gap:8px;}
+  .toast{
+    display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--gray-200);
+    border-left:3px solid var(--primary); border-radius:8px; box-shadow:var(--shadow-e2);
+    padding:9px 14px; font-size:var(--fs-small); color:var(--gray-700); max-width:360px;
+    animation:toastIn .2s ease-out;
+  }
+  .toast.success{border-left-color:var(--success);}
+  .toast.error{border-left-color:var(--error);}
+  .toast.info{border-left-color:var(--info);}
+  @keyframes toastIn{from{opacity:0; transform:translateY(6px);}to{opacity:1; transform:none;}}
+
+  /* ============ 4. 右侧四态说明面板 ============ */
+  .note-col{width:316px; flex-shrink:0; display:none;}
+  .note-col.show{display:block;}
+  .note-card{
+    position:sticky; top:70px; background:#fff; border:1px solid var(--gray-200);
+    border-radius:var(--radius-card); box-shadow:var(--shadow-e1); padding:16px 18px 18px;
+  }
+  .note-head{display:flex; align-items:center; gap:8px;}
+  .note-head .badge{font-size:13px; font-weight:600; padding:2px 10px; border-radius:999px;}
+  .note-head .badge.normal{background:var(--success-bg); color:var(--success);}
+  .note-head .badge.loading{background:var(--info-bg); color:var(--info);}
+  .note-head .badge.empty{background:var(--warning-bg); color:#B45309;}
+  .note-head .badge.error{background:var(--error-bg); color:var(--error);}
+  .note-head .k{font-size:var(--fs-caption); color:var(--gray-400);}
+  .note-sec{margin-top:13px;}
+  .note-sec h4{
+    font-size:12px; color:var(--gray-500); font-weight:600; margin-bottom:4px;
+    display:flex; align-items:center; gap:4px;
+  }
+  .note-sec h4::before{content:""; width:3px; height:11px; background:var(--primary); border-radius:2px;}
+  .note-sec p, .note-sec li{font-size:12px; color:var(--gray-600); line-height:1.75;}
+  .note-sec ul{padding-left:16px;}
+  .note-sec .ex-copy{background:var(--gray-50); border:1px dashed var(--gray-200); border-radius:6px; padding:6px 9px; font-size:12px; color:var(--gray-700);}
+  .note-sec .ref{font-size:11px; color:var(--gray-400);}
+  .note-tip{margin-top:13px; background:var(--accent-bg); border-radius:8px; padding:8px 10px; font-size:12px; color:#9A4D1B; line-height:1.7;}
+
+  @media (max-width:1180px){ .note-col{width:280px;} }
+  @media (prefers-reduced-motion:reduce){
+    .sk::after{animation:none;}
+    .sk,.sk::after{background:var(--gray-100);}
+    *{animation-duration:.01ms !important; transition-duration:.01ms !important;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════ 原型演示工具条（本原型专用，非产品；交付时移除） ════════════ -->
+<div class="demo-bar" role="region" aria-label="原型演示工具（非产品功能）">
+  <span class="tag">原型演示</span>
+  <span class="title">S-01 找好店 · 商户搜索/列表（<span class="num">/shops</span> · M1 · A-02/T-03）</span>
+  <span class="muted">四态切换：</span>
+  <div class="seg" role="group" aria-label="选择要演示的状态">
+    <button type="button" data-state="normal"  aria-pressed="true">正常态</button>
+    <button type="button" data-state="loading" aria-pressed="false">加载态</button>
+    <button type="button" data-state="empty"   aria-pressed="false">空状态</button>
+    <button type="button" data-state="error"   aria-pressed="false">错误态</button>
+  </div>
+  <button type="button" class="demo-btn" id="btnAuto" aria-pressed="false">▶ 自动演示</button>
+  <button type="button" class="demo-btn is-on" id="btnNote" aria-pressed="true">说明面板</button>
+  <span class="muted" style="margin-left:auto">正常态含「刷新↻」、错误态含「重试」可现场模拟 <b>加载→正常</b>；右上角悬浮球为 G-10 助手占位。</span>
+</div>
+
+<div class="proto-wrap">
+  <!-- ════════════ 左：产品页面预览（S-01） ════════════ -->
+  <div class="preview-col">
+    <div class="shell">
+      <!-- 顶部导航（全局，S-01 遵循） -->
+      <header class="topnav" aria-label="全局导航">
+        <div class="brand">
+          <span class="logo-svg" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M5.5 12.5l4.2 4.2L18.8 7.4" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span>
+            <span class="name">民生甄选</span><br>
+            <span class="slogan">从种子到餐桌 · 全程透明</span>
+          </span>
+        </div>
+        <span class="scene">消费场景 ▾<span style="font-size:11px;color:var(--gray-400)">（仅示意）</span></span>
+        <label class="topsearch">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M16.5 16.5L21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input type="search" placeholder="搜商户名 / 在售商品 / 溯源码" aria-label="全局搜索">
+        </label>
+        <div class="nav-actions">
+          <button type="button" class="btn-scan" onclick="toast('演示提示：扫码验真入口（S-06 /trace/:code · M1）','info')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M7 12h10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            扫码验真
+          </button>
+          <a class="link" href="javascript:void(0)" onclick="toast('演示提示：费率公示（G-04 /me/fee-disclosure · M1）','info')">费率公示</a>
+          <span class="bell link" onclick="toast('演示提示：消息中心（G-05 /me/notifications · M1）','info')">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-label="消息"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6.5-2 6.5h16S18 14 18 9z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 19a2.2 2.2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span class="dot" aria-hidden="true"></span>
+          </span>
+          <a class="link" href="javascript:void(0)" onclick="toast('演示提示：个人中心（G-06~G-09 · M1）','info')">
+            <span class="avatar" aria-hidden="true">我</span>
+          </a>
+        </div>
+      </header>
+
+      <div style="display:flex; align-items:stretch;">
+        <!-- 侧边导航（白话分组，消费/共享可见项） -->
+        <nav class="side" aria-label="侧边导航">
+          <button type="button" class="navitem on"><span class="ic" aria-hidden="true">⌕</span>找好店</button>
+          <button type="button" class="navitem" onclick="toast('演示提示：查真伪（S-06 · M1）','info')"><span class="ic" aria-hidden="true">✓</span>查真伪</button>
+          <button type="button" class="navitem" onclick="toast('演示提示：投诉（S-09~S-11 · M1）','info')"><span class="ic" aria-hidden="true">✉</span>投诉</button>
+          <button type="button" class="navitem" onclick="toast('演示提示：热线（S-12/S-13 · M1）','info')"><span class="ic" aria-hidden="true">☏</span>热线</button>
+          <button type="button" class="navitem" onclick="toast('演示提示：放心进货为 M2 页（占位）','info')"><span class="ic" aria-hidden="true">🛒</span>放心进货<small>M2</small></button>
+          <button type="button" class="navitem" onclick="toast('演示提示：我的工资流水（S-25 · M1）','info')"><span class="ic" aria-hidden="true">¥</span>我的</button>
+        </nav>
+
+        <!-- 主内容区：找好店商户列表 -->
+        <main class="content" aria-label="找好店列表">
+          <div class="page-head">
+            <div>
+              <h1>找好店</h1>
+              <div class="desc">信用分排序 · 放心挑商户，顺手买好物（列表含在售商品直览，非仅证照）</div>
+            </div>
+            <div class="head-right">
+              <span id="resultMeta" class="num">共 <b id="totalCnt" style="color:var(--gray-900)">5</b> 家商户 · 已按信用分排序</span>
+              <button type="button" class="icon-btn" id="btnRefresh" title="重新请求列表（演示：加载→正常）">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 3v4h-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                刷新
+              </button>
+            </div>
+          </div>
+
+          <div class="filters" aria-label="筛选与排序">
+            <button type="button" class="field" onclick="toast('演示提示：品类筛选（全部品类 · 含农资农技/粮油副食/生鲜果蔬…）','info')">全部品类 ▾</button>
+            <button type="button" class="field" onclick="toast('演示提示：位置筛选（附近 3km / 全市）','info')">附近 3km ▾</button>
+            <button type="button" class="field" onclick="toast('演示提示：排序切换（信用优先 / 距离优先 / 好评优先）','info')">信用优先 ▾</button>
+            <button type="button" class="field" onclick="toast('演示提示：筛选出 0 结果时会进入空状态（见演示工具条）','info')">只看可溯源</button>
+            <span class="hint">筛选项为示意；真实筛选产生 0 结果 → 自动进入「空状态」</span>
+          </div>
+
+          <!-- 四态视区：同一数据区域按状态切换 -->
+          <div class="list-region" id="listRegion" role="region" aria-label="商户列表数据区">
+            <div class="chip-row"><span class="view-chip normal" id="viewChip">正常态 · 数据就绪</span></div>
+
+            <!-- ▍正常态 -->
+            <section class="view on" id="view-normal" aria-label="正常态：商户列表数据正常展示">
+              <div class="merchant-grid" id="merchantGrid"><!-- JS 渲染 --></div>
+            </section>
+
+            <!-- ▍加载态（骨架屏优先于转圈，不闪白屏） -->
+            <section class="view" id="view-loading" aria-label="加载态：数据请求中（骨架屏）" aria-busy="true" hidden>
+              <div class="sk-card"><div class="sk-row">
+                <span class="sk ava"></span>
+                <span style="flex:1"><span class="sk line" style="display:block;width:46%"></span><span class="sk line" style="display:block;width:30%;margin-top:7px"></span></span>
+                <span class="sk bar-sm"></span>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:13px"><span class="sk-chip"></span><span class="sk-chip" style="width:48px"></span></div>
+              <div style="display:flex;gap:8px;margin-top:11px"><span class="sk goods" style="flex:1"></span><span class="sk goods" style="flex:1"></span></div>
+              </div>
+              <div class="sk-card"><div class="sk-row">
+                <span class="sk ava"></span>
+                <span style="flex:1"><span class="sk line" style="display:block;width:40%"></span><span class="sk line" style="display:block;width:52%;margin-top:7px"></span></span>
+                <span class="sk bar-sm"></span>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:13px"><span class="sk-chip"></span><span class="sk-chip" style="width:48px"></span></div>
+              <div style="display:flex;gap:8px;margin-top:11px"><span class="sk goods" style="flex:1"></span><span class="sk goods" style="flex:1"></span></div>
+              </div>
+              <div class="sk-card"><div class="sk-row">
+                <span class="sk ava"></span>
+                <span style="flex:1"><span class="sk line" style="display:block;width:56%"></span><span class="sk line" style="display:block;width:34%;margin-top:7px"></span></span>
+                <span class="sk bar-sm"></span>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:13px"><span class="sk-chip"></span><span class="sk-chip" style="width:48px"></span></div>
+              <div style="display:flex;gap:8px;margin-top:11px"><span class="sk goods" style="flex:1"></span><span class="sk goods" style="flex:1"></span></div>
+              </div>
+              <div class="load-note"><span class="spin" aria-hidden="true"></span>正在获取商户列表…（若超过 10s 将转入错误态）</div>
+            </section>
+
+            <!-- ▍空状态（请求成功但无数据：为什么空 + 引导动作） -->
+            <section class="view" id="view-empty" aria-label="空状态：暂无匹配商户" hidden>
+              <div class="state-panel">
+                <div class="illu" aria-hidden="true">
+                  <svg viewBox="0 0 132 112" fill="none">
+                    <circle cx="66" cy="52" r="44" stroke="#E4E7EC" stroke-width="1.5"/>
+                    <circle cx="66" cy="52" r="44" stroke="#EEF3FE" stroke-width="17" opacity=".7"/>
+                    <circle cx="56" cy="46" r="13" stroke="#A9B1BE" stroke-width="2.6"/>
+                    <path d="M66 54.5L75.5 64" stroke="#A9B1BE" stroke-width="2.6" stroke-linecap="round"/>
+                    <path d="M50 46.5l3.6 3.6M56 40.4V41M62.6 44.4l3 3" stroke="#B9CFFB" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M96 92l6.5 6.5" stroke="#FF7A45" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M92.5 97a5.5 5.5 0 1 1 7.8-7.8" stroke="#FF7A45" stroke-width="3" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <h2>这里还没有找到商户</h2>
+                <p class="sub">这个品类 / 位置暂时没有商户入驻，换个条件看看；也可以让「问一问」帮你在附近找一家。</p>
+                <div class="actions">
+                  <button type="button" class="btn btn-primary" id="btnClearFilter">清除筛选条件</button>
+                  <button type="button" class="btn btn-ghost" onclick="toast('演示提示：此处唤起底部「问一问」悬浮球（小助手 J-01~J-15 · M1）','info')">💬 让「问一问」帮我找</button>
+                </div>
+                <div class="extra-links">看看 <a href="javascript:void(0)" onclick="toast('演示提示：信用红黑榜（S-04 /rankings · M1）','info')">信用红黑榜</a> · 或稍后再来逛逛</div>
+                <div class="err-detail num">已返回 0 条结果 · 本次条件：全部品类 × 附近 3km × 只看可溯源</div>
+              </div>
+            </section>
+
+            <!-- ▍错误态（请求失败：原因 + 怎么办 + 重试） -->
+            <section class="view" id="view-error" aria-label="错误态：列表加载失败" hidden>
+              <div class="state-panel">
+                <div class="illu" aria-hidden="true">
+                  <svg viewBox="0 0 132 112" fill="none">
+                    <circle cx="66" cy="52" r="44" stroke="#E4E7EC" stroke-width="1.5"/>
+                    <circle cx="66" cy="52" r="44" stroke="#FDEBEC" stroke-width="17" opacity=".8"/>
+                    <path d="M28 50a11 11 0 0 1 2-21.7A15 15 0 0 1 58 30a10 10 0 0 1-1 20H28z" transform="translate(10 8) scale(1.25)" fill="#fff" stroke="#E5484D" stroke-width="2.4" stroke-linejoin="round"/>
+                    <path d="M74 34L58 66" stroke="#E5484D" stroke-width="2.6" stroke-linecap="round"/>
+                    <path d="M104 92l6.5 6.5M92.5 97a5.5 5.5 0 1 1 7.8-7.8" stroke="#FF7A45" stroke-width="3" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <h2>商户列表加载失败了</h2>
+                <p class="sub">网络开小差了，请检查网络连接后重试。如果一直不行，点右下角「问一问」反馈，我们会尽快处理。</p>
+                <div class="actions">
+                  <button type="button" class="btn btn-primary" id="btnRetry">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 3v4h-4" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    重试
+                  </button>
+                  <button type="button" class="btn btn-ghost" onclick="toast('演示提示：反馈渠道（工单 D-02 / 助手 J-01）','info')">反馈问题</button>
+                </div>
+                <details class="err-detail" style="text-align:left;max-width:420px;margin:18px auto 0;cursor:pointer;">
+                  <summary style="color:var(--gray-400)">错误详情（面向开发，用户默认折叠）</summary>
+                  <pre style="margin-top:8px;background:var(--gray-50);border:1px solid var(--gray-100);border-radius:6px;padding:8px 10px;font-size:11px;line-height:1.7;color:var(--gray-500);overflow:auto;">{
+  "errorCode": "NETWORK_ERROR",      // 前端统一错误码映射（见 05-前端工程 §错误码）
+  "message": "网关连接超时",
+  "autoRetried": 3,
+  "elapsedMs": 8200,
+  "hint": "网络错误与 5xx 服务错误需区分文案与动作"
+}</pre>
+                </details>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <p class="preview-caption">
+      五词自检：<b>方便</b>（信用 / 位置一键筛选 + 商品直览）· <b>安全</b>（信用分脱敏排序，杜绝“竞价上榜”）— 依据 IA §3.2 S-01、线框 S-01（apps/docs/线框图/02-共享能力域-M1.md）。
+      本预览为高保真示意：Logo 以品牌视觉稿为准；图标为演示用线稿，最终统一走 packages/ui 图标集。高保真原型 v0.1 · 2026-09-08 · 🟡 待评审。
+    </p>
+  </div>
+
+  <!-- ════════════ 右：四态说明面板 ════════════ -->
+  <aside class="note-col show" id="noteCol" aria-label="当前状态说明">
+    <div class="note-card" id="noteCard"><!-- JS 渲染 --></div>
+  </aside>
+</div>
+
+<!-- 助手悬浮球占位（G-10，底部中心常驻） -->
+<button type="button" class="assistant" onclick="toast('演示提示：民生小助手「问一问」（J-01~J-15，含 J-14 语音 · M1）','info')" aria-label="问一问（民生小助手，演示占位）">？<span class="hint">问一问 · 民生小助手（演示占位）</span></button>
+
+<div class="toasts" aria-live="polite" id="toasts"></div>
+<p class="sr-only" role="status" id="announce"></p>
+
+<script>
+/* ============ 演示数据（仅原型用；真实数据来自 GET /shops 列表接口） ============ */
+const MERCHANTS = [
+  {name:"丰登农资店 · 裕华店", short:"丰", pastel:"p-green", score:92, band:"high", dist:"500m",  area:"裕华区 · 槐安东路 88 号", cat:"农资农技", rating:"4.9", orders:"1,280",
+   goods:[
+     {n:"小麦良种 · 济麦22", char:"种", price:"¥128", unit:"/袋", trace:true, test:true},
+     {n:"高氮复合肥 25kg",   char:"肥", price:"¥89",  unit:"/袋", trace:true, test:false}]},
+  {name:"老李粮油铺",        short:"粮", pastel:"p-amber", score:88, band:"high", dist:"850m",  area:"长安区 · 中山东路 156 号", cat:"粮油副食", rating:"4.8", orders:"986",
+   goods:[
+     {n:"五常稻花香 · 新米", char:"米", price:"¥59",  unit:"/10斤", trace:true, test:true},
+     {n:"压榨一级花生油",     char:"油", price:"¥98",  unit:"/5L",   trace:true, test:true}]},
+  {name:"果篮子生鲜 · 旗舰店", short:"果", pastel:"p-orange", score:84, band:"mid", dist:"1.2km", area:"裕华区 · 谈固南大街 320 号", cat:"生鲜果蔬", rating:"4.6", orders:"1,543",
+   goods:[
+     {n:"有机番茄 · 当季",   char:"茄", price:"¥6.8", unit:"/斤", trace:true, test:true},
+     {n:"沙瓤西瓜",           char:"瓜", price:"¥2.5", unit:"/斤", trace:true, test:false}]},
+  {name:"惠民便利超市",      short:"惠", pastel:"p-blue", score:79, band:"mid", dist:"1.5km", area:"长安区 · 育才街 47 号", cat:"日用百货", rating:"4.5", orders:"2,310",
+   goods:[
+     {n:"本地牧场纯牛奶",     char:"奶", price:"¥3.5", unit:"/盒", trace:true, test:true},
+     {n:"桶装饮用水 18.9L",   char:"水", price:"¥8",   unit:"/桶", trace:true, test:false}]},
+  {name:"大通五金机电",      short:"五", pastel:"p-slate", score:71, band:"mid", dist:"2.0km", area:"桥西区 · 中华南大街 92 号", cat:"五金建材", rating:"4.3", orders:"674",
+   goods:[
+     {n:"国标电线 2.5mm²",   char:"线", price:"¥128", unit:"/卷", trace:false, test:true},
+     {n:"LED 球泡 9W",       char:"泡", price:"¥9.9", unit:"/个", trace:false, test:true}]},
+];
+const CAT_ILLU = {种:"🌾", 肥:"🧪", 米:"🍚", 油:"🫙", 茄:"🍅", 瓜:"🍉", 奶:"🥛", 水:"💧", 线:"🔌", 泡:"💡"};
+
+function goodChip(g){
+  const tags = [];
+  if (g.trace) tags.push('<span class="g-tag trace">溯源✓</span>');
+  if (g.test)  tags.push('<span class="g-tag test">检测✓</span>');
+  return `<div class="good" tabindex="0" role="link"
+            onclick="toast('演示提示：商品透明详情页（S-18 /market/products/:id · M2 设计先行）','info')"
+            onkeydown="if(event.key==='Enter'){toast('演示提示：商品透明详情页（S-18 · M2 设计先行）','info')}">
+    <span class="thumb" aria-hidden="true">${CAT_ILLU[g.char] || g.char}</span>
+    <span class="g-info">
+      <span class="g-name">${g.n}</span>
+      <span class="g-price num">${g.price}<small>${g.unit}</small></span>
+      <span class="g-tags">${tags.join("")}</span>
+    </span>
+  </div>`;
+}
+function merchantCard(m){
+  const scoreCls = m.band === "high" ? "high" : (m.band === "low" ? "low" : "mid");
+  const goods = m.goods.map(goodChip).join("");
+  return `<article class="m-card" onclick="toast('演示提示：跳转一店一档档案公开页（S-02 /shops/:id · M1，⭐白名单可跳）','info')">
+    <div class="m-head">
+      <span class="m-ava ${m.pastel}" aria-hidden="true">${m.short}</span>
+      <span class="m-titles">
+        <span class="m-name">${m.name}<span class="ok">✓ 已核验</span></span>
+        <span class="m-area">${m.area}</span>
+      </span>
+      <span class="m-score ${scoreCls}" title="信用分 ${m.score}（${m.band === "high" ? "≥85 高分绿" : "60~84 中分橙"}，见 UI设计规范 §2.5）"><b class="num">${m.score}</b>分</span>
+    </div>
+    <div class="m-meta">
+      <span class="cat">${m.cat}</span>
+      <span class="num">距离 ${m.dist}</span>
+      <span class="row-sep">·</span><span>评分 <b class="num" style="color:var(--gray-700)">${m.rating}</b></span>
+      <span class="row-sep">·</span><span class="num">服务 ${m.orders} 单</span>
+    </div>
+    <div class="m-goods">
+      <div class="m-goods-label">在售商品（品名 · 价格 · 溯源/检测直览）</div>
+      <div class="good-row">${goods}</div>
+    </div>
+    <div class="m-foot">
+      <button type="button" class="enter" onclick="event.stopPropagation();toast('演示提示：一店一档（S-02 /shops/:id · M1）','info')">进店看一店一档 ↗</button>
+      <span class="tip">信用分由平台信用档案计算（脱敏公示）</span>
+    </div>
+  </article>`;
+}
+function renderNormal(){
+  document.getElementById("merchantGrid").innerHTML = MERCHANTS.map(merchantCard).join("");
+  document.getElementById("totalCnt").textContent = MERCHANTS.length;
+}
+
+/* ============ 四态说明内容（与《四态设计说明.md》一致的精简版） ============ */
+const NOTES = {
+  normal: {
+    badge:["normal","正常态"],
+    title:"数据正常展示 —— 商户列表就绪",
+    body:`
+      <div class="note-sec"><h4>说明</h4><p>列表接口返回成功，页面呈现完整业务内容：商户卡片按信用分排序，每卡直览在售商品（品名 / 价格 / 溯源 / 检测），非仅证照。</p></div>
+      <div class="note-sec"><h4>典型触发</h4><ul><li>首次进入 /shops 加载成功</li><li>切换品类、位置、排序后返回数据</li><li>错误态「重试」成功、空态「清除筛选」后</li></ul></div>
+      <div class="note-sec"><h4>本页示例</h4><p class="ex-copy">上方列表：丰登农资店（92 分 · 绿）… 大通五金机电（71 分 · 橙）；信用分语义色 ≥85 绿 / 60~84 橙（UI设计规范 §2.5）。</p></div>
+      <div class="note-sec"><h4>规范依据</h4><p class="ref">IA §3.2 S-01（/shops · A-02/T-03 · M1 · 全员）；线框 S-01「商户 + 在售商品，按信用分排序」；03 §3 状态徽章；UI设计规范 §2.5 / §4.2。</p></div>`,
+    tips:"每页只保留一个主操作；本列表卡片主行动为「进店看一店一档」（文本按钮），避免一页多个 primary。"
+  },
+  loading: {
+    badge:["loading","加载态"],
+    title:"数据请求中 —— 骨架屏优先，不闪白屏",
+    body:`
+      <div class="note-sec"><h4>说明</h4><p>请求进行中用<b>骨架屏</b>占位（结构与最终列表一致：头像 / 文本行 / 商品卡），优先于转圈 Spin；切态不闪白屏。</p></div>
+      <div class="note-sec"><h4>典型触发</h4><ul><li>首次进入、筛选 / 搜索 / 排序 / 刷新</li><li>错误态点击「重试」后（本演示：1.2s 自动进入正常态）</li></ul></div>
+      <div class="note-sec"><h4>本页示例</h4><p class="ex-copy">上方骨架屏：3 张商户卡占位（头像圆角 10px、行 13px、商品卡 56px）；动效 shimmer 1.3s、尊重系统「减弱动态效果」。</p></div>
+      <div class="note-sec"><h4>规范依据</h4><p class="ref">03 §4-1 加载中（骨架屏优先）；02-设计令牌 §6 动效（150~250ms、克制）；05-前端工程：请求超时 10s 转错误态、按钮 loading 防重复提交。</p></div>`,
+    tips:"演示停留观察：点击「刷新」（正常态右上角）或错误态「重试」，可看到 加载 → 正常 的完整过渡。"
+  },
+  empty: {
+    badge:["empty","空状态"],
+    title:"请求成功但没有数据 —— 为什么空 + 引导动作",
+    body:`
+      <div class="note-sec"><h4>说明</h4><p>接口 200 但结果为空。文案必须说清「为什么空」并给<b>引导动作</b>（03 §4-2），禁止只转圈或空白。</p></div>
+      <div class="note-sec"><h4>典型触发</h4><ul><li>筛选条件过窄、无搜索结果</li><li>该位置 / 品类暂未覆盖商户入驻</li><li>定位范围外（建议提示放宽位置）</li></ul></div>
+      <div class="note-sec"><h4>本页示例</h4><p class="ex-copy">「这里还没有找到商户 · 换个条件看看，或让问一问帮你在附近找」；主操作「清除筛选条件」，次操作唤起小助手；空态插画 = 线性插画 + 暖灰（UI设计规范 §5）。</p></div>
+      <div class="note-sec"><h4>规范依据</h4><p class="ref">线框 S-01 空态引导「暂无商户」；03 §4-2；UI设计规范 §5 空态 / §1.3 语气（白话、不说教）。</p></div>`,
+    tips:"空态不是错误：不弹错误提示、不上报“失败”；引导动作按「自助清除 / 智能代找 / 关联内容」三级组织。"
+  },
+  error: {
+    badge:["error","错误态"],
+    title:"请求失败 —— 原因 + 怎么办 + 重试",
+    body:`
+      <div class="note-sec"><h4>说明</h4><p>请求失败时展示「原因 + 怎么办 + 重试」；<b>网络错误与 5xx 服务错误文案区分</b>；权限类问题走「无权限态」不混入此处（03 §4-4）。</p></div>
+      <div class="note-sec"><h4>典型触发</h4><ul><li>断网 / 弱网（ERR_NETWORK，自动重试 3 次仍失败）</li><li>网关超时（>10s）或服务 5xx / 限流</li></ul></div>
+      <div class="note-sec"><h4>本页示例</h4><p class="ex-copy">「商户列表加载失败了 · 网络开小差了，请检查网络连接后重试」；主操作「重试」（演示：自动走 加载 → 正常），错误详情默认折叠供开发排查。</p></div>
+      <div class="note-sec"><h4>规范依据</h4><p class="ref">03 §4-3；01 §4.3 文案规则（原因 + 怎么办，不只报错误码）；05-前端工程：统一错误码映射 / 超时重试 / 整区替换不留半屏旧数据。</p></div>`,
+    tips:"点击「重试」可现场体验：loading 骨架屏 → 正常态数据恢复；失败处理应对用户可预期、可重入。"
+  }
+};
+
+/* ============ 状态切换与交互 ============ */
+const VIEWS = ["normal","loading","empty","error"];
+const timers = [];
+function later(fn, ms){ const t = setTimeout(fn, ms); timers.push(t); return t; }
+function clearTimers(){ timers.forEach(clearTimeout); timers.length = 0; }
+
+function show(state, opts = {}){
+  clearTimers();
+  // 1) 视图显隐
+  VIEWS.forEach(v => {
+    const el = document.getElementById("view-" + v);
+    el.classList.toggle("on", v === state);
+    if (el.hasAttribute("hidden") !== (v !== state)) { if (v !== state) el.setAttribute("hidden",""); else el.removeAttribute("hidden"); }
+  });
+  // 2) 分段按钮 aria
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.state === state)));
+  // 3) 右上角状态角标
+  const chip = document.getElementById("viewChip");
+  const chipMap = { normal:["normal","正常态 · 数据就绪"], loading:["loading","加载态 · 骨架屏"], empty:["empty","空状态 · 无数据"], error:["error","错误态 · 加载失败"] };
+  chip.className = "view-chip " + chipMap[state][0];
+  chip.textContent = chipMap[state][1];
+  // 4) 说明面板
+  renderNote(state);
+  // 5) 播报（辅助技术）
+  const ann = { normal:"已显示正常态：商户列表正常展示", loading:"已显示加载态：骨架屏加载中", empty:"已显示空状态：暂无匹配商户", error:"已显示错误态：列表加载失败" };
+  document.getElementById("announce").textContent = ann[state];
+  stopAuto();
+  if (opts.announce) toast(opts.announce, opts.type || "info");
+}
+
+function renderNote(state){
+  const n = NOTES[state];
+  const card = document.getElementById("noteCard");
+  card.innerHTML = `
+    <div class="note-head">
+      <span class="badge ${n.badge[0]}">${n.badge[1]}</span>
+      <span class="k">当前状态 · 说明</span>
+    </div>
+    <div class="note-sec"><h4>一句话</h4><p style="font-weight:600;color:var(--gray-900)">${n.title}</p></div>
+    ${n.body}
+    <div class="note-tip">💡 ${n.tips}</div>`;
+}
+
+/* Toast */
+function toast(msg, type = "info"){
+  const box = document.getElementById("toasts");
+  const el = document.createElement("div");
+  el.className = "toast " + type;
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity .25s"; }, 2400);
+  setTimeout(() => el.remove(), 2800);
+}
+
+/* 演示行为 */
+function simulateReload(message){
+  /* 刷新 / 重试 / 清除筛选共用：加载 → 正常 */
+  show("loading");
+  later(() => { show("normal"); toast(message || "加载成功 · 商户列表已更新", "success"); }, 1200);
+}
+
+function init(){
+  renderNormal();
+  document.querySelectorAll(".seg button").forEach(b => {
+    b.addEventListener("click", () => {
+      const s = b.dataset.state;
+      if (s === "loading") { show("loading"); toast("演示：骨架屏停留中；可点击「刷新 / 重试」观察过渡", "info"); }
+      else if (s === "error") { show("error"); }
+      else if (s === "empty") { show("empty"); }
+      else { show("normal"); }
+    });
+  });
+  document.getElementById("btnRefresh").addEventListener("click", () => simulateReload("已刷新 · 商户列表加载成功"));
+  document.getElementById("btnRetry").addEventListener("click", () => simulateReload("已恢复 · 商户列表加载成功"));
+  document.getElementById("btnClearFilter").addEventListener("click", () => simulateReload("已清除筛选 · 找到 5 家商户"));
+  document.getElementById("btnAuto").addEventListener("click", toggleAuto);
+  document.getElementById("btnNote").addEventListener("click", () => {
+    const col = document.getElementById("noteCol");
+    const on = col.classList.toggle("show");
+    document.getElementById("btnNote").classList.toggle("is-on", on);
+    document.getElementById("btnNote").setAttribute("aria-pressed", String(on));
+  });
+  // URL 参数 ?state=… 指定初始状态（便于截图与评审）；缺省展示正常态
+  const want = new URLSearchParams(location.search).get("state");
+  show(VIEWS.includes(want) ? want : "normal");
+}
+
+/* 自动演示：正常 → 加载 → 正常 → 空 → 错误 → 正常 … */
+let autoOn = false;
+function toggleAuto(){
+  autoOn = !autoOn;
+  const b = document.getElementById("btnAuto");
+  b.classList.toggle("is-on", autoOn);
+  b.setAttribute("aria-pressed", String(autoOn));
+  b.textContent = autoOn ? "■ 停止演示" : "▶ 自动演示";
+  if (autoOn) autoStep(0);
+}
+function autoStep(i){
+  if (!autoOn) return;
+  const seq = [
+    ["normal", 2400], ["loading", 1600], ["normal", 2200],
+    ["empty", 3000], ["error", 3400], ["normal", 2400]
+  ];
+  const [st, ms] = seq[i % seq.length];
+  show(st);
+  later(() => autoStep(i + 1), ms);
+}
+function stopAuto(){
+  if (autoOn){
+    autoOn = false;
+    const b = document.getElementById("btnAuto");
+    b.classList.remove("is-on"); b.setAttribute("aria-pressed","false"); b.textContent = "▶ 自动演示";
+  }
+}
+
+init();
+</script>
+</body>
+</html>
