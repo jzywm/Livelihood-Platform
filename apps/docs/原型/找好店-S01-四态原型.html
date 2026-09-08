@@ -267,20 +267,53 @@
   .btn-accent{background:var(--accent); color:#fff;}
   .btn-accent:hover{background:var(--accent-hover);}
 
-  /* 助手悬浮球（G-10：底部中心常驻，蓝底白问号） */
-  .assistant{
-    position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:40;
-    width:54px; height:54px; border-radius:50%; border:0; background:linear-gradient(135deg,var(--primary),var(--primary-hover));
-    color:#fff; font-size:24px; font-weight:700; box-shadow:var(--shadow-e2);
+  /* 助手入口（G-10 · 方案 A）：PC 桌面端 = 右侧常驻侧边按钮 + 右侧抽屉；移动端保留底部悬浮球 */
+  .assist-dock{
+    position:fixed; right:0; top:50%; transform:translateY(-50%); z-index:60;
+    display:flex; flex-direction:column; align-items:center; gap:7px;
+    width:40px; padding:13px 0; border:0; border-radius:12px 0 0 12px;
+    background:linear-gradient(180deg,var(--primary),var(--primary-hover));
+    color:#fff; box-shadow:var(--shadow-e2); cursor:pointer;
+    transition:width .15s ease-out, background .15s;
   }
-  .assistant:hover{background:var(--primary-active);}
-  .assistant .hint{
-    position:absolute; right:64px; top:50%; transform:translateY(-50%);
-    background:#fff; border:1px solid var(--gray-200); border-radius:8px; box-shadow:var(--shadow-e1);
-    font-size:12px; color:var(--gray-600); padding:3px 10px; white-space:nowrap;
-    opacity:0; pointer-events:none; transition:opacity .15s;
+  .assist-dock:hover{background:var(--primary-active); width:46px;}
+  .assist-dock .dock-icon{font-size:19px; font-weight:700; line-height:1;}
+  .assist-dock .dock-text{writing-mode:vertical-rl; letter-spacing:3px; font-size:13px; font-weight:600;}
+  .assist-dock .dock-dot{width:7px; height:7px; border-radius:50%; background:var(--accent); animation:dotPulse 2s infinite;}
+  @keyframes dotPulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  .assist-drawer{
+    position:fixed; top:0; right:0; bottom:0; z-index:70; width:380px; max-width:92vw;
+    background:#fff; box-shadow:var(--shadow-e3); transform:translateX(103%); transition:transform .22s ease-out;
+    display:flex; flex-direction:column; border-left:1px solid var(--gray-200);
   }
-  .assistant:hover .hint{opacity:1;}
+  .assist-drawer.open{transform:translateX(0);}
+  .assist-head{display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--gray-200);}
+  .assist-head .a-logo{width:34px; height:34px; border-radius:9px; background:var(--primary); color:#fff; display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700;}
+  .assist-head .a-title{font-size:15px; font-weight:600; color:var(--gray-900);}
+  .assist-head .a-sub{font-size:11px; color:var(--gray-400); line-height:1.3;}
+  .assist-close{margin-left:auto; border:0; background:var(--gray-50); width:28px; height:28px; border-radius:7px; color:var(--gray-600); font-size:14px;}
+  .assist-close:hover{background:var(--gray-100); color:var(--gray-900);}
+  .assist-body{flex:1; overflow:auto; padding:14px 16px; background:var(--gray-50);}
+  .a-bubble{max-width:84%; margin-bottom:10px; padding:9px 12px; border-radius:12px; font-size:13px; line-height:1.7;}
+  .a-bubble.assist{background:#fff; border:1px solid var(--gray-200); color:var(--gray-700); border-top-left-radius:4px;}
+  .a-bubble.user{margin-left:auto; background:var(--primary); color:#fff; border-top-right-radius:4px;}
+  .a-quick{display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px;}
+  .a-chip{display:inline-flex; align-items:center; gap:4px; height:30px; padding:0 11px; border-radius:999px; border:1px solid var(--primary-border); background:#fff; color:var(--primary); font-size:12px;}
+  .a-chip:hover{background:var(--primary-bg);}
+  .assist-foot{border-top:1px solid var(--gray-200); padding:10px 12px; background:#fff;}
+  .assist-input{display:flex; align-items:center; gap:8px;}
+  .assist-input input{flex:1; min-width:0; height:38px; padding:0 12px; border:1px solid var(--gray-200); border-radius:9px; font-size:13px; color:var(--gray-700);}
+  .assist-input input:focus{border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-soft); outline:none;}
+  .assist-input input::placeholder{color:var(--gray-400);}
+  .a-btn{height:38px; padding:0 12px; border:0; border-radius:9px; font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:4px; flex-shrink:0;}
+  .a-btn.mic{background:var(--accent); color:#fff;}
+  .a-btn.mic:hover{background:var(--accent-hover);}
+  .a-btn.mic.rec{background:var(--error); animation:recPulse 1.1s infinite;}
+  @keyframes recPulse{0%,100%{box-shadow:0 0 0 0 rgba(229,72,77,.45);}50%{box-shadow:0 0 0 8px rgba(229,72,77,0);}}
+  .a-btn.send{background:var(--primary); color:#fff;}
+  .a-btn.send:hover{background:var(--primary-hover);}
+  .assist-disc{font-size:11px; color:var(--gray-400); text-align:center; padding:6px 8px 2px;}
+  @media (max-width:768px){ .assist-dock,.assist-drawer{display:none;} }
 
   /* Toast */
   .toasts{position:fixed; right:20px; bottom:20px; z-index:90; display:flex; flex-direction:column; gap:8px;}
@@ -344,7 +377,7 @@
   </div>
   <button type="button" class="demo-btn" id="btnAuto" aria-pressed="false">▶ 自动演示</button>
   <button type="button" class="demo-btn is-on" id="btnNote" aria-pressed="true">说明面板</button>
-  <span class="muted" style="margin-left:auto">正常态含「刷新↻」、错误态含「重试」可现场模拟 <b>加载→正常</b>；右上角悬浮球为 G-10 助手占位。</span>
+  <span class="muted" style="margin-left:auto">正常态含「刷新↻」、错误态含「重试」可现场模拟 <b>加载→正常</b>；右侧「问一问」侧边按钮为 G-10 助手入口（方案 A：桌面端侧边按钮 + 右侧抽屉，移动端保留底部球）。</span>
 </div>
 
 <div class="proto-wrap">
@@ -474,7 +507,7 @@
                 <p class="sub">这个品类 / 位置暂时没有商户入驻，换个条件看看；也可以让「问一问」帮你在附近找一家。</p>
                 <div class="actions">
                   <button type="button" class="btn btn-primary" id="btnClearFilter">清除筛选条件</button>
-                  <button type="button" class="btn btn-ghost" onclick="toast('演示提示：此处唤起底部「问一问」悬浮球（小助手 J-01~J-15 · M1）','info')">💬 让「问一问」帮我找</button>
+                  <button type="button" class="btn btn-ghost" onclick="openAssist();toast('已唤起右侧「问一问」抽屉（小助手 J-01~J-15 · M1）','info')">💬 让「问一问」帮我找</button>
                 </div>
                 <div class="extra-links">看看 <a href="javascript:void(0)" onclick="toast('演示提示：信用红黑榜（S-04 /rankings · M1）','info')">信用红黑榜</a> · 或稍后再来逛逛</div>
                 <div class="err-detail num">已返回 0 条结果 · 本次条件：全部品类 × 附近 3km × 只看可溯源</div>
@@ -494,13 +527,13 @@
                   </svg>
                 </div>
                 <h2>商户列表加载失败了</h2>
-                <p class="sub">网络开小差了，请检查网络连接后重试。如果一直不行，点右下角「问一问」反馈，我们会尽快处理。</p>
+                <p class="sub">网络开小差了，请检查网络连接后重试。如果一直不行，点右侧「问一问」反馈，我们会尽快处理。</p>
                 <div class="actions">
                   <button type="button" class="btn btn-primary" id="btnRetry">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 3v4h-4" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     重试
                   </button>
-                  <button type="button" class="btn btn-ghost" onclick="toast('演示提示：反馈渠道（工单 D-02 / 助手 J-01）','info')">反馈问题</button>
+                  <button type="button" class="btn btn-ghost" onclick="openAssist();toast('已唤起右侧「问一问」抽屉（可在对话中反馈）','info')">反馈问题</button>
                 </div>
                 <details class="err-detail" style="text-align:left;max-width:420px;margin:18px auto 0;cursor:pointer;">
                   <summary style="color:var(--gray-400)">错误详情（面向开发，用户默认折叠）</summary>
@@ -521,7 +554,7 @@
 
     <p class="preview-caption">
       五词自检：<b>方便</b>（信用 / 位置一键筛选 + 商品直览）· <b>安全</b>（信用分脱敏排序，杜绝“竞价上榜”）— 依据 IA §3.2 S-01、线框 S-01（apps/docs/线框图/02-共享能力域-M1.md）。
-      本预览为高保真示意：Logo 以品牌视觉稿为准；图标为演示用线稿，最终统一走 packages/ui 图标集。高保真原型 v0.1 · 2026-09-08 · 🟡 待评审。
+      本预览为高保真示意：Logo 以品牌视觉稿为准；图标为演示用线稿，最终统一走 packages/ui 图标集。小助手为方案 A（桌面端 = 右侧常驻侧边按钮 + 右侧抽屉；移动端保留底部悬浮球）。高保真原型 v0.1 · 2026-09-08 · 🟡 待评审。
     </p>
   </div>
 
@@ -531,8 +564,41 @@
   </aside>
 </div>
 
-<!-- 助手悬浮球占位（G-10，底部中心常驻） -->
-<button type="button" class="assistant" onclick="toast('演示提示：民生小助手「问一问」（J-01~J-15，含 J-14 语音 · M1）','info')" aria-label="问一问（民生小助手，演示占位）">？<span class="hint">问一问 · 民生小助手（演示占位）</span></button>
+<!-- 助手入口（G-10 · 方案 A）：右侧常驻侧边按钮，点击展开右侧抽屉 -->
+<button type="button" class="assist-dock" id="assistDock" aria-label="问一问（民生小助手）" aria-haspopup="dialog" aria-expanded="false" aria-controls="assistDrawer">
+  <span class="dock-icon" aria-hidden="true">✓</span>
+  <span class="dock-text">问一问</span>
+  <span class="dock-dot" aria-hidden="true"></span>
+</button>
+
+<!-- 右侧抽屉（对话 + 语音 + 快捷操作卡 J-15） -->
+<aside class="assist-drawer" id="assistDrawer" role="dialog" aria-modal="false" aria-label="民生小助手 问一问" inert aria-hidden="true">
+  <div class="assist-head">
+    <span class="a-logo" aria-hidden="true">✓</span>
+    <span>
+      <span class="a-title">民生小助手 · 问一问</span><br>
+      <span class="a-sub">一句话直达 · 找好店 / 查真伪 / 投诉</span>
+    </span>
+    <button type="button" class="assist-close" id="assistClose" aria-label="关闭助手">✕</button>
+  </div>
+  <div class="assist-body" id="assistBody">
+    <div class="a-bubble assist">你好，我是「民生小助手」。找店、查真伪、投诉、问政策，一句话我帮你直达，不用翻菜单。</div>
+    <div class="a-quick" aria-label="快捷问题">
+      <button type="button" class="a-chip" data-q="帮我找附近的店">帮我找附近的店</button>
+      <button type="button" class="a-chip" data-q="怎么投诉">怎么投诉</button>
+      <button type="button" class="a-chip" data-q="查投诉进度">查投诉进度</button>
+      <button type="button" class="a-chip" data-q="扫码验真">扫码验真</button>
+    </div>
+  </div>
+  <div class="assist-foot">
+    <div class="assist-input">
+      <input type="text" id="assistInput" placeholder="一句话说清楚，例如：附近哪家店评分高？" aria-label="输入问题">
+      <button type="button" class="a-btn mic" id="assistMic" aria-label="语音输入" aria-pressed="false">🎙</button>
+      <button type="button" class="a-btn send" id="assistSend">发送</button>
+    </div>
+    <div class="assist-disc">平台助手生成，请以页面信息为准 · 语音与数据脱敏合规</div>
+  </div>
+</aside>
 
 <div class="toasts" aria-live="polite" id="toasts"></div>
 <p class="sr-only" role="status" id="announce"></p>
@@ -716,6 +782,45 @@ function simulateReload(message){
   later(() => { show("normal"); toast(message || "加载成功 · 商户列表已更新", "success"); }, 1200);
 }
 
+/* 助手侧边按钮 + 右侧抽屉（G-10 · 方案 A） */
+const dock = document.getElementById("assistDock");
+const drawer = document.getElementById("assistDrawer");
+const assistInput = document.getElementById("assistInput");
+function openAssist(){
+  drawer.classList.add("open");
+  drawer.removeAttribute("inert");
+  drawer.setAttribute("aria-hidden", "false");
+  dock.setAttribute("aria-expanded", "true");
+  dock.setAttribute("aria-label", "关闭问一问");
+  if (assistInput) assistInput.focus();
+}
+function closeAssist(){
+  drawer.classList.remove("open");
+  drawer.setAttribute("inert", "");
+  drawer.setAttribute("aria-hidden", "true");
+  dock.setAttribute("aria-expanded", "false");
+  dock.setAttribute("aria-label", "问一问（民生小助手）");
+  dock.focus();
+}
+function assistSend(text){
+  const t = (typeof text === "string" ? text : (assistInput ? assistInput.value : "")).trim();
+  if (!t) { toast("先输入一句话，或点上面的快捷问题试试", "info"); return; }
+  const body = document.getElementById("assistBody");
+  const u = document.createElement("div");
+  u.className = "a-bubble user"; u.textContent = t;
+  body.appendChild(u);
+  if (assistInput) assistInput.value = "";
+  setTimeout(() => {
+    const a = document.createElement("div");
+    a.className = "a-bubble assist";
+    a.textContent = "演示回复：已收到「" + t + "」，我会按白名单帮你直达对应页面（找好店 / 查真伪 / 投诉 · J-02）。";
+    body.appendChild(a);
+    body.scrollTop = body.scrollHeight;
+    toast("演示提示：真实环境由大模型回答 + RBAC 白名单跳转", "info");
+  }, 450);
+  body.scrollTop = body.scrollHeight;
+}
+
 function init(){
   renderNormal();
   document.querySelectorAll(".seg button").forEach(b => {
@@ -737,6 +842,20 @@ function init(){
     document.getElementById("btnNote").classList.toggle("is-on", on);
     document.getElementById("btnNote").setAttribute("aria-pressed", String(on));
   });
+  // 助手侧边按钮 / 抽屉交互
+  dock.addEventListener("click", () => drawer.classList.contains("open") ? closeAssist() : openAssist());
+  document.getElementById("assistClose").addEventListener("click", closeAssist);
+  document.getElementById("assistSend").addEventListener("click", () => assistSend());
+  assistInput.addEventListener("keydown", e => { if (e.key === "Enter") assistSend(); });
+  document.getElementById("assistMic").addEventListener("click", function(){
+    this.classList.toggle("rec");
+    const on = this.classList.contains("rec");
+    this.setAttribute("aria-pressed", String(on));
+    toast(on ? "演示提示：正在录制（语音 ASR · J-14），再次点击结束" : "演示提示：已停止录音", "info");
+  });
+  document.querySelectorAll(".a-chip").forEach(c => c.addEventListener("click", () => assistSend(c.dataset.q)));
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && drawer.classList.contains("open")) closeAssist(); });
+
   // URL 参数 ?state=… 指定初始状态（便于截图与评审）；缺省展示正常态
   const want = new URLSearchParams(location.search).get("state");
   show(VIEWS.includes(want) ? want : "normal");
