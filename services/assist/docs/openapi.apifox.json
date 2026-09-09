@@ -1,0 +1,4119 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "智能助手服务 ASSIST · 接口文档",
+    "version": "1.0.0",
+    "description": "智能助手服务（ASSIST）前端接口文档。模块 J：使用指导（J-01）、页面跳转（J-02）、对话内商品推荐（J-03）、\n多轮上下文（J-04）、兜底与人工反馈（J-05）、内容安全与幻觉管控（J-06）、澄清式导购（J-13）、\n助手操作悬浮卡 + 一键代做（J-15）。\n口径对齐：PDD §5.7 / §6.4.12；需求口径 PRD §5.12（J 组）、`27-智能助手Agent需求.md`、功能列表 J-01~J-15。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 画像功能 J-07~J-11 归属 PROFILE 画像服务，不在本服务（推荐接口仅叠加授权画像权重）。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 平台硬护栏（PDD §5.7.2）：脱敏前置 → 白名单路由 → FAQ 规则 → 内容安全 → 非竞价 → 审计日志，\n  在 LangChain 编排之外强制执行，不开放自由工具/函数调用；对话数据不出域、脱敏日志 ≤30 天。\n- 全部接口 M1 交付（J-13 澄清导购 M1 基础版、M2 增强）。\n"
+  },
+  "servers": [
+    {
+      "url": "https://api.example.com/api/v1",
+      "description": "生产（示例域名）"
+    },
+    {
+      "url": "http://localhost:8000/api/v1",
+      "description": "本地开发（Python FastAPI）"
+    }
+  ],
+  "tags": [
+    {
+      "name": "chat",
+      "description": "对话与会话（J-01/J-04/J-05/J-06）"
+    },
+    {
+      "name": "navigate",
+      "description": "意图导航（J-02）"
+    },
+    {
+      "name": "recommend",
+      "description": "对话内推荐与澄清导购（J-03/J-13）"
+    },
+    {
+      "name": "action",
+      "description": "快捷操作与一键代做（J-15）"
+    },
+    {
+      "name": "feedback",
+      "description": "回答评价（J-05）"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/assist/chat": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "助手对话（意图分类/FAQ/流式，脱敏后调 LLM）【M1 · J-01/J-04/J-06】",
+        "description": "三端助手侧边栏统一对话入口（G-10 线框）。流程：输入脱敏前置 → 意图分类 → 路由执行：\nFAQ 规则库命中优先（高频兜底，降时延降成本）；未命中调 DeepSeek（绑定平台数据/文档，不编造）；\n输出过内容安全过滤，标注「平台助手生成，请以页面信息为准」（disclaimer 字段前端必须展示）。\n会话（J-04）：sessionId 缺省新建；多轮指代理解；30 分钟无操作自动清空上下文、不留跨会话记忆。\n兜底（J-05）：意图无法识别 → FAQ 关键词 → 人工入口（G-01 热线/工单），不纯 AI 硬答。\n双模式：stream=false（缺省）返回 JSON（Apifox 可调试）；stream=true 返回 SSE（text/event-stream）\n事件帧 {event: token|action|done|error, data}，done 帧 data 为完整 ChatReply。\n异常：LLM 失败/超时 → 4003 回退 FAQ 规则库 + 人工入口；按账号/频次限流（J-12）→ 429。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "sessionId": {
+                    "type": "string",
+                    "description": "会话号（多轮上下文，缺省新建；30 分钟无操作自动清空）",
+                    "example": "sess_8f7e6d5c4b3a"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "用户输入（脱敏前置后送 LLM）",
+                    "maxLength": 1000,
+                    "example": "怎么投诉一家店？"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "description": "true=SSE 流式输出；缺省 false=JSON 应答",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。stream=false：JSON 应答；stream=true：SSE 事件流（event=token 增量文本 /\naction 结构化动作卡片 / done 完整结果 / error 错误信息）。\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "messageId",
+                            "reply",
+                            "disclaimer"
+                          ],
+                          "properties": {
+                            "messageId": {
+                              "type": "string",
+                              "description": "消息号（反馈评价用）",
+                              "example": "msg_1a2b3c4d5e6f"
+                            },
+                            "sessionId": {
+                              "type": "string",
+                              "description": "会话号（新建会话时返回）",
+                              "example": "sess_8f7e6d5c4b3a"
+                            },
+                            "reply": {
+                              "type": "string",
+                              "description": "回答文本（内容安全过滤后）",
+                              "example": "已为您找到「我要投诉」，点击直达。"
+                            },
+                            "intent": {
+                              "type": "string",
+                              "description": "识别出的意图键（如 complaint / credit_check / recommend）",
+                              "example": "complaint"
+                            },
+                            "intentType": {
+                              "type": "string",
+                              "description": "意图分类结果",
+                              "enum": [
+                                "FAQ",
+                                "NAVIGATE",
+                                "RECOMMEND",
+                                "CLARIFY",
+                                "OPERATE",
+                                "FALLBACK"
+                              ],
+                              "example": "NAVIGATE"
+                            },
+                            "citations": {
+                              "type": "array",
+                              "description": "引用来源（事实类回答绑定平台数据/文档）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "source"
+                                ],
+                                "properties": {
+                                  "source": {
+                                    "type": "string",
+                                    "description": "引用来源（平台流程文档/规格书章节/页面，绑定平台数据不编造）",
+                                    "example": "投诉直达流程 D-02"
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "description": "引用标题",
+                                    "example": "投诉直达"
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "description": "引用摘要（事实类回答绑定来源）",
+                                    "example": "选商户 → 选类别 → 附证据，≤3 步提交"
+                                  }
+                                }
+                              }
+                            },
+                            "suggestions": {
+                              "type": "array",
+                              "description": "追问建议（快捷继续提问）",
+                              "items": {
+                                "type": "string",
+                                "example": "投诉需要准备什么材料？"
+                              }
+                            },
+                            "actions": {
+                              "type": "array",
+                              "description": "结构化动作卡片（跳转/推荐/导购/一键代做）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type",
+                                  "title"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "description": "动作卡片类型",
+                                    "enum": [
+                                      "NAVIGATE",
+                                      "RECOMMEND",
+                                      "CLARIFY",
+                                      "OPERATE"
+                                    ],
+                                    "example": "NAVIGATE"
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "description": "动作卡片标题（如「已为您找到「我要投诉」，点击直达」）",
+                                    "example": "已为您找到「我要投诉」"
+                                  },
+                                  "route": {
+                                    "type": "string",
+                                    "description": "目标路由（NAVIGATE 类型，白名单内）",
+                                    "example": "/complain/create"
+                                  },
+                                  "needConfirm": {
+                                    "type": "boolean",
+                                    "description": "跳转前是否需要二次确认（防误跳）",
+                                    "example": true
+                                  }
+                                }
+                              }
+                            },
+                            "disclaimer": {
+                              "type": "string",
+                              "description": "合规标注（J-06，前端必须展示）",
+                              "example": "平台助手生成，请以页面信息为准"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE 事件帧 {event: token|action|done|error, data}"
+                },
+                "example": "event: done\ndata: {\"messageId\":\"msg_1\",\"reply\":\"已为您找到「我要投诉」\"}\n"
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "触发限流（Redis 令牌桶按账号限流，防滥用）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "大模型失败或超时（code=4003，回退 FAQ 规则库 + 人工入口 G-01）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 4003,
+                  "message": "大模型服务失败，已为您转 FAQ 或人工入口",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/session": {
+      "delete": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "清空当前会话上下文【M1 · J-04】",
+        "description": "显式清空当前会话上下文（J-04）。服务端另有 30 分钟无操作自动 TTL 清空，不留跨会话记忆。\n仅作用于当前登录用户的会话，越权操作报 2002。\n",
+        "responses": {
+          "200": {
+            "description": "成功，返回清空状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "status"
+                          ],
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "description": "清空状态",
+                              "enum": [
+                                "CLEARED"
+                              ],
+                              "example": "CLEARED"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/navigate": {
+      "post": {
+        "tags": [
+          "navigate"
+        ],
+        "summary": "意图 → 页面跳转（白名单路由 + 二次确认）【M1 · J-02】",
+        "description": "自然语言/意图键 → 平台内部页面直达（J-02）。仅跳白名单路由表内页面、只跳平台内页不对外链；\nneedConfirm=true 时前端必须弹二次确认，用户确认后按 route 跳转（防误跳）；\n目标页面越权（角色不允许）→ 2002 拦截。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "intent"
+                ],
+                "properties": {
+                  "intent": {
+                    "type": "string",
+                    "description": "意图键或自然语言意图（如 complaint /「我要投诉」）",
+                    "example": "complaint"
+                  },
+                  "params": {
+                    "type": "object",
+                    "description": "附加参数（如商户编号，跳转目标页定位用）",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回白名单路由与二次确认标记",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "route",
+                            "needConfirm"
+                          ],
+                          "properties": {
+                            "route": {
+                              "type": "string",
+                              "description": "白名单路由（仅平台内页，不对外链）",
+                              "example": "/complain/create"
+                            },
+                            "needConfirm": {
+                              "type": "boolean",
+                              "description": "跳转前需二次确认（防误跳）",
+                              "example": true
+                            },
+                            "confirmText": {
+                              "type": "string",
+                              "description": "二次确认文案",
+                              "example": "即将前往「我要投诉」，确认跳转？"
+                            },
+                            "title": {
+                              "type": "string",
+                              "description": "目标页面标题",
+                              "example": "我要投诉"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "意图不在白名单路由表 / 目标页面不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "未找到可跳转的页面，请换个说法",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/recommend": {
+      "post": {
+        "tags": [
+          "recommend"
+        ],
+        "summary": "对话内商品推荐（透明理由，非竞价）【M1 · J-03】",
+        "description": "对话内商品/服务推荐（J-03）。候选 = 在售 + 供应商信用分 ≥ 阈值（建议 ≥80，上线前评审）\n+ 溯源完整；排序 = 信用 40% + 溯源完整度 30% + 价格 20% + 好评率 10%（建议初值，上线前评审）；\n推荐理由模板化透明输出（candidates[].reasons）；trustedOnly=true 只看放心供应商。\n边界：非竞价（无付费置顶/虚假销量）；价格不因画像差异化（不杀熟，J-07 授权画像权重仅叠加排序）；\n强监管品类只推荐、不替代行政许可；候选不足 → insufficient=true 如实提示，不硬凑。\n画像叠加（J-09）由本服务调 PROFILE 获取授权画像权重，未授权字段不入画像、不参与排序。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "description": "品类（如 食材/家政/维修）",
+                    "example": "食材"
+                  },
+                  "keyword": {
+                    "type": "string",
+                    "description": "关键词（可选）",
+                    "maxLength": 100,
+                    "example": "大米"
+                  },
+                  "budgetMin": {
+                    "type": "number",
+                    "description": "预算下限（元，可选）",
+                    "example": 10
+                  },
+                  "budgetMax": {
+                    "type": "number",
+                    "description": "预算上限（元，可选）",
+                    "example": 100
+                  },
+                  "trustedOnly": {
+                    "type": "boolean",
+                    "description": "只看放心供应商（T-06 动态标识）",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回候选列表与透明理由（候选不足时 insufficient=true）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "candidates",
+                            "insufficient"
+                          ],
+                          "properties": {
+                            "candidates": {
+                              "type": "array",
+                              "description": "候选列表（信用 40% + 溯源 30% + 价格 20% + 好评 10% 规则排序）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "itemId",
+                                  "name",
+                                  "price",
+                                  "creditScore",
+                                  "traceComplete",
+                                  "reasons"
+                                ],
+                                "properties": {
+                                  "itemId": {
+                                    "type": "string",
+                                    "description": "商品编号",
+                                    "example": "item_20260115001"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "description": "商品名称",
+                                    "example": "五常大米 5kg"
+                                  },
+                                  "category": {
+                                    "type": "string",
+                                    "description": "品类",
+                                    "example": "食材"
+                                  },
+                                  "price": {
+                                    "type": "number",
+                                    "description": "价格（元；同一商品对所有人同价，不杀熟）",
+                                    "example": 59.9
+                                  },
+                                  "creditScore": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 100,
+                                    "description": "供应商信用分（≥ 建议阈值 80，上线前评审）",
+                                    "example": 92
+                                  },
+                                  "traceComplete": {
+                                    "type": "boolean",
+                                    "description": "溯源链完整",
+                                    "example": true
+                                  },
+                                  "reviewRate": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "description": "好评率（0-1）",
+                                    "example": 0.96
+                                  },
+                                  "reasons": {
+                                    "type": "array",
+                                    "description": "推荐理由（模板化透明输出）",
+                                    "items": {
+                                      "type": "string",
+                                      "example": "供应商信用分 92，溯源完整，好评率 96%"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "insufficient": {
+                              "type": "boolean",
+                              "description": "候选不足（<阈值/无完整溯源），如实提示不硬凑",
+                              "example": false
+                            },
+                            "notice": {
+                              "type": "string",
+                              "description": "候选不足时的如实提示文案",
+                              "example": "当前品类符合「放心」标准的在售商品较少，已为您展示最接近的选项"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "触发限流（按账号限流，防滥用）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/guide": {
+      "post": {
+        "tags": [
+          "recommend"
+        ],
+        "summary": "澄清式导购（模板化追问 → ≤5 个带理由对比）【M1 基础 · J-13】",
+        "description": "用户表达「帮我选/不知道买什么」等模糊意图时（J-13）：未提供 answers 时返回模板化追问\nclarifications（用途/预算/给谁用，可跳过）；提供 answers（或跳过）后返回 ≤5 个带理由的透明对比\ncomparisons（信用/溯源/价格/好评），可一键跳选品页/详情（复用 /assist/navigate）或继续多轮。\n边界继承 J-03/J-07 全部口径：规则排序非竞价、价格不因画像差异化、理由透明并标注「以页面为准」、\n候选不足如实提示、无法识别走 J-05 人工兜底、强监管品类只做信息推荐不替代行政许可、不臆断用户需求。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "模糊意图原文（首次提问，如「帮我选个化肥」）",
+                    "maxLength": 500,
+                    "example": "帮我选个化肥"
+                  },
+                  "answers": {
+                    "type": "object",
+                    "description": "模板化追问的回答（用途/预算/给谁用，可跳过）",
+                    "properties": {
+                      "purpose": {
+                        "type": "string",
+                        "description": "用途",
+                        "example": "玉米追肥"
+                      },
+                      "budget": {
+                        "type": "string",
+                        "description": "预算",
+                        "example": "100 元以内"
+                      },
+                      "recipient": {
+                        "type": "string",
+                        "description": "给谁用",
+                        "example": "自己家用"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功（返回追问 clarifications 或 ≤5 个对比 comparisons）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "description": "未提供 answers 时返回 clarifications；已提供（或跳过）后返回 ≤5 个 comparisons",
+                          "properties": {
+                            "clarifications": {
+                              "type": "array",
+                              "description": "模板化追问（用途/预算/给谁用，可跳过）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "key",
+                                  "question",
+                                  "skippable"
+                                ],
+                                "properties": {
+                                  "key": {
+                                    "type": "string",
+                                    "description": "追问键（回填 answers）",
+                                    "example": "purpose"
+                                  },
+                                  "question": {
+                                    "type": "string",
+                                    "description": "模板化追问",
+                                    "example": "大概做什么用途？"
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "description": "可选答案（有则前端以选项展示）",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "skippable": {
+                                    "type": "boolean",
+                                    "description": "可跳过",
+                                    "example": true
+                                  }
+                                }
+                              }
+                            },
+                            "comparisons": {
+                              "type": "array",
+                              "description": "≤5 个带理由透明对比",
+                              "maxItems": 5,
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "itemId",
+                                  "name",
+                                  "price",
+                                  "creditScore",
+                                  "traceComplete",
+                                  "reviewRate",
+                                  "reasons"
+                                ],
+                                "properties": {
+                                  "itemId": {
+                                    "type": "string",
+                                    "example": "item_20260115001"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "example": "复合肥 A 品牌 40kg"
+                                  },
+                                  "price": {
+                                    "type": "number",
+                                    "example": 128
+                                  },
+                                  "creditScore": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 100,
+                                    "example": 90
+                                  },
+                                  "traceComplete": {
+                                    "type": "boolean",
+                                    "example": true
+                                  },
+                                  "reviewRate": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "example": 0.94
+                                  },
+                                  "reasons": {
+                                    "type": "array",
+                                    "description": "对比理由（信用/溯源/价格/好评透明对比）",
+                                    "items": {
+                                      "type": "string",
+                                      "example": "价格低于同类 12%，信用分 90，溯源完整"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "触发限流（按账号限流，防滥用）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/operate": {
+      "post": {
+        "tags": [
+          "action"
+        ],
+        "summary": "一键代做（白名单安全操作，跳转并高亮目标按钮）【M1 · J-15】",
+        "description": "助手操作悬浮卡 + 一键代做（J-15，线框 G-10 快捷操作卡）：白名单安全操作支持一键代做——\n直接跳转并高亮目标按钮（autoExecute=true，返回 route + highlight）；非白名单操作仅返回步骤卡\nsteps（autoExecute=false，随页面滚动常驻）。\n复用 J-02 白名单 + 二次确认；越权 → 2002 拦截；标注「以页面为准」。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "intent"
+                ],
+                "properties": {
+                  "intent": {
+                    "type": "string",
+                    "description": "操作意图键（白名单安全操作才可一键代做）",
+                    "example": "complaint_create"
+                  },
+                  "params": {
+                    "type": "object",
+                    "description": "附加参数（如商户编号）",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功（白名单操作返回 route+highlight；非白名单返回步骤卡 steps）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "autoExecute"
+                          ],
+                          "properties": {
+                            "autoExecute": {
+                              "type": "boolean",
+                              "description": "true=白名单安全操作，前端跳转并高亮目标按钮；false=仅步骤卡",
+                              "example": true
+                            },
+                            "route": {
+                              "type": "string",
+                              "description": "白名单路由（autoExecute=true）",
+                              "example": "/complain/create"
+                            },
+                            "highlight": {
+                              "type": "string",
+                              "description": "目标按钮高亮标识（autoExecute=true）",
+                              "example": "#btn-submit-complaint"
+                            },
+                            "steps": {
+                              "type": "array",
+                              "description": "步骤卡（autoExecute=false，非白名单操作仅引导）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "no",
+                                  "text"
+                                ],
+                                "properties": {
+                                  "no": {
+                                    "type": "integer",
+                                    "format": "int32",
+                                    "description": "步骤序号",
+                                    "example": 1
+                                  },
+                                  "text": {
+                                    "type": "string",
+                                    "description": "步骤说明（悬浮步骤卡随页面滚动常驻）",
+                                    "example": "点击左侧「我要投诉」"
+                                  },
+                                  "route": {
+                                    "type": "string",
+                                    "description": "该步骤对应页面路由（可选）",
+                                    "example": "/complain/create"
+                                  }
+                                }
+                              }
+                            },
+                            "disclaimer": {
+                              "type": "string",
+                              "description": "合规标注",
+                              "example": "平台助手生成，请以页面信息为准"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "意图不在白名单 / 目标对象不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "未找到可代做的操作",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/quick-actions": {
+      "get": {
+        "tags": [
+          "action"
+        ],
+        "summary": "快捷操作卡列表（按登录角色）【M1 · J-15】",
+        "description": "助手抽屉展开时拉取的快捷操作卡（线框 G-10：帮我找附近的店 / 怎么投诉 / 扫码验真等），\n按当前登录角色返回可用意图卡（角色不可用的卡片不下发）；点击卡片走 POST /assist/chat 或\nPOST /assist/operate 执行。\n",
+        "responses": {
+          "200": {
+            "description": "成功，返回快捷操作卡列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "actions"
+                          ],
+                          "properties": {
+                            "actions": {
+                              "type": "array",
+                              "description": "快捷操作卡（按登录角色下发，角色不可用不下发）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "key",
+                                  "label",
+                                  "intent"
+                                ],
+                                "properties": {
+                                  "key": {
+                                    "type": "string",
+                                    "description": "卡片唯一键",
+                                    "example": "nearby_store"
+                                  },
+                                  "label": {
+                                    "type": "string",
+                                    "description": "卡片文案",
+                                    "example": "帮我找附近的店"
+                                  },
+                                  "intent": {
+                                    "type": "string",
+                                    "description": "点击后执行的意图键（走 chat 或 operate）",
+                                    "example": "nearby_store"
+                                  },
+                                  "icon": {
+                                    "type": "string",
+                                    "description": "图标标识（可选，前端映射）",
+                                    "example": "store"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assist/feedback": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "回答评价（有用性反馈）【M1 · J-05】",
+        "description": "用户对回答点「有用/无用」（J-05）。反馈数据脱敏后用于知识库迭代，\n**不用于训练第三方模型**；可选附意见。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "messageId",
+                  "useful"
+                ],
+                "properties": {
+                  "messageId": {
+                    "type": "string",
+                    "description": "消息号（ChatReply.messageId）",
+                    "example": "msg_1a2b3c4d5e6f"
+                  },
+                  "useful": {
+                    "type": "boolean",
+                    "description": "回答是否有用",
+                    "example": true
+                  },
+                  "comment": {
+                    "type": "string",
+                    "description": "意见（可选，脱敏后用于知识库迭代）",
+                    "maxLength": 500,
+                    "example": "希望步骤更详细"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回提交状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "status"
+                          ],
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "description": "提交状态",
+                              "enum": [
+                                "RECEIVED"
+                              ],
+                              "example": "RECEIVED"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "消息不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "对象不存在",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatRequest": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "description": "会话号（多轮上下文，缺省新建；30 分钟无操作自动清空）",
+            "example": "sess_8f7e6d5c4b3a"
+          },
+          "message": {
+            "type": "string",
+            "description": "用户输入（脱敏前置后送 LLM）",
+            "maxLength": 1000,
+            "example": "怎么投诉一家店？"
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "true=SSE 流式输出；缺省 false=JSON 应答",
+            "default": false
+          }
+        }
+      },
+      "IntentType": {
+        "type": "string",
+        "description": "意图分类结果",
+        "enum": [
+          "FAQ",
+          "NAVIGATE",
+          "RECOMMEND",
+          "CLARIFY",
+          "OPERATE",
+          "FALLBACK"
+        ],
+        "example": "NAVIGATE"
+      },
+      "Citation": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "引用来源（平台流程文档/规格书章节/页面，绑定平台数据不编造）",
+            "example": "投诉直达流程 D-02"
+          },
+          "title": {
+            "type": "string",
+            "description": "引用标题",
+            "example": "投诉直达"
+          },
+          "text": {
+            "type": "string",
+            "description": "引用摘要（事实类回答绑定来源）",
+            "example": "选商户 → 选类别 → 附证据，≤3 步提交"
+          }
+        }
+      },
+      "ChatAction": {
+        "type": "object",
+        "required": [
+          "type",
+          "title"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "动作卡片类型",
+            "enum": [
+              "NAVIGATE",
+              "RECOMMEND",
+              "CLARIFY",
+              "OPERATE"
+            ],
+            "example": "NAVIGATE"
+          },
+          "title": {
+            "type": "string",
+            "description": "动作卡片标题（如「已为您找到「我要投诉」，点击直达」）",
+            "example": "已为您找到「我要投诉」"
+          },
+          "route": {
+            "type": "string",
+            "description": "目标路由（NAVIGATE 类型，白名单内）",
+            "example": "/complain/create"
+          },
+          "needConfirm": {
+            "type": "boolean",
+            "description": "跳转前是否需要二次确认（防误跳）",
+            "example": true
+          }
+        }
+      },
+      "ChatReply": {
+        "type": "object",
+        "required": [
+          "messageId",
+          "reply",
+          "disclaimer"
+        ],
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "description": "消息号（反馈评价用）",
+            "example": "msg_1a2b3c4d5e6f"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "会话号（新建会话时返回）",
+            "example": "sess_8f7e6d5c4b3a"
+          },
+          "reply": {
+            "type": "string",
+            "description": "回答文本（内容安全过滤后）",
+            "example": "已为您找到「我要投诉」，点击直达。"
+          },
+          "intent": {
+            "type": "string",
+            "description": "识别出的意图键（如 complaint / credit_check / recommend）",
+            "example": "complaint"
+          },
+          "intentType": {
+            "type": "string",
+            "description": "意图分类结果",
+            "enum": [
+              "FAQ",
+              "NAVIGATE",
+              "RECOMMEND",
+              "CLARIFY",
+              "OPERATE",
+              "FALLBACK"
+            ],
+            "example": "NAVIGATE"
+          },
+          "citations": {
+            "type": "array",
+            "description": "引用来源（事实类回答绑定平台数据/文档）",
+            "items": {
+              "type": "object",
+              "required": [
+                "source"
+              ],
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "description": "引用来源（平台流程文档/规格书章节/页面，绑定平台数据不编造）",
+                  "example": "投诉直达流程 D-02"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "引用标题",
+                  "example": "投诉直达"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "引用摘要（事实类回答绑定来源）",
+                  "example": "选商户 → 选类别 → 附证据，≤3 步提交"
+                }
+              }
+            }
+          },
+          "suggestions": {
+            "type": "array",
+            "description": "追问建议（快捷继续提问）",
+            "items": {
+              "type": "string",
+              "example": "投诉需要准备什么材料？"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "description": "结构化动作卡片（跳转/推荐/导购/一键代做）",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "title"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "动作卡片类型",
+                  "enum": [
+                    "NAVIGATE",
+                    "RECOMMEND",
+                    "CLARIFY",
+                    "OPERATE"
+                  ],
+                  "example": "NAVIGATE"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "动作卡片标题（如「已为您找到「我要投诉」，点击直达」）",
+                  "example": "已为您找到「我要投诉」"
+                },
+                "route": {
+                  "type": "string",
+                  "description": "目标路由（NAVIGATE 类型，白名单内）",
+                  "example": "/complain/create"
+                },
+                "needConfirm": {
+                  "type": "boolean",
+                  "description": "跳转前是否需要二次确认（防误跳）",
+                  "example": true
+                }
+              }
+            }
+          },
+          "disclaimer": {
+            "type": "string",
+            "description": "合规标注（J-06，前端必须展示）",
+            "example": "平台助手生成，请以页面信息为准"
+          }
+        }
+      },
+      "NavigateRequest": {
+        "type": "object",
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "description": "意图键或自然语言意图（如 complaint /「我要投诉」）",
+            "example": "complaint"
+          },
+          "params": {
+            "type": "object",
+            "description": "附加参数（如商户编号，跳转目标页定位用）",
+            "additionalProperties": true
+          }
+        }
+      },
+      "NavigateResult": {
+        "type": "object",
+        "required": [
+          "route",
+          "needConfirm"
+        ],
+        "properties": {
+          "route": {
+            "type": "string",
+            "description": "白名单路由（仅平台内页，不对外链）",
+            "example": "/complain/create"
+          },
+          "needConfirm": {
+            "type": "boolean",
+            "description": "跳转前需二次确认（防误跳）",
+            "example": true
+          },
+          "confirmText": {
+            "type": "string",
+            "description": "二次确认文案",
+            "example": "即将前往「我要投诉」，确认跳转？"
+          },
+          "title": {
+            "type": "string",
+            "description": "目标页面标题",
+            "example": "我要投诉"
+          }
+        }
+      },
+      "RecommendRequest": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "品类（如 食材/家政/维修）",
+            "example": "食材"
+          },
+          "keyword": {
+            "type": "string",
+            "description": "关键词（可选）",
+            "maxLength": 100,
+            "example": "大米"
+          },
+          "budgetMin": {
+            "type": "number",
+            "description": "预算下限（元，可选）",
+            "example": 10
+          },
+          "budgetMax": {
+            "type": "number",
+            "description": "预算上限（元，可选）",
+            "example": 100
+          },
+          "trustedOnly": {
+            "type": "boolean",
+            "description": "只看放心供应商（T-06 动态标识）",
+            "default": false
+          }
+        }
+      },
+      "Candidate": {
+        "type": "object",
+        "required": [
+          "itemId",
+          "name",
+          "price",
+          "creditScore",
+          "traceComplete",
+          "reasons"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "description": "商品编号",
+            "example": "item_20260115001"
+          },
+          "name": {
+            "type": "string",
+            "description": "商品名称",
+            "example": "五常大米 5kg"
+          },
+          "category": {
+            "type": "string",
+            "description": "品类",
+            "example": "食材"
+          },
+          "price": {
+            "type": "number",
+            "description": "价格（元；同一商品对所有人同价，不杀熟）",
+            "example": 59.9
+          },
+          "creditScore": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "供应商信用分（≥ 建议阈值 80，上线前评审）",
+            "example": 92
+          },
+          "traceComplete": {
+            "type": "boolean",
+            "description": "溯源链完整",
+            "example": true
+          },
+          "reviewRate": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "好评率（0-1）",
+            "example": 0.96
+          },
+          "reasons": {
+            "type": "array",
+            "description": "推荐理由（模板化透明输出）",
+            "items": {
+              "type": "string",
+              "example": "供应商信用分 92，溯源完整，好评率 96%"
+            }
+          }
+        }
+      },
+      "RecommendResult": {
+        "type": "object",
+        "required": [
+          "candidates",
+          "insufficient"
+        ],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "description": "候选列表（信用 40% + 溯源 30% + 价格 20% + 好评 10% 规则排序）",
+            "items": {
+              "type": "object",
+              "required": [
+                "itemId",
+                "name",
+                "price",
+                "creditScore",
+                "traceComplete",
+                "reasons"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "description": "商品编号",
+                  "example": "item_20260115001"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "商品名称",
+                  "example": "五常大米 5kg"
+                },
+                "category": {
+                  "type": "string",
+                  "description": "品类",
+                  "example": "食材"
+                },
+                "price": {
+                  "type": "number",
+                  "description": "价格（元；同一商品对所有人同价，不杀熟）",
+                  "example": 59.9
+                },
+                "creditScore": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "供应商信用分（≥ 建议阈值 80，上线前评审）",
+                  "example": 92
+                },
+                "traceComplete": {
+                  "type": "boolean",
+                  "description": "溯源链完整",
+                  "example": true
+                },
+                "reviewRate": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "好评率（0-1）",
+                  "example": 0.96
+                },
+                "reasons": {
+                  "type": "array",
+                  "description": "推荐理由（模板化透明输出）",
+                  "items": {
+                    "type": "string",
+                    "example": "供应商信用分 92，溯源完整，好评率 96%"
+                  }
+                }
+              }
+            }
+          },
+          "insufficient": {
+            "type": "boolean",
+            "description": "候选不足（<阈值/无完整溯源），如实提示不硬凑",
+            "example": false
+          },
+          "notice": {
+            "type": "string",
+            "description": "候选不足时的如实提示文案",
+            "example": "当前品类符合「放心」标准的在售商品较少，已为您展示最接近的选项"
+          }
+        }
+      },
+      "GuideRequest": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "模糊意图原文（首次提问，如「帮我选个化肥」）",
+            "maxLength": 500,
+            "example": "帮我选个化肥"
+          },
+          "answers": {
+            "type": "object",
+            "description": "模板化追问的回答（用途/预算/给谁用，可跳过）",
+            "properties": {
+              "purpose": {
+                "type": "string",
+                "description": "用途",
+                "example": "玉米追肥"
+              },
+              "budget": {
+                "type": "string",
+                "description": "预算",
+                "example": "100 元以内"
+              },
+              "recipient": {
+                "type": "string",
+                "description": "给谁用",
+                "example": "自己家用"
+              }
+            }
+          }
+        }
+      },
+      "ClarifyQuestion": {
+        "type": "object",
+        "required": [
+          "key",
+          "question",
+          "skippable"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "追问键（回填 answers）",
+            "example": "purpose"
+          },
+          "question": {
+            "type": "string",
+            "description": "模板化追问",
+            "example": "大概做什么用途？"
+          },
+          "options": {
+            "type": "array",
+            "description": "可选答案（有则前端以选项展示）",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skippable": {
+            "type": "boolean",
+            "description": "可跳过",
+            "example": true
+          }
+        }
+      },
+      "GuideComparison": {
+        "type": "object",
+        "required": [
+          "itemId",
+          "name",
+          "price",
+          "creditScore",
+          "traceComplete",
+          "reviewRate",
+          "reasons"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "example": "item_20260115001"
+          },
+          "name": {
+            "type": "string",
+            "example": "复合肥 A 品牌 40kg"
+          },
+          "price": {
+            "type": "number",
+            "example": 128
+          },
+          "creditScore": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 100,
+            "example": 90
+          },
+          "traceComplete": {
+            "type": "boolean",
+            "example": true
+          },
+          "reviewRate": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.94
+          },
+          "reasons": {
+            "type": "array",
+            "description": "对比理由（信用/溯源/价格/好评透明对比）",
+            "items": {
+              "type": "string",
+              "example": "价格低于同类 12%，信用分 90，溯源完整"
+            }
+          }
+        }
+      },
+      "GuideResult": {
+        "type": "object",
+        "description": "未提供 answers 时返回 clarifications；已提供（或跳过）后返回 ≤5 个 comparisons",
+        "properties": {
+          "clarifications": {
+            "type": "array",
+            "description": "模板化追问（用途/预算/给谁用，可跳过）",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "question",
+                "skippable"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "追问键（回填 answers）",
+                  "example": "purpose"
+                },
+                "question": {
+                  "type": "string",
+                  "description": "模板化追问",
+                  "example": "大概做什么用途？"
+                },
+                "options": {
+                  "type": "array",
+                  "description": "可选答案（有则前端以选项展示）",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "skippable": {
+                  "type": "boolean",
+                  "description": "可跳过",
+                  "example": true
+                }
+              }
+            }
+          },
+          "comparisons": {
+            "type": "array",
+            "description": "≤5 个带理由透明对比",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "required": [
+                "itemId",
+                "name",
+                "price",
+                "creditScore",
+                "traceComplete",
+                "reviewRate",
+                "reasons"
+              ],
+              "properties": {
+                "itemId": {
+                  "type": "string",
+                  "example": "item_20260115001"
+                },
+                "name": {
+                  "type": "string",
+                  "example": "复合肥 A 品牌 40kg"
+                },
+                "price": {
+                  "type": "number",
+                  "example": 128
+                },
+                "creditScore": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "example": 90
+                },
+                "traceComplete": {
+                  "type": "boolean",
+                  "example": true
+                },
+                "reviewRate": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "example": 0.94
+                },
+                "reasons": {
+                  "type": "array",
+                  "description": "对比理由（信用/溯源/价格/好评透明对比）",
+                  "items": {
+                    "type": "string",
+                    "example": "价格低于同类 12%，信用分 90，溯源完整"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "OperateRequest": {
+        "type": "object",
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "description": "操作意图键（白名单安全操作才可一键代做）",
+            "example": "complaint_create"
+          },
+          "params": {
+            "type": "object",
+            "description": "附加参数（如商户编号）",
+            "additionalProperties": true
+          }
+        }
+      },
+      "OperateStep": {
+        "type": "object",
+        "required": [
+          "no",
+          "text"
+        ],
+        "properties": {
+          "no": {
+            "type": "integer",
+            "format": "int32",
+            "description": "步骤序号",
+            "example": 1
+          },
+          "text": {
+            "type": "string",
+            "description": "步骤说明（悬浮步骤卡随页面滚动常驻）",
+            "example": "点击左侧「我要投诉」"
+          },
+          "route": {
+            "type": "string",
+            "description": "该步骤对应页面路由（可选）",
+            "example": "/complain/create"
+          }
+        }
+      },
+      "OperateResult": {
+        "type": "object",
+        "required": [
+          "autoExecute"
+        ],
+        "properties": {
+          "autoExecute": {
+            "type": "boolean",
+            "description": "true=白名单安全操作，前端跳转并高亮目标按钮；false=仅步骤卡",
+            "example": true
+          },
+          "route": {
+            "type": "string",
+            "description": "白名单路由（autoExecute=true）",
+            "example": "/complain/create"
+          },
+          "highlight": {
+            "type": "string",
+            "description": "目标按钮高亮标识（autoExecute=true）",
+            "example": "#btn-submit-complaint"
+          },
+          "steps": {
+            "type": "array",
+            "description": "步骤卡（autoExecute=false，非白名单操作仅引导）",
+            "items": {
+              "type": "object",
+              "required": [
+                "no",
+                "text"
+              ],
+              "properties": {
+                "no": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "步骤序号",
+                  "example": 1
+                },
+                "text": {
+                  "type": "string",
+                  "description": "步骤说明（悬浮步骤卡随页面滚动常驻）",
+                  "example": "点击左侧「我要投诉」"
+                },
+                "route": {
+                  "type": "string",
+                  "description": "该步骤对应页面路由（可选）",
+                  "example": "/complain/create"
+                }
+              }
+            }
+          },
+          "disclaimer": {
+            "type": "string",
+            "description": "合规标注",
+            "example": "平台助手生成，请以页面信息为准"
+          }
+        }
+      },
+      "FeedbackRequest": {
+        "type": "object",
+        "required": [
+          "messageId",
+          "useful"
+        ],
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "description": "消息号（ChatReply.messageId）",
+            "example": "msg_1a2b3c4d5e6f"
+          },
+          "useful": {
+            "type": "boolean",
+            "description": "回答是否有用",
+            "example": true
+          },
+          "comment": {
+            "type": "string",
+            "description": "意见（可选，脱敏后用于知识库迭代）",
+            "maxLength": 500,
+            "example": "希望步骤更详细"
+          }
+        }
+      },
+      "FeedbackResult": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "提交状态",
+            "enum": [
+              "RECEIVED"
+            ],
+            "example": "RECEIVED"
+          }
+        }
+      },
+      "QuickAction": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "intent"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "卡片唯一键",
+            "example": "nearby_store"
+          },
+          "label": {
+            "type": "string",
+            "description": "卡片文案",
+            "example": "帮我找附近的店"
+          },
+          "intent": {
+            "type": "string",
+            "description": "点击后执行的意图键（走 chat 或 operate）",
+            "example": "nearby_store"
+          },
+          "icon": {
+            "type": "string",
+            "description": "图标标识（可选，前端映射）",
+            "example": "store"
+          }
+        }
+      },
+      "QuickActionsResult": {
+        "type": "object",
+        "required": [
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "description": "快捷操作卡（按登录角色下发，角色不可用不下发）",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "intent"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "卡片唯一键",
+                  "example": "nearby_store"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "卡片文案",
+                  "example": "帮我找附近的店"
+                },
+                "intent": {
+                  "type": "string",
+                  "description": "点击后执行的意图键（走 chat 或 operate）",
+                  "example": "nearby_store"
+                },
+                "icon": {
+                  "type": "string",
+                  "description": "图标标识（可选，前端映射）",
+                  "example": "store"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SessionClearResult": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "清空状态",
+            "enum": [
+              "CLEARED"
+            ],
+            "example": "CLEARED"
+          }
+        }
+      }
+    }
+  },
+  "x-external-interfaces": {
+    "description": "本服务无服务端间进向接口（endpoints 为空）。\n出方向依赖（经统一鉴权 + 内部接口，不直连主站数据库）：\n- 取数：ACC（实名/账户）、CRED（信用分/放心供应商标识）、TRACE（溯源完整度）、PROFILE（授权画像权重，J-09 叠加排序）；\n- LLM：DeepSeek 开放平台（国内服务，M0 确认数据合规条款：不用于训练/留存策略；对话数据不出域、脱敏日志 ≤30 天）；\n- 人工兜底：G-01 热线/工单入口（TICKET）。\n",
+    "endpoints": []
+  }
+}
