@@ -1,0 +1,896 @@
+openapi: 3.0.3
+info:
+  title: 工单服务 TICKET · 接口文档
+  version: 1.0.0
+  description: |
+    工单服务（TICKET）前端接口文档。模块 D2 投诉直达（D-02，含「未成年人违规进入」举报类别）、
+    G1 群众热线诉求（G-01）、G3 部门限时办结与结果公示（G-03）、D3 恶意差评申诉与职业索赔识别（D-03）【M2】；
+    T-16 假货/假材料投诉直达复用 D-02 机制（关联溯源码）。
+    口径对齐：PDD §5.5 / §6.4.5；需求口径 PRD §5.5（D 组）、§5.8（G 组）；边界依据 SSOT §2.5。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：12345 不可接 → 自建工单 + 线下流转（P-04 双轨）；工单结果脱敏公示（R-03）；
+      证据存证时间戳 + 哈希、可出证（R-04）；职业索赔识别仅 AI 辅助、人工确认后处置（C8）。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: complaint
+    description: 投诉直达（D-02/T-16）
+  - name: hotline
+    description: 群众热线诉求（G-01）
+  - name: appeal
+    description: 恶意差评申诉（D-03）
+  - name: resolve
+    description: 办结公示（G-03）
+  - name: evidence
+    description: 证据出证（P-02）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /ticket/complaint:
+    post:
+      tags: [complaint]
+      summary: 提交投诉（≤3 步，类别含「未成年人违规进入」）【M1 · D-02/T-16】
+      description: |
+        消费者 ≤3 步提交投诉（D-02，线框 S-09）：选商户 → 选类别 → 附证据；全程进度可见、
+        结果公示（脱敏）并计入商户信用分。T-16 假货/假材料投诉复用本接口（关联 traceCode 溯源码，
+        同一溯源码多次投诉自动预警）。
+        类别 MINOR_ENTRY（未成年人违规进入，娱乐场所/网吧）举报数据流向 DASH A-08 违规入场预警聚合（人工复核）。
+        参数缺失 1001；商户不存在 3006。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplaintRequest'
+      responses:
+        '200':
+          description: 受理成功，返回工单号与状态（已提交）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ComplaintSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /ticket/tickets/mine:
+    get:
+      tags: [complaint]
+      summary: 我的投诉列表（线框 S-10）【M1 · D-02】
+      description: |
+        消费端「我的投诉」（S-10）：本人提交的投诉工单列表，按状态筛选，分页。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/TicketStatus'
+      responses:
+        '200':
+          description: 成功，返回我的投诉列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TicketPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /ticket/tickets/pending:
+    get:
+      tags: [complaint]
+      summary: 商户待处理工单列表（线框 M-12）【M1 · D-02】
+      description: |
+        经营端「投诉处理」（M-12）：本商户待处理工单（48h 限时，剩余时限可见），分页；
+        仅商户本人可见（2002 拦截）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/TicketStatus'
+      responses:
+        '200':
+          description: 成功，返回待处理工单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TicketPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /ticket/tickets/audit:
+    get:
+      tags: [complaint]
+      summary: 监管端工单列表（线框 R-12 分派/升级）【M1 · D-02/G-01】
+      description: |
+        监管端工单分派/升级列表（R-12）：全量工单（投诉/诉求），按状态/部门筛选，分页；
+        需监管角色（2002 拦截）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/TicketStatus'
+        - name: dept
+          in: query
+          required: false
+          description: 部门筛选（热线诉求分派部门）
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: 成功，返回工单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TicketPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /ticket/tickets/{ticketId}:
+    get:
+      tags: [complaint]
+      summary: 工单详情与进度时间轴（线框 S-11/R-13）【M1 · D-02】
+      description: |
+        工单详情（S-11/R-13）：内容、证据、处理时间轴、结果公示（脱敏）；仅当事双方/监管可见（2002 拦截）。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 工单号
+          schema:
+            type: string
+            example: C-20260901
+      responses:
+        '200':
+          description: 成功，返回工单详情与时间轴
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TicketDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /ticket/tickets/{ticketId}/handle:
+    post:
+      tags: [complaint]
+      summary: 商家限时处理（48h）【M1 · D-02】
+      description: |
+        商家对投诉限时处理（D-02，M-12）：退款/协商等处理结果 + 可附证据；超时未处理自动升级市监；
+        仅被投诉商户本人可处理（2002）；非处理中状态 → 3007。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 工单号
+          schema:
+            type: string
+            example: C-20260901
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HandleRequest'
+      responses:
+        '200':
+          description: 成功，返回处理结果状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HandleResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非处理中状态不可处理）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /ticket/tickets/{ticketId}/escalate:
+    post:
+      tags: [complaint]
+      summary: 升级市监【M1 · D-02】
+      description: |
+        投诉未解决升级市监（D-02，R-12）：商家超时未处理自动升级 / 监管端手动升级（线下联动）；
+        需监管角色或系统触发（2002）；非处理中状态 → 3007。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 工单号
+          schema:
+            type: string
+            example: C-20260901
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EscalateRequest'
+      responses:
+        '200':
+          description: 成功，工单已升级市监
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EscalateResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /ticket/tickets/{ticketId}/resolve:
+    post:
+      tags: [resolve]
+      summary: 监管办结与结果公示【M1 · G-03/D-02】
+      description: |
+        监管部门办结工单并公示结果（G-03，线框 R-13）：办结结论 + 公示文案（脱敏，R-03），
+        结果计入商户信用分（评分事件上报 CRED）；需监管角色（2002）；已办结重复提交 → 3007。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 工单号
+          schema:
+            type: string
+            example: C-20260901
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRequest'
+      responses:
+        '200':
+          description: 成功，工单已办结并公示
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ResolveResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，已办结不可重复办结）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /ticket/tickets/{ticketId}/evaluate:
+    post:
+      tags: [complaint]
+      summary: 消费者办结评价【M1 · G-01】
+      description: |
+        消费者对已办结工单评价（G-01 状态「已评价」）：评分 + 意见；仅投诉/诉求人本人可评（2002）；
+        未办结评价 → 3007。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 工单号
+          schema:
+            type: string
+            example: A-20260901
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRequest'
+      responses:
+        '200':
+          description: 成功，返回评价结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EvaluateResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，未办结不可评价）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /ticket/tickets/{ticketId}/appeal:
+    post:
+      tags: [appeal]
+      summary: 恶意差评申诉【M2 · D-03】
+      description: |
+        商户凭平台留存证据对差评/扣分发起申诉（D-03）：平台做职业索赔/恶意差评识别与仲裁，
+        申诉留痕、处置结果计入相关方信用；识别逻辑 AI 辅助、**人工确认后处置**（C8）。
+        重复申诉 → 3007；无证据申诉提示补充（1001 参数校验）。M2 交付。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          description: 关联工单号（投诉/差评来源）
+          schema:
+            type: string
+            example: C-20260901
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppealRequest'
+      responses:
+        '200':
+          description: 受理成功，返回申诉号（平台复核后改判/驳回）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AppealSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，重复申诉）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /ticket/hotline:
+    post:
+      tags: [hotline]
+      summary: 群众热线诉求（自建工单 + 线下流转）【M1 · G-01】
+      description: |
+        群众提交诉求生成工单（G-01，线框 S-12）：选部门/类别、可附证据 → 平台智能分派对应部门 →
+        限时办结（如 7 天，可配）→ 进度可见 → 办结结果公示（脱敏）。
+        12345 不可接 → 自建工单 + 线下流转（P-04 双轨）；优秀建议/高频诉求可转 CIVIC G-02 建议论坛。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HotlineRequest'
+      responses:
+        '200':
+          description: 受理成功，返回工单号与受理状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HotlineSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /ticket/evidence:
+    post:
+      tags: [evidence]
+      summary: 投诉证据包出证（时间戳+哈希）【M1 · P-02】
+      description: |
+        投诉证据打包出证（P-02，线框 G-09 存证页）：证据时间戳 + SHA-256 哈希存证、只增不改，
+        供维权/执法调取；仅投诉当事人/监管可申请（2002）；工单不存在 3006。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceRequest'
+      responses:
+        '200':
+          description: 成功，返回证据包（evidenceId/hash/downloadUrl）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EvidenceResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+
+components:
+  schemas:
+    ComplaintCategory:
+      type: string
+      description: 投诉类别（S-09 类别步骤；MINOR_ENTRY=未成年人违规进入，举报数据流向 A-08 预警）
+      enum: [COUNTERFEIT, QUALITY, PRICE, SERVICE, MINOR_ENTRY, OTHER]
+      example: COUNTERFEIT
+    ComplaintRequest:
+      type: object
+      required: [merchantId, category, content]
+      properties:
+        merchantId:
+          type: string
+          description: 被投诉商户编号
+          example: m_20260825001
+        category:
+          $ref: '#/components/schemas/ComplaintCategory'
+        content:
+          type: string
+          description: 投诉内容（≤3 步提交）
+          maxLength: 3000
+          example: 购买的农药疑似假冒，包装与正品不符
+        evidenceKeys:
+          type: array
+          description: 证据附件（OSS 对象键，服务端签名直传）
+          items:
+            type: string
+        traceCode:
+          type: string
+          description: 关联溯源码（T-16 假货投诉复用本接口，同一溯源码多次投诉自动预警）
+          example: MS20260901A001
+        orderId:
+          type: string
+          description: 关联订单号（商品详情/订单页投诉入口，可选）
+          example: O-2026082503
+    ComplaintSubmitResult:
+      type: object
+      required: [ticketId, status]
+      properties:
+        ticketId:
+          type: string
+          description: 工单号
+          example: C-20260901
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+    TicketType:
+      type: string
+      description: 工单类型
+      enum: [COMPLAINT, HOTLINE, APPEAL]
+      example: COMPLAINT
+    TicketStatus:
+      type: string
+      description: |
+        工单状态（PDD §5.5.2）：SUBMITTED 已提交 → PROCESSING 处理中 → RESOLVED 已解决 /
+        ESCALATED 已升级市监 → CLOSED 已办结（公示，可评价）。
+      enum: [SUBMITTED, PROCESSING, RESOLVED, ESCALATED, CLOSED]
+      example: PROCESSING
+    TicketItem:
+      type: object
+      required: [ticketId, ticketType, status, createdAt]
+      properties:
+        ticketId:
+          type: string
+          example: C-20260901
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+        category:
+          type: string
+          description: 类别/部门
+          example: 假货
+        counterpartName:
+          type: string
+          description: 对方名称（脱敏展示）
+          example: XX农资店
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        deadlineAt:
+          type: string
+          format: date-time
+          description: 限时处理截止（投诉 48h / 诉求 7 天可配）
+          example: '2026-09-03T10:00:00Z'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    TicketPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/TicketItem'
+    TimelineEvent:
+      type: object
+      required: [at, status, note]
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: 事件时间
+          example: '2026-09-01T10:00:00Z'
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        operator:
+          type: string
+          description: 操作方（消费者/商户/监管，脱敏展示）
+          example: 消费者
+        note:
+          type: string
+          description: 事件说明
+          example: 提交投诉
+    TicketDetail:
+      type: object
+      required: [ticketId, ticketType, status, timeline, createdAt]
+      properties:
+        ticketId:
+          type: string
+          example: C-20260901
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+        category:
+          type: string
+          example: 假货
+        content:
+          type: string
+          description: 工单内容
+          example: 购买的农药疑似假冒，包装与正品不符
+        evidenceKeys:
+          type: array
+          description: 证据附件（签名 URL 由前端另取）
+          items:
+            type: string
+        merchantName:
+          type: string
+          description: 商户名称（脱敏展示）
+          example: XX农资店
+        dept:
+          type: string
+          description: 分派部门（热线诉求）
+          example: 市监局
+        traceCode:
+          type: string
+          description: 关联溯源码（T-16）
+          example: MS20260901A001
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        deadlineAt:
+          type: string
+          format: date-time
+          example: '2026-09-03T10:00:00Z'
+        timeline:
+          type: array
+          description: 处理时间轴（全程进度可见）
+          items:
+            $ref: '#/components/schemas/TimelineEvent'
+        result:
+          type: string
+          description: 办结结论（公示，脱敏）
+          example: 经查实为假冒产品，已责令下架并处罚
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    HandleRequest:
+      type: object
+      required: [reply]
+      properties:
+        reply:
+          type: string
+          description: 处理结果（退款/协商等）
+          maxLength: 2000
+          example: 已为消费者办理全额退款
+        evidenceKeys:
+          type: array
+          description: 处理证据（OSS 对象键，可选）
+          items:
+            type: string
+    HandleResult:
+      type: object
+      required: [ticketId, status]
+      properties:
+        ticketId:
+          type: string
+          example: C-20260901
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+    EscalateRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 升级原因（自动升级/手动升级）
+          maxLength: 1000
+          example: 商家超时未处理
+    EscalateResult:
+      type: object
+      required: [ticketId, status]
+      properties:
+        ticketId:
+          type: string
+          example: C-20260901
+        status:
+          type: string
+          enum: [ESCALATED]
+          example: ESCALATED
+    ResolveRequest:
+      type: object
+      required: [conclusion]
+      properties:
+        conclusion:
+          type: string
+          description: 办结结论（公示，脱敏）
+          maxLength: 2000
+          example: 经查实为假冒产品，已责令下架并处罚
+    ResolveResult:
+      type: object
+      required: [ticketId, status, publishedAt]
+      properties:
+        ticketId:
+          type: string
+          example: C-20260901
+        status:
+          type: string
+          enum: [CLOSED]
+          example: CLOSED
+        publishedAt:
+          type: string
+          format: date-time
+          description: 公示时间
+          example: '2026-09-05T10:00:00Z'
+    EvaluateRequest:
+      type: object
+      required: [rating]
+      properties:
+        rating:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 5
+          description: 评分（1~5 星）
+          example: 5
+        comment:
+          type: string
+          description: 评价意见（可选）
+          maxLength: 500
+          example: 处理及时，满意
+    EvaluateResult:
+      type: object
+      required: [ticketId, evaluatedAt]
+      properties:
+        ticketId:
+          type: string
+          example: A-20260901
+        evaluatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-06T09:00:00Z'
+    AppealRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 申诉理由
+          maxLength: 2000
+          example: 差评内容不实，附交易与沟通证据
+        evidenceKeys:
+          type: array
+          description: 申诉证据（OSS 对象键，无证据提示补充）
+          items:
+            type: string
+    AppealSubmitResult:
+      type: object
+      required: [appealId, status]
+      properties:
+        appealId:
+          type: string
+          description: 申诉号
+          example: AP-20260901
+        status:
+          type: string
+          description: 申诉状态（平台复核后改判/驳回）
+          enum: [PENDING]
+          example: PENDING
+    HotlineCategory:
+      type: string
+      description: 诉求类别（线框 S-12）
+      enum: [SUGGESTION, COMPLAINT, CONSULT, HELP]
+      example: COMPLAINT
+    HotlineRequest:
+      type: object
+      required: [dept, category, content]
+      properties:
+        dept:
+          type: string
+          description: 诉求部门（市监局/城管/交通等）
+          maxLength: 50
+          example: 市监局
+        category:
+          $ref: '#/components/schemas/HotlineCategory'
+        content:
+          type: string
+          description: 诉求内容
+          maxLength: 3000
+          example: 小区附近菜市场缺斤少两
+        evidenceKeys:
+          type: array
+          description: 证据附件（OSS 对象键，可选）
+          items:
+            type: string
+    HotlineSubmitResult:
+      type: object
+      required: [ticketId, status]
+      properties:
+        ticketId:
+          type: string
+          description: 工单号
+          example: A-20260901
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+    EvidenceRequest:
+      type: object
+      required: [ticketId]
+      properties:
+        ticketId:
+          type: string
+          description: 工单号
+          example: C-20260901
+        purpose:
+          type: string
+          description: 出证用途（可选，留痕）
+          maxLength: 200
+          example: 消费维权
+    EvidenceResult:
+      type: object
+      required: [evidenceId, hash, downloadUrl, createdAt]
+      properties:
+        evidenceId:
+          type: string
+          description: 证据包编号
+          example: evd_1a2b3c4d5e6f
+        hash:
+          type: string
+          description: 证据包 SHA-256 哈希（时间戳 + 哈希，只增不改）
+          example: 7e1b42c9d8a5f3e01
+        downloadUrl:
+          type: string
+          description: 证据包下载地址（签名 URL，短时效）
+          example: https://oss.example.com/evidence/evd_1a2b3c4d5e6f.zip?sign=xxx
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-05T12:00:00Z'
+
+x-external-interfaces:
+  description: |
+    本服务无服务端间进向接口（endpoints 为空）。
+    出方向依赖：
+    - 投诉办结 → 评分事件上报 CRED（/cred/score/events，投诉扣分/投诉率计入商户信用）；
+    - 「未成年人违规进入」举报 → 上报 DASH（A-08 违规入场高频举报聚合，人工复核后推送）；
+    - 超时升级/催办走定时 JOB + MQ；优秀建议/高频诉求转 CIVIC G-02 建议论坛；
+    - 证据附件 OSS 直传（服务端签名，不占应用带宽）。
+  endpoints: []
