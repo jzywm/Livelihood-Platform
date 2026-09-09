@@ -1,0 +1,1227 @@
+openapi: 3.0.3
+info:
+  title: 结算服务 SETTLE · 接口文档
+  version: 1.0.0
+  description: |
+    结算服务（SETTLE）前端接口文档。模块 I3 工资保障代付、I4 商品购买结算分账【M2】、I5 零工劳务结算【M2】、
+    F4 货运运费托管结算【M2】、P-02 证据出证（结算侧）。
+    口径对齐：PDD §5.2 / §6.4.2；需求口径 PRD §5.11（I 组）、`32-功能列表.md` I-03/I-04/I-05/F-04；
+    边界依据 SSOT §2.2。里程碑标注：【M1】代付/预警/出证/资金审计；【M2】分账/零工/运费（占位）。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（支付通道回调、TRADE 分账触发）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权 / 幂等键）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：R-01 平台不沉淀资金、不做二清、不设资金池（记账与支付分离，资金始终在持牌机构账户）；
+      R-04 流水只增不改 + 时间戳 + 哈希存证；资金类写操作强制 Idempotency-Key；发薪/分账等敏感操作强制 MFA（2003）。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: payroll
+    description: 工资保障代付（I-03）
+  - name: arrears
+    description: 欠薪预警（I-03）
+  - name: evidence
+    description: 证据出证（P-02 结算侧）
+  - name: split
+    description: 商品购买结算分账（I-04）
+  - name: gig
+    description: 零工劳务结算（I-05）
+  - name: freight
+    description: 货运运费托管结算（F-04）
+  - name: flow
+    description: 资金流水审计（监管端）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /settle/payroll/disburse:
+    post:
+      tags: [payroll]
+      summary: 发起工资代付（第三方持牌通道）【M1 · I-03】
+      description: |
+        老板经持牌通道向工作者代付工资（I-03）：平台校验用工关系/考勤后调用通道代付，**平台不碰钱**，
+        真实资金由持牌机构从老板绑定对公/法人账户划转；流水号 + 通道交易号 + 时间戳 + 哈希即证据链。
+        幂等：强制 Idempotency-Key 头，重复提交返回原代付单（3008 幂等返回）；敏感操作强制 MFA（2003 未通过拦截）。
+        异常：通道失败/超时 → 4002 幂等重试或切换备选通道；收款账户与实名不一致 → 3002 拒绝；
+        对账不一致 → 3009 + 每日对账 JOB 补差；应发未发超时 → 自动触发欠薪预警（/settle/arrears/warnings）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayrollDisburseRequest'
+      responses:
+        '200':
+          description: 受理成功，返回代付单号与状态（代付中）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayrollSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '409':
+          description: 幂等键冲突（code=3008，返回原代付单）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3008
+                message: 幂等键冲突，返回原结果
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '422':
+          description: 业务规则拦截（code=3001 实名未完成 / 3002 收款账户实名不匹配 / 3009 对账不一致）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3002
+                message: 收款账户与实名不一致
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '502':
+          description: 支付通道失败或超时（code=4002，幂等重试或切换备选通道）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 4002
+                message: 支付通道失败或超时
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /settle/payrolls:
+    get:
+      tags: [payroll]
+      summary: 代付单列表（发起人视角，线框 M-10）【M1 · I-03】
+      description: |
+        经营端工资代付页（M-10）：老板查看本人发起的代付单（员工/应发/考勤/状态），按月份/状态筛选，
+        分页；数据仅本人可见（水平越权 2002 拦截）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/PayrollStatus'
+        - name: month
+          in: query
+          required: false
+          description: 代付月份（YYYY-MM）
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2026-01'
+      responses:
+        '200':
+          description: 成功，返回代付单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayrollPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /settle/payrolls/mine:
+    get:
+      tags: [payroll]
+      summary: 我的工资流水（收款人视角，线框 S-25）【M1 · I-03】
+      description: |
+        消费端「我的工资流水」页（S-25）：工作者查看本人作为收款人的工资流水（月份/状态筛选，分页），
+        含一键出证入口（POST /settle/evidence）；数据仅本人可见（2002 拦截）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/PayrollStatus'
+        - name: month
+          in: query
+          required: false
+          description: 月份（YYYY-MM）
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2026-01'
+      responses:
+        '200':
+          description: 成功，返回我的工资流水（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayrollPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /settle/payrolls/{payrollId}:
+    get:
+      tags: [payroll]
+      summary: 代付单查询（状态/通道交易号/到账时间）【M1 · I-03】
+      description: |
+        代付单详情（PDD §6.4.2 payroll/{id}）：状态、通道交易号、到账时间、考勤校验摘要与存证哈希；
+        仅当事双方/监管可见（2002 拦截）。
+      parameters:
+        - name: payrollId
+          in: path
+          required: true
+          description: 代付单号
+          schema:
+            type: string
+            example: pay_8f7e6d5c4b3a
+      responses:
+        '200':
+          description: 成功，返回代付单详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayrollDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /settle/payrolls/{payrollId}/confirm:
+    post:
+      tags: [payroll]
+      summary: 工作者收款确认（已到账 → 完成，信用更新）【M1 · I-03】
+      description: |
+        收款人确认到账（PDD §5.2.2 状态机：已到账 → 工作者确认 → 完成）：确认后更新老板发薪履约率
+        （信用联动 CRED）并留痕存证。仅收款人本人可确认（2002）；非「已到账」状态确认报 3007。
+      parameters:
+        - name: payrollId
+          in: path
+          required: true
+          description: 代付单号
+          schema:
+            type: string
+            example: pay_8f7e6d5c4b3a
+      responses:
+        '200':
+          description: 成功，代付单完成（信用已联动）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PayrollConfirmResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非「已到账」状态不可确认）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /settle/arrears/warnings:
+    get:
+      tags: [arrears]
+      summary: 欠薪预警列表【M1 · I-03】
+      description: |
+        「应发未发」超时自动预警列表（PDD §6.4.2 arrears/warnings）：监管端与当事工作者/老板可见
+        （按角色过滤，2002 拦截）；预警状态：OVERDUE 应发未发 → URGED 催办中 → RESOLVED 已解决
+        （仲裁走 TICKET D-02/T-15，不在本服务）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: merchantId
+          in: query
+          required: false
+          description: 商户筛选（监管端）
+          schema:
+            type: string
+            example: m_20260825001
+        - name: status
+          in: query
+          required: false
+          description: 预警状态筛选
+          schema:
+            $ref: '#/components/schemas/ArrearsStatus'
+      responses:
+        '200':
+          description: 成功，返回欠薪预警列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArrearsWarningPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /settle/arrears/warnings/{warningId}/urge:
+    post:
+      tags: [arrears]
+      summary: 欠薪催办（监管端，预警 → 催办中）【M1 · I-03】
+      description: |
+        监管部门对欠薪预警发起催办（状态机：预警 → 催办中 → 已解决/仲裁）：催办记录留痕，
+        站内信/通知触达老板；需监管角色（RBAC）；非预警状态催办报 3007。
+      parameters:
+        - name: warningId
+          in: path
+          required: true
+          description: 预警编号
+          schema:
+            type: string
+            example: warn_9f8e7d6c5b4a
+      responses:
+        '200':
+          description: 成功，预警进入催办中
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArrearsUrgeResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /settle/evidence:
+    post:
+      tags: [evidence]
+      summary: 证据包出证（流水+用工记录，时间戳+哈希）【M1 · P-02】
+      description: |
+        将流水 + 用工/考勤记录打包出证（PDD §6.4.2 evidence；P-02）：evidenceId + SHA-256 哈希 +
+        downloadUrl，证据包只增不改，供劳动仲裁/执法调取。
+        申请人需为当事方（工作者/老板本人）或监管角色，越权 2002；对象不存在 3006。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceRequest'
+      responses:
+        '200':
+          description: 成功，返回证据包（evidenceId/hash/downloadUrl）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EvidenceResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /settle/splits:
+    get:
+      tags: [split]
+      summary: 分账流水列表【M2 · I-04 占位】
+      description: |
+        商品购买结算分账（I-04）流水列表：订单验收通过后经持牌通道分账（货款→卖方、服务费→平台，
+        费率 0.5%~1% 公开，P-01）；经营端/监管端可见（按角色过滤）。分账执行由 TRADE 触发
+        （服务端间接口见 x-external-interfaces 附录）。M2 占位，里程碑交付前口径以评审为准。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 分账状态筛选
+          schema:
+            $ref: '#/components/schemas/SplitStatus'
+        - name: month
+          in: query
+          required: false
+          description: 月份（YYYY-MM）
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2026-01'
+      responses:
+        '200':
+          description: 成功，返回分账流水（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SplitPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /settle/gig/disburse:
+    post:
+      tags: [gig]
+      summary: 零工劳务结算发起（日结/周结/月结）【M2 · I-05 占位】
+      description: |
+        零工灵活结算（I-05）：日结/周结/月结，复用 I-03 代付能力；老板发起 → 平台校验用工记录/考勤 →
+        第三方代付 → 双方确认 → 计入劳务信用。
+        幂等：强制 Idempotency-Key；收款账户实名不匹配 3002；通道失败 4002。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GigDisburseRequest'
+      responses:
+        '200':
+          description: 受理成功，返回结算单号
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GigDisburseResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '409':
+          description: 幂等键冲突（code=3008）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3008
+                message: 幂等键冲突，返回原结果
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '422':
+          description: 业务规则拦截（code=3002 收款账户实名不匹配）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3002
+                message: 收款账户与实名不一致
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '502':
+          description: 支付通道失败或超时（code=4002）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 4002
+                message: 支付通道失败或超时
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /settle/gig/dues:
+    get:
+      tags: [gig]
+      summary: 应结未结查询（工作者视角）【M2 · I-05 占位】
+      description: |
+        工作者随时查看应结未结金额与发放进度（PRD §5.11 I-05）：按结算周期聚合，分页。
+        M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: periodType
+          in: query
+          required: false
+          description: 结算周期筛选
+          schema:
+            $ref: '#/components/schemas/GigPeriodType'
+      responses:
+        '200':
+          description: 成功，返回应结未结列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GigDuePage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /settle/freight/escrows:
+    get:
+      tags: [freight]
+      summary: 运费托管单列表（货主/司机视角）【M2 · F-04 占位】
+      description: |
+        货运运费托管（F-04）托管单列表：下单冻结运费（第三方持牌通道托管，平台不沉淀）→
+        送达确认后放款入司机账户；货主/司机按角色过滤（2002）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 托管状态筛选
+          schema:
+            $ref: '#/components/schemas/EscrowStatus'
+      responses:
+        '200':
+          description: 成功，返回托管单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FreightEscrowPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /settle/freight/release:
+    post:
+      tags: [freight]
+      summary: 到货确认放款【M2 · F-04 占位】
+      description: |
+        货主到货确认后触发放款（F-04）：运费由托管账户放款入司机账户，留痕存证，杜绝拖欠；
+        货损/迟到纠纷 → 存证仲裁并计入双方信用（仲裁走 TICKET T-15/D-02）。
+        幂等：强制 Idempotency-Key；非托管中状态放款报 3007。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FreightReleaseRequest'
+      responses:
+        '200':
+          description: 受理成功，返回放款结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FreightReleaseResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '422':
+          description: 状态不允许（code=3007，非托管中不可放款）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '502':
+          description: 支付通道失败或超时（code=4002）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 4002
+                message: 支付通道失败或超时
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /settle/flows:
+    get:
+      tags: [flow]
+      summary: 结算流水总览（监管端资金审计）【M1 · I-03/I-04】
+      description: |
+        监管端资金流水审计列表（README 三端分布「资金流水审计」）：代付/分账/零工/运费全业务类型
+        流水总览（通道交易号 + 存证哈希），按类型/状态/月份筛选，分页；需监管角色（2002 拦截）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: bizType
+          in: query
+          required: false
+          description: 业务类型筛选
+          schema:
+            $ref: '#/components/schemas/SettleBizType'
+        - name: month
+          in: query
+          required: false
+          description: 月份（YYYY-MM）
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+            example: '2026-01'
+      responses:
+        '200':
+          description: 成功，返回结算流水（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SettleFlowPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+
+components:
+  schemas:
+    PayrollStatus:
+      type: string
+      description: |
+        代付单状态（PDD §5.2.2 状态机）：PENDING_VALIDATION 待校验 → DISBURSING 代付中 → PAID 已到账 →
+        CONFIRMED 完成（信用更新）；FAILED 失败（可重试）；OVERDUE 应发未发 → URGED 催办中 → RESOLVED 已解决（仲裁走 TICKET）。
+      enum: [PENDING_VALIDATION, DISBURSING, PAID, CONFIRMED, FAILED, OVERDUE, URGED, RESOLVED]
+      example: DISBURSING
+    PayrollDisburseRequest:
+      type: object
+      required: [employmentId, amount, payeeAccount]
+      properties:
+        employmentId:
+          type: string
+          description: 用工关系编号（平台校验用工/考勤后代付）
+          example: emp_20260801001
+        amount:
+          type: number
+          minimum: 0.01
+          description: 代付金额（元）
+          example: 3200
+        payeeAccount:
+          type: string
+          description: 收款账户绑定号（与实名不一致 → 3002 拒绝）
+          example: bind_9f8e7d6c5b4a
+        remark:
+          type: string
+          description: 备注（可选）
+          maxLength: 200
+          example: 2026 年 1 月工资
+    PayrollSubmitResult:
+      type: object
+      required: [payrollId, status]
+      properties:
+        payrollId:
+          type: string
+          description: 代付单号
+          example: pay_8f7e6d5c4b3a
+        status:
+          $ref: '#/components/schemas/PayrollStatus'
+    PayrollItem:
+      type: object
+      required: [payrollId, employmentId, amount, status, createdAt]
+      properties:
+        payrollId:
+          type: string
+          example: pay_8f7e6d5c4b3a
+        employmentId:
+          type: string
+          example: emp_20260801001
+        employerName:
+          type: string
+          description: 老板/商户名称（脱敏展示）
+          example: 张*农资
+        employeeName:
+          type: string
+          description: 工作者姓名（脱敏展示）
+          example: 李*华
+        amount:
+          type: number
+          example: 3200
+        status:
+          $ref: '#/components/schemas/PayrollStatus'
+        channelOrderNo:
+          type: string
+          description: 通道交易号（到账后回填，即证据链）
+          example: wx4200001234567890
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+        paidAt:
+          type: string
+          format: date-time
+          description: 到账时间
+          example: '2026-01-15T10:31:00Z'
+        confirmedAt:
+          type: string
+          format: date-time
+          description: 收款确认时间
+          example: '2026-01-15T11:00:00Z'
+    PayrollPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/PayrollItem'
+    PayrollDetail:
+      allOf:
+        - $ref: '#/components/schemas/PayrollItem'
+        - type: object
+          properties:
+            attendance:
+              type: object
+              description: 考勤校验摘要（代付依据）
+              properties:
+                month:
+                  type: string
+                  example: '2026-01'
+                hours:
+                  type: number
+                  description: 工时
+                  example: 168
+                checked:
+                  type: boolean
+                  description: 考勤校验通过
+                  example: true
+            evidenceHash:
+              type: string
+              description: 流水存证哈希（SHA-256，只增不改）
+              example: a3f2b1c0d9e8f7a6
+    PayrollConfirmResult:
+      type: object
+      required: [payrollId, status, confirmedAt]
+      properties:
+        payrollId:
+          type: string
+          example: pay_8f7e6d5c4b3a
+        status:
+          type: string
+          enum: [CONFIRMED]
+          example: CONFIRMED
+        confirmedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T11:00:00Z'
+    ArrearsStatus:
+      type: string
+      description: 欠薪预警状态（OVERDUE → URGED → RESOLVED；仲裁走 TICKET）
+      enum: [OVERDUE, URGED, RESOLVED]
+      example: OVERDUE
+    ArrearsWarningItem:
+      type: object
+      required: [warningId, payrollId, amount, dueDate, status, createdAt]
+      properties:
+        warningId:
+          type: string
+          example: warn_9f8e7d6c5b4a
+        payrollId:
+          type: string
+          description: 关联代付单
+          example: pay_8f7e6d5c4b3a
+        merchantName:
+          type: string
+          description: 商户名称（脱敏展示）
+          example: 张*农资
+        employeeName:
+          type: string
+          description: 工作者姓名（脱敏展示）
+          example: 李*华
+        amount:
+          type: number
+          description: 应发未发金额（元）
+          example: 3200
+        dueDate:
+          type: string
+          format: date
+          description: 应发日期
+          example: '2026-01-10'
+        status:
+          $ref: '#/components/schemas/ArrearsStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-11T08:00:00Z'
+        urgedAt:
+          type: string
+          format: date-time
+          description: 催办时间
+          example: '2026-01-12T09:00:00Z'
+    ArrearsWarningPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/ArrearsWarningItem'
+    ArrearsUrgeResult:
+      type: object
+      required: [warningId, status, urgedAt]
+      properties:
+        warningId:
+          type: string
+          example: warn_9f8e7d6c5b4a
+        status:
+          type: string
+          enum: [URGED]
+          example: URGED
+        urgedAt:
+          type: string
+          format: date-time
+          example: '2026-01-12T09:00:00Z'
+    EvidenceBizType:
+      type: string
+      description: 出证业务类型
+      enum: [PAYROLL, SPLIT, GIG, FREIGHT]
+      example: PAYROLL
+    EvidenceRequest:
+      type: object
+      required: [bizType, bizId]
+      properties:
+        bizType:
+          $ref: '#/components/schemas/EvidenceBizType'
+        bizId:
+          type: string
+          description: 业务单号（代付单/分账单/零工结算单/运费托管单）
+          example: pay_8f7e6d5c4b3a
+        purpose:
+          type: string
+          description: 出证用途（可选，留痕）
+          maxLength: 200
+          example: 劳动仲裁
+    EvidenceResult:
+      type: object
+      required: [evidenceId, hash, downloadUrl, createdAt]
+      properties:
+        evidenceId:
+          type: string
+          description: 证据包编号
+          example: evd_1a2b3c4d5e6f
+        hash:
+          type: string
+          description: 证据包 SHA-256 哈希（时间戳 + 哈希，只增不改）
+          example: 9c8d7e6f5a4b3c2d
+        downloadUrl:
+          type: string
+          description: 证据包下载地址（签名 URL，短时效）
+          example: https://oss.example.com/evidence/evd_1a2b3c4d5e6f.zip?sign=xxx
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T12:00:00Z'
+    SplitStatus:
+      type: string
+      description: 分账状态
+      enum: [PENDING, SUCCESS, FAILED]
+      example: SUCCESS
+    SplitItem:
+      type: object
+      required: [splitId, orderId, totalAmount, goodsAmount, feeAmount, feeRate, status, createdAt]
+      properties:
+        splitId:
+          type: string
+          example: spl_8f7e6d5c4b3a
+        orderId:
+          type: string
+          description: 交易订单号（TRADE）
+          example: O-2026082503
+        merchantName:
+          type: string
+          description: 卖方商户名称（脱敏展示）
+          example: XX食材
+        totalAmount:
+          type: number
+          description: 订单总额（元）
+          example: 500
+        goodsAmount:
+          type: number
+          description: 卖方货款（元）
+          example: 495
+        feeAmount:
+          type: number
+          description: 平台服务费（元）
+          example: 5
+        feeRate:
+          type: number
+          format: float
+          description: 服务费率（0.5%~1% 分品类公开，P-01）
+          example: 0.01
+        status:
+          $ref: '#/components/schemas/SplitStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    SplitPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/SplitItem'
+    GigPeriodType:
+      type: string
+      description: 零工结算周期（日结/周结/月结）
+      enum: [DAILY, WEEKLY, MONTHLY]
+      example: MONTHLY
+    GigDisburseRequest:
+      type: object
+      required: [employmentId, periodType, periodStart, periodEnd, amount, payeeAccount]
+      properties:
+        employmentId:
+          type: string
+          description: 零工用工记录编号
+          example: emp_20260801002
+        periodType:
+          $ref: '#/components/schemas/GigPeriodType'
+        periodStart:
+          type: string
+          format: date
+          description: 结算周期起
+          example: '2026-01-01'
+        periodEnd:
+          type: string
+          format: date
+          description: 结算周期止
+          example: '2026-01-31'
+        amount:
+          type: number
+          minimum: 0.01
+          example: 2400
+        payeeAccount:
+          type: string
+          description: 收款账户绑定号（实名不匹配 → 3002）
+          example: bind_9f8e7d6c5b4a
+    GigDisburseResult:
+      type: object
+      required: [gigSettleId, status]
+      properties:
+        gigSettleId:
+          type: string
+          description: 零工结算单号
+          example: gig_8f7e6d5c4b3a
+        status:
+          $ref: '#/components/schemas/PayrollStatus'
+    GigDueItem:
+      type: object
+      required: [employmentId, periodType, periodStart, periodEnd, dueAmount, paidAmount, status]
+      properties:
+        employmentId:
+          type: string
+          example: emp_20260801002
+        periodType:
+          $ref: '#/components/schemas/GigPeriodType'
+        periodStart:
+          type: string
+          format: date
+          example: '2026-01-01'
+        periodEnd:
+          type: string
+          format: date
+          example: '2026-01-31'
+        dueAmount:
+          type: number
+          description: 应结金额（元）
+          example: 2400
+        paidAmount:
+          type: number
+          description: 已结金额（元）
+          example: 0
+        status:
+          type: string
+          description: 发放进度
+          enum: [UNSETTLED, SETTLING, SETTLED]
+          example: UNSETTLED
+    GigDuePage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/GigDueItem'
+    EscrowStatus:
+      type: string
+      description: 运费托管状态（FROZEN 冻结托管 → RELEASED 已放款；DISPUTED 纠纷存证仲裁）
+      enum: [FROZEN, RELEASED, DISPUTED]
+      example: FROZEN
+    FreightEscrowItem:
+      type: object
+      required: [escrowId, freightOrderId, amount, status, createdAt]
+      properties:
+        escrowId:
+          type: string
+          description: 托管单号
+          example: esc_8f7e6d5c4b3a
+        freightOrderId:
+          type: string
+          description: 货运订单号（TRADE）
+          example: F-2026082501
+        shipperName:
+          type: string
+          description: 货主名称（脱敏展示）
+          example: 王*材
+        driverName:
+          type: string
+          description: 司机名称（脱敏展示）
+          example: 赵*运
+        amount:
+          type: number
+          description: 托管运费（元）
+          example: 800
+        status:
+          $ref: '#/components/schemas/EscrowStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+        releasedAt:
+          type: string
+          format: date-time
+          description: 放款时间
+          example: '2026-01-16T10:00:00Z'
+    FreightEscrowPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/FreightEscrowItem'
+    FreightReleaseRequest:
+      type: object
+      required: [escrowId]
+      properties:
+        escrowId:
+          type: string
+          description: 托管单号
+          example: esc_8f7e6d5c4b3a
+    FreightReleaseResult:
+      type: object
+      required: [escrowId, status, releasedAt]
+      properties:
+        escrowId:
+          type: string
+          example: esc_8f7e6d5c4b3a
+        status:
+          type: string
+          enum: [RELEASED]
+          example: RELEASED
+        releasedAt:
+          type: string
+          format: date-time
+          example: '2026-01-16T10:00:00Z'
+    SettleBizType:
+      type: string
+      description: 结算业务类型（监管审计视图）
+      enum: [PAYROLL, SPLIT, GIG, FREIGHT]
+      example: PAYROLL
+    SettleFlowItem:
+      type: object
+      required: [flowId, bizType, amount, status, createdAt]
+      properties:
+        flowId:
+          type: string
+          description: 结算流水号
+          example: sf_8f7e6d5c4b3a
+        bizType:
+          $ref: '#/components/schemas/SettleBizType'
+        merchantName:
+          type: string
+          description: 关联商户名称（脱敏展示）
+          example: 张*农资
+        amount:
+          type: number
+          description: 金额（元）
+          example: 3200
+        channelOrderNo:
+          type: string
+          description: 通道交易号
+          example: wx4200001234567890
+        hash:
+          type: string
+          description: 存证哈希（只增不改）
+          example: a3f2b1c0d9e8f7a6
+        status:
+          type: string
+          description: 流水状态
+          enum: [PROCESSING, SUCCESS, FAILED]
+          example: SUCCESS
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    SettleFlowPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/SettleFlowItem'
+
+x-external-interfaces:
+  description: |
+    服务端间接口（内部/外部回调），前端勿调，不在上方 paths 中。
+    出方向依赖：
+    - 到账确认/放款成功后发事件更新发薪履约率（EMP/CRED 联动）、劳务信用（I-02/I-05）；
+    - 欠薪预警上报 DASH（A-08 聚合推送）；
+    - 每日对账 JOB 扫描补差（3009 对账不一致补偿）。
+  endpoints:
+    - method: POST
+      path: /settle/payroll/callback
+      tags: [payroll]
+      summary: 支付通道代付结果回调（服务端验签 + 幂等）
+      description: |
+        第三方持牌通道代付结果异步回调（PDD §6.4.2 payroll/callback）。服务端验签（通道证书）+ 幂等 +
+        超时状态机自动查单兜底；回调报文以通道文档为准。前端永远不调用此接口。
+      requestBody:
+        description: 通道回调报文（字段名以通道文档为准）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channelOrderNo, result, sign]
+              properties:
+                channelOrderNo:
+                  type: string
+                  description: 通道交易号
+                result:
+                  type: string
+                  description: 通道处理结果
+                sign:
+                  type: string
+                  description: 通道签名，服务端验签
+      responses:
+        '200':
+          description: 收到并受理（异步入账 + 对账）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+    - method: POST
+      path: /settle/split/execute
+      tags: [split]
+      summary: 分账执行触发（服务端间，TRADE → SETTLE）
+      description: |
+        交易订单验收通过后由 TRADE 触发分账（I-04）：货款 → 卖方、平台服务费 → 平台，
+        全程走持牌分账通道不沉淀（R-01）。服务端间鉴权（内部 Token）+ 幂等；失败重试 + 每日对账。
+        前端永远不调用此接口。
+      requestBody:
+        description: 分账执行请求（服务端间报文）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId]
+              properties:
+                orderId:
+                  type: string
+                  description: 交易订单号
+      responses:
+        '200':
+          description: 受理成功，返回分账单号
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [splitId]
+                        properties:
+                          splitId:
+                            type: string
+                            example: spl_8f7e6d5c4b3a
