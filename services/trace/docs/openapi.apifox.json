@@ -1,0 +1,5510 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "溯源服务 TRACE · 接口文档",
+    "version": "1.0.0",
+    "description": "溯源服务（TRACE）前端接口文档。模块 T2 供应商资质核验（T-01）、T-05 供应商信用档案与信用分、\nT3 溯源二维码（T-08 批次码生成 / T-09 扫码验真 / T-10 存证与异常预警）、B-03 抽检结果公示【M2】、\nB-04 店铺直播【M2】。\n口径对齐：PDD §5.6 / §6.4.6 / §5.14.3；需求口径 PRD §5.3（B 组）、§5.10（T 组）；边界依据 SSOT §2.6。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 服务端间接口（AICORE 直播画面异常标记回传）见文末 x-external-interfaces 附录，前端勿调。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 红线：R-09 强监管品类只做信息撮合 + 溯源核验、不替代行政许可；R-04 环节记录时间戳 + 哈希存证、只增不改；\n  R-15 供应商信用分防刷拦截。\n- 边界（SSOT C-02 已决策）：T-05 信用分公式（资质 30% + 履约 30% + 口碑 30% + 贡献 10%）在 TRACE 计算，\n  信用分与红黑榜**权威存储与公示在 CRED**，经接口回写（POST /cred/score/supplier）；放心供应商标识由 TRACE\n  动态授予/撤销（≥85 且无质量投诉）、CRED 存储公示；T-07 扣分申诉复用 TICKET D-03 机制。\n"
+  },
+  "servers": [
+    {
+      "url": "https://api.example.com/api/v1",
+      "description": "生产（示例域名）"
+    },
+    {
+      "url": "http://localhost:8080/api/v1",
+      "description": "本地开发（Java）"
+    }
+  ],
+  "tags": [
+    {
+      "name": "supplier",
+      "description": "供应商入驻与信用（T-01/T-05）"
+    },
+    {
+      "name": "batch",
+      "description": "批次与溯源码（T-08）"
+    },
+    {
+      "name": "scan",
+      "description": "扫码验真（T-09）"
+    },
+    {
+      "name": "anomaly",
+      "description": "溯源异常预警（T-10）"
+    },
+    {
+      "name": "inspection",
+      "description": "抽检结果公示（B-03）"
+    },
+    {
+      "name": "live",
+      "description": "店铺直播（B-04）"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/trace/supplier": {
+      "post": {
+        "tags": [
+          "supplier"
+        ],
+        "summary": "供应商入驻与品类资质核验【M1 · T-01】",
+        "description": "供应商实名 + 按品类核验资质后开通上架（T-01，线框 M-18）：农资 = 营业执照 + 经营/生产许可 + 登记批号；\n食材 = 营业执照 + 经营/生产许可 + 检验报告（必备）；首期农资 + 食材品类。\n平台只做信息核验与留痕、不替代行政许可（R-09）；实名仅微信/支付宝回传、不接受人工降级。\n资质不达标 → 3003 退回；实名未完成 → 3001。入驻即同步建立供应商信用档案（T-05）。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "licenseNo",
+                  "licenseImageKey",
+                  "category"
+                ],
+                "properties": {
+                  "licenseNo": {
+                    "type": "string",
+                    "description": "营业执照统一社会信用代码",
+                    "example": "91130100MA0XXXXXXX"
+                  },
+                  "licenseImageKey": {
+                    "type": "string",
+                    "description": "营业执照图像 OSS 对象键",
+                    "example": "cert/oss/2026/01/license001.jpg"
+                  },
+                  "category": {
+                    "type": "string",
+                    "description": "品类（首期农资/食材；门槛按表扩展 T-19）",
+                    "maxLength": 50,
+                    "example": "农资"
+                  },
+                  "permitImageKeys": {
+                    "type": "array",
+                    "description": "品类资质附件（农资：经营/生产许可 + 登记批号；食材：许可 + 检验报告）",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "受理成功，返回供应商号与核验状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "supplierId",
+                            "auditStatus"
+                          ],
+                          "properties": {
+                            "supplierId": {
+                              "type": "string",
+                              "description": "供应商编号",
+                              "example": "s_20260825001"
+                            },
+                            "auditStatus": {
+                              "type": "string",
+                              "enum": [
+                                "PENDING",
+                                "APPROVED",
+                                "REJECTED"
+                              ],
+                              "example": "PENDING"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "业务规则拦截（code=3001 实名未完成 / 3003 资质核验不通过，退回补传）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3003,
+                  "message": "资质核验不通过",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/suppliers": {
+      "get": {
+        "tags": [
+          "supplier"
+        ],
+        "summary": "供应商列表（信用/放心供应商筛选）【M1 · T-05】",
+        "description": "供应商列表（经营端进货选品 M-24 复用供应商信用 + 溯源核验）：按信用分/放心供应商筛选，分页；\n放心供应商标识由 TRACE 动态授予/撤销（≥85 且无质量投诉）。\n",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码，从 1 开始",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "每页条数，上限 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "品类筛选",
+            "schema": {
+              "type": "string",
+              "maxLength": 50
+            }
+          },
+          {
+            "name": "trustedOnly",
+            "in": "query",
+            "required": false,
+            "description": "只看放心供应商",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "minScore",
+            "in": "query",
+            "required": false,
+            "description": "信用分下限筛选",
+            "schema": {
+              "type": "number",
+              "format": "float",
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回供应商列表（分页）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+                              "required": [
+                                "list",
+                                "total",
+                                "page",
+                                "pageSize"
+                              ],
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "description": "当前页数据",
+                                  "items": {}
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "description": "总条数",
+                                  "example": 120
+                                },
+                                "page": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "当前页码（1 起始）",
+                                  "example": 1
+                                },
+                                "pageSize": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "每页条数",
+                                  "example": 20
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "supplierId",
+                                      "name",
+                                      "category",
+                                      "creditScore"
+                                    ],
+                                    "properties": {
+                                      "supplierId": {
+                                        "type": "string",
+                                        "example": "s_20260825001"
+                                      },
+                                      "name": {
+                                        "type": "string",
+                                        "description": "供应商名称（脱敏展示）",
+                                        "example": "XX农资"
+                                      },
+                                      "category": {
+                                        "type": "string",
+                                        "example": "农资"
+                                      },
+                                      "creditScore": {
+                                        "type": "number",
+                                        "format": "float",
+                                        "minimum": 0,
+                                        "maximum": 100,
+                                        "example": 92
+                                      },
+                                      "trusted": {
+                                        "type": "boolean",
+                                        "description": "放心供应商标识（≥85 且无质量投诉，动态授予/撤销）",
+                                        "example": true
+                                      },
+                                      "reviewRate": {
+                                        "type": "number",
+                                        "format": "float",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                        "description": "好评率（0-1）",
+                                        "example": 0.96
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/suppliers/{supplierId}": {
+      "get": {
+        "tags": [
+          "supplier"
+        ],
+        "summary": "供应商信用档案（四维构成+放心标识，线框 M-19）【M1 · T-05】",
+        "description": "供应商信用档案（M-19）：信用分四维构成（资质合规 30% + 交易履约 30% + 质量口碑 30% +\n正向贡献 10%，已确认）、放心供应商标识（动态授予/撤销，撤销公示理由）与扣分明细。\n扣分申诉复用 TICKET D-03 机制（本服务不建第二套申诉）。对象不存在 → 3006。\n",
+        "parameters": [
+          {
+            "name": "supplierId",
+            "in": "path",
+            "required": true,
+            "description": "供应商编号",
+            "schema": {
+              "type": "string",
+              "example": "s_20260825001"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回供应商信用档案",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "supplierId",
+                            "name",
+                            "category",
+                            "score",
+                            "dims",
+                            "trusted",
+                            "updatedAt"
+                          ],
+                          "properties": {
+                            "supplierId": {
+                              "type": "string",
+                              "example": "s_20260825001"
+                            },
+                            "name": {
+                              "type": "string",
+                              "example": "XX农资"
+                            },
+                            "category": {
+                              "type": "string",
+                              "example": "农资"
+                            },
+                            "score": {
+                              "type": "number",
+                              "format": "float",
+                              "minimum": 0,
+                              "maximum": 100,
+                              "description": "信用分（T-05 公式在 TRACE 计算、CRED 权威存储公示）",
+                              "example": 92
+                            },
+                            "dims": {
+                              "type": "array",
+                              "description": "四维构成（资质 30% + 履约 30% + 口碑 30% + 贡献 10%）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "name",
+                                  "weight",
+                                  "score"
+                                ],
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "description": "维度名（资质合规/交易履约/质量口碑/正向贡献）",
+                                    "example": "资质合规"
+                                  },
+                                  "weight": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "description": "权重（30%/30%/30%/10%，已确认）",
+                                    "example": 0.3
+                                  },
+                                  "score": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 100,
+                                    "example": 95
+                                  }
+                                }
+                              }
+                            },
+                            "trusted": {
+                              "type": "boolean",
+                              "description": "放心供应商标识（TRACE 动态授予/撤销，撤销公示理由）",
+                              "example": true
+                            },
+                            "deductions": {
+                              "type": "array",
+                              "description": "扣分明细（申诉复用 TICKET D-03）",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "reason": {
+                                    "type": "string",
+                                    "example": "质量投诉 -2 分"
+                                  },
+                                  "points": {
+                                    "type": "number",
+                                    "example": -2
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "example": "2026-01-10T09:00:00Z"
+                                  }
+                                }
+                              }
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "example": "2026-01-15T10:30:00Z"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "对象不存在",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/batch": {
+      "post": {
+        "tags": [
+          "batch"
+        ],
+        "summary": "创建批次 + 生成溯源码（一物/一批一码）【M1 · T-08】",
+        "description": "创建批次即生成唯一溯源码（T-08，线框 M-20）：溯源码含品类 + 供应商 + 批号 + 校验；\n一物一码/一批一码；首期农资 + 食材品类。供应商未入驻 → 3005。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "supplierId",
+                  "category",
+                  "batchNo"
+                ],
+                "properties": {
+                  "supplierId": {
+                    "type": "string",
+                    "description": "供应商编号（未入驻 → 3005）",
+                    "example": "s_20260825001"
+                  },
+                  "category": {
+                    "type": "string",
+                    "description": "品类（首期农资/食材）",
+                    "maxLength": 50,
+                    "example": "农资"
+                  },
+                  "batchNo": {
+                    "type": "string",
+                    "description": "批次号",
+                    "maxLength": 50,
+                    "example": "B20260901-01"
+                  },
+                  "quantity": {
+                    "type": "number",
+                    "description": "数量（可选）",
+                    "example": 500
+                  },
+                  "unit": {
+                    "type": "string",
+                    "description": "单位（可选）",
+                    "example": "袋"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回批次号与溯源码",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "batchId",
+                            "code"
+                          ],
+                          "properties": {
+                            "batchId": {
+                              "type": "string",
+                              "description": "批次号",
+                              "example": "b_20260901001"
+                            },
+                            "code": {
+                              "type": "string",
+                              "description": "溯源码（含品类 + 供应商 + 批号 + 校验，一物一码/一批一码）",
+                              "example": "MZ-AGR-B20260901-01"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "业务规则拦截（code=3005 供应商未入驻）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3005,
+                  "message": "商户未入驻",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/batches": {
+      "get": {
+        "tags": [
+          "batch"
+        ],
+        "summary": "批次列表（线框 M-20）【M1 · T-08】",
+        "description": "批次管理列表（M-20）：批次号/品类/溯源码/环节进度（①~④），分页；仅本人供应商可见（2002 拦截）。\n",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码，从 1 开始",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "每页条数，上限 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "品类筛选",
+            "schema": {
+              "type": "string",
+              "maxLength": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回批次列表（分页）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+                              "required": [
+                                "list",
+                                "total",
+                                "page",
+                                "pageSize"
+                              ],
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "description": "当前页数据",
+                                  "items": {}
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "description": "总条数",
+                                  "example": 120
+                                },
+                                "page": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "当前页码（1 起始）",
+                                  "example": 1
+                                },
+                                "pageSize": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "每页条数",
+                                  "example": 20
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "batchId",
+                                      "code",
+                                      "category",
+                                      "batchNo",
+                                      "progress",
+                                      "createdAt"
+                                    ],
+                                    "properties": {
+                                      "batchId": {
+                                        "type": "string",
+                                        "example": "b_20260901001"
+                                      },
+                                      "code": {
+                                        "type": "string",
+                                        "example": "MZ-AGR-B20260901-01"
+                                      },
+                                      "supplierName": {
+                                        "type": "string",
+                                        "description": "供应商名称（脱敏展示）",
+                                        "example": "XX农资"
+                                      },
+                                      "category": {
+                                        "type": "string",
+                                        "example": "农资"
+                                      },
+                                      "batchNo": {
+                                        "type": "string",
+                                        "example": "B20260901-01"
+                                      },
+                                      "progress": {
+                                        "type": "integer",
+                                        "format": "int32",
+                                        "minimum": 0,
+                                        "maximum": 4,
+                                        "description": "环节进度（①批号 ②检测 ③温控 ④终端 已完成环节数）",
+                                        "example": 3
+                                      },
+                                      "createdAt": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "example": "2026-09-01T10:00:00Z"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/batch/{code}/event": {
+      "post": {
+        "tags": [
+          "batch"
+        ],
+        "summary": "环节上报（①批号②检测③温控④终端）【M1 · T-08】",
+        "description": "按批次上报环节记录（T-08，线框 M-21）：①批号登记 ②生产检测 ③流通温控 ④终端登记；\n各环节记录时间戳 + 哈希存证、只增不改（R-04）；重复上报按环节幂等去重（返回原 eventId）；\n温度超限 → 触发异常预警（/trace/anomalies）。溯源码无效 → 3006。\n",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "description": "溯源码",
+            "schema": {
+              "type": "string",
+              "example": "MZ-AGR-B20260901-01"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "eventType"
+                ],
+                "properties": {
+                  "eventType": {
+                    "type": "string",
+                    "description": "环节类型（①批号 ②检测 ③温控 ④终端）",
+                    "enum": [
+                      "BATCH_REGISTER",
+                      "INSPECTION",
+                      "TEMPERATURE",
+                      "TERMINAL"
+                    ],
+                    "example": "INSPECTION"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "环节数据（温度值/检测报告对象键/终端信息等，按环节类型）",
+                    "additionalProperties": true
+                  },
+                  "operator": {
+                    "type": "string",
+                    "description": "上报操作人（脱敏留痕）",
+                    "maxLength": 50,
+                    "example": "仓库管理员"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回环节记录号（重复上报幂等返回原记录）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "eventId",
+                            "eventType",
+                            "recordedAt"
+                          ],
+                          "properties": {
+                            "eventId": {
+                              "type": "string",
+                              "description": "环节记录号（重复上报幂等返回原记录）",
+                              "example": "ev_9f8e7d6c5b4a"
+                            },
+                            "eventType": {
+                              "type": "string",
+                              "description": "环节类型（①批号 ②检测 ③温控 ④终端）",
+                              "enum": [
+                                "BATCH_REGISTER",
+                                "INSPECTION",
+                                "TEMPERATURE",
+                                "TERMINAL"
+                              ],
+                              "example": "INSPECTION"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "example": "2026-09-02T10:00:00Z"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "对象不存在",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/scan/{code}": {
+      "get": {
+        "tags": [
+          "scan"
+        ],
+        "summary": "扫码验真（全链时间轴 + 断链标注）【M1 · T-09】",
+        "description": "扫码按时间轴展示「批号 → 检测 → 温控 → 终端」全链（T-09，线框 S-06）：任一环节缺失显式标注\n「缺失/断链」；扫码次数留痕（防伪旁证）；结果页可跳假货投诉（TICKET，关联溯源码）。\n溯源码无效 → 3006。本接口为高频读（扫码集中场景），前端无需登录（security 覆写）。\n",
+        "security": [],
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "description": "溯源码",
+            "schema": {
+              "type": "string",
+              "example": "MZ-AGR-B20260901-01"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回全链时间轴与验真结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "code",
+                            "chain",
+                            "brokenLinks",
+                            "scanCount",
+                            "verified"
+                          ],
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "example": "MZ-AGR-B20260901-01"
+                            },
+                            "batchId": {
+                              "type": "string",
+                              "example": "b_20260901001"
+                            },
+                            "supplierName": {
+                              "type": "string",
+                              "description": "供应商名称（脱敏展示）",
+                              "example": "XX农资"
+                            },
+                            "category": {
+                              "type": "string",
+                              "example": "农资"
+                            },
+                            "chain": {
+                              "type": "array",
+                              "description": "全链时间轴（批号→检测→温控→终端）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "stage",
+                                  "status"
+                                ],
+                                "properties": {
+                                  "stage": {
+                                    "type": "string",
+                                    "description": "环节（①批号 ②检测 ③温控 ④终端）",
+                                    "example": "② 生产检测"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "description": "环节状态（REGISTERED 已登记 / MISSING 缺失/断链，显式标注）",
+                                    "enum": [
+                                      "REGISTERED",
+                                      "MISSING"
+                                    ],
+                                    "example": "REGISTERED"
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "环节登记时间",
+                                    "example": "2026-09-02T10:00:00Z"
+                                  },
+                                  "detail": {
+                                    "type": "string",
+                                    "description": "环节摘要（如「检测合格 + 报告」）",
+                                    "example": "检测合格"
+                                  }
+                                }
+                              }
+                            },
+                            "brokenLinks": {
+                              "type": "array",
+                              "description": "断链环节列表（显式标注「缺失/断链」）",
+                              "items": {
+                                "type": "string",
+                                "example": "③ 流通温控"
+                              }
+                            },
+                            "scanCount": {
+                              "type": "integer",
+                              "format": "int32",
+                              "description": "扫码次数（留痕，防伪旁证）",
+                              "example": 3
+                            },
+                            "verified": {
+                              "type": "boolean",
+                              "description": "溯源链是否完整（无断链）",
+                              "example": true
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "对象不存在",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/anomalies": {
+      "get": {
+        "tags": [
+          "anomaly"
+        ],
+        "summary": "溯源异常批次预警列表（线框 R-07 溯源监控台）【M1 基础 · T-10】",
+        "description": "监管端溯源监控台（R-07）：断链率、异常批次列表——断链/重复流通/温度超限自动预警（T-10）；\n预警只推送线索、不自动执法（C8）；溯源记录时间戳 + 哈希存证、可出证供执法调取。\n需监管角色（2002 拦截）。\n",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码，从 1 开始",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "每页条数，上限 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "anomalyType",
+            "in": "query",
+            "required": false,
+            "description": "异常类型筛选",
+            "schema": {
+              "type": "string",
+              "description": "溯源异常类型（T-10）",
+              "enum": [
+                "BROKEN_LINK",
+                "DUPLICATE_CIRCULATION",
+                "TEMPERATURE_EXCEED"
+              ],
+              "example": "BROKEN_LINK"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "处理状态筛选",
+            "schema": {
+              "type": "string",
+              "description": "异常处理状态（预警只推送线索、人工处置，C8）",
+              "enum": [
+                "OPEN",
+                "RESOLVED"
+              ],
+              "example": "OPEN"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回异常批次列表（分页）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+                              "required": [
+                                "list",
+                                "total",
+                                "page",
+                                "pageSize"
+                              ],
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "description": "当前页数据",
+                                  "items": {}
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "description": "总条数",
+                                  "example": 120
+                                },
+                                "page": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "当前页码（1 起始）",
+                                  "example": 1
+                                },
+                                "pageSize": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "每页条数",
+                                  "example": 20
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "anomalyId",
+                                      "code",
+                                      "anomalyType",
+                                      "detectedAt",
+                                      "status"
+                                    ],
+                                    "properties": {
+                                      "anomalyId": {
+                                        "type": "string",
+                                        "example": "an_8f7e6d5c4b3a"
+                                      },
+                                      "code": {
+                                        "type": "string",
+                                        "description": "溯源码",
+                                        "example": "MZ-AGR-B20260901-01"
+                                      },
+                                      "batchId": {
+                                        "type": "string",
+                                        "example": "b_20260901001"
+                                      },
+                                      "supplierName": {
+                                        "type": "string",
+                                        "description": "供应商名称（脱敏展示）",
+                                        "example": "XX农资"
+                                      },
+                                      "anomalyType": {
+                                        "type": "string",
+                                        "description": "溯源异常类型（T-10）",
+                                        "enum": [
+                                          "BROKEN_LINK",
+                                          "DUPLICATE_CIRCULATION",
+                                          "TEMPERATURE_EXCEED"
+                                        ],
+                                        "example": "BROKEN_LINK"
+                                      },
+                                      "detail": {
+                                        "type": "string",
+                                        "description": "异常详情（如「环节缺失：流通温控」「温度超限：8.5℃」）",
+                                        "example": "环节缺失：流通温控"
+                                      },
+                                      "detectedAt": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "example": "2026-09-03T08:00:00Z"
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "description": "异常处理状态（预警只推送线索、人工处置，C8）",
+                                        "enum": [
+                                          "OPEN",
+                                          "RESOLVED"
+                                        ],
+                                        "example": "OPEN"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/inspection": {
+      "get": {
+        "tags": [
+          "inspection"
+        ],
+        "summary": "抽检结果公示【M2 · B-03 占位】",
+        "description": "政府抽检 + 平台抽检结果统一入口公示（B-03）：数据来源双轨（公开数据 + 商户自主申报/平台巡检，\n无政务接口期间逐步积累）；与 A-02 档案联动。M2 占位，里程碑交付前口径以评审为准。\n",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码，从 1 开始",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "每页条数，上限 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "merchantId",
+            "in": "query",
+            "required": false,
+            "description": "商户筛选",
+            "schema": {
+              "type": "string",
+              "example": "m_20260825001"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "品类筛选",
+            "schema": {
+              "type": "string",
+              "maxLength": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回抽检公示列表（分页）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+                              "required": [
+                                "list",
+                                "total",
+                                "page",
+                                "pageSize"
+                              ],
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "description": "当前页数据",
+                                  "items": {}
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "description": "总条数",
+                                  "example": 120
+                                },
+                                "page": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "当前页码（1 起始）",
+                                  "example": 1
+                                },
+                                "pageSize": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "每页条数",
+                                  "example": 20
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "inspectionId",
+                                      "type",
+                                      "result",
+                                      "date"
+                                    ],
+                                    "properties": {
+                                      "inspectionId": {
+                                        "type": "string",
+                                        "example": "insp_8f7e6d5c4b3a"
+                                      },
+                                      "merchantName": {
+                                        "type": "string",
+                                        "description": "商户/供应商名称（脱敏展示）",
+                                        "example": "XX农资"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "description": "抽检来源（数据来源双轨：公开数据 + 商户自主申报/平台巡检）",
+                                        "enum": [
+                                          "GOVERNMENT",
+                                          "PLATFORM"
+                                        ],
+                                        "example": "GOVERNMENT"
+                                      },
+                                      "result": {
+                                        "type": "string",
+                                        "description": "抽检结果",
+                                        "enum": [
+                                          "PASSED",
+                                          "FAILED"
+                                        ],
+                                        "example": "PASSED"
+                                      },
+                                      "item": {
+                                        "type": "string",
+                                        "description": "抽检项目/品类",
+                                        "example": "农药残留"
+                                      },
+                                      "date": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "example": "2026-09-05"
+                                      },
+                                      "reportKey": {
+                                        "type": "string",
+                                        "description": "检测报告（OSS 对象键，可选）",
+                                        "example": "inspection/oss/2026/09/r001.pdf"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/live": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "店铺/后厨直播开播【M2 · B-04】",
+        "description": "商户发起店铺/后厨直播（B-04，线框 M-22）：明厨亮灶 + 实况；消费者观看/互动/举报；\n内容实时合规（敏感内容过滤），监管端可抽查（K-05 画面异常识别）；直播带货（营销直播）属 P2 评估。\n商户未入驻 → 3005；未授权（直播内容合规授权）→ 3007 拒绝开播；异常画面标记进复核流（人工确认不自动处罚，C8）。\nM2 交付。\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "merchantId",
+                  "title",
+                  "type"
+                ],
+                "properties": {
+                  "merchantId": {
+                    "type": "string",
+                    "description": "商户编号（未入驻 → 3005）",
+                    "example": "m_20260825001"
+                  },
+                  "title": {
+                    "type": "string",
+                    "description": "直播标题",
+                    "maxLength": 100,
+                    "example": "后厨明厨亮灶实况"
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+                    "enum": [
+                      "KITCHEN",
+                      "SHOP"
+                    ],
+                    "example": "KITCHEN"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回直播间号与状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "liveId",
+                            "status",
+                            "startedAt"
+                          ],
+                          "properties": {
+                            "liveId": {
+                              "type": "string",
+                              "description": "直播间号",
+                              "example": "live_8f7e6d5c4b3a"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "LIVE"
+                              ],
+                              "example": "LIVE"
+                            },
+                            "startedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "example": "2026-09-08T10:00:00Z"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "业务规则拦截（code=3005 商户未入驻 / 3007 未授权拒绝开播）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3007,
+                  "message": "未授权直播，拒绝开播",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trace/lives": {
+      "get": {
+        "tags": [
+          "live"
+        ],
+        "summary": "直播列表（消费端观看 + 监管抽查）【M2 · B-04】",
+        "description": "店铺/后厨直播列表（S-15/M-22）：按品类/信用/热度筛选，分页；直播中 + 回放；\n监管端可抽查画面（K-05 异常识别）。M2 交付。\n",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码，从 1 开始",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "description": "每页条数，上限 100",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "直播类型筛选",
+            "schema": {
+              "type": "string",
+              "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+              "enum": [
+                "KITCHEN",
+                "SHOP"
+              ],
+              "example": "KITCHEN"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "直播状态筛选",
+            "schema": {
+              "type": "string",
+              "description": "直播状态",
+              "enum": [
+                "LIVE",
+                "ENDED"
+              ],
+              "example": "LIVE"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回直播列表（分页）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+                              "required": [
+                                "list",
+                                "total",
+                                "page",
+                                "pageSize"
+                              ],
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "description": "当前页数据",
+                                  "items": {}
+                                },
+                                "total": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "description": "总条数",
+                                  "example": 120
+                                },
+                                "page": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "当前页码（1 起始）",
+                                  "example": 1
+                                },
+                                "pageSize": {
+                                  "type": "integer",
+                                  "format": "int32",
+                                  "description": "每页条数",
+                                  "example": 20
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "list": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "liveId",
+                                      "merchantId",
+                                      "title",
+                                      "type",
+                                      "status",
+                                      "startedAt"
+                                    ],
+                                    "properties": {
+                                      "liveId": {
+                                        "type": "string",
+                                        "example": "live_8f7e6d5c4b3a"
+                                      },
+                                      "merchantId": {
+                                        "type": "string",
+                                        "example": "m_20260825001"
+                                      },
+                                      "merchantName": {
+                                        "type": "string",
+                                        "description": "商户名称（脱敏展示）",
+                                        "example": "张*饭馆"
+                                      },
+                                      "title": {
+                                        "type": "string",
+                                        "example": "后厨明厨亮灶实况"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+                                        "enum": [
+                                          "KITCHEN",
+                                          "SHOP"
+                                        ],
+                                        "example": "KITCHEN"
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "description": "直播状态",
+                                        "enum": [
+                                          "LIVE",
+                                          "ENDED"
+                                        ],
+                                        "example": "LIVE"
+                                      },
+                                      "viewerCount": {
+                                        "type": "integer",
+                                        "format": "int32",
+                                        "description": "在线观看数",
+                                        "example": 1024
+                                      },
+                                      "startedAt": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "example": "2026-09-08T10:00:00Z"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SupplierOnboardRequest": {
+        "type": "object",
+        "required": [
+          "licenseNo",
+          "licenseImageKey",
+          "category"
+        ],
+        "properties": {
+          "licenseNo": {
+            "type": "string",
+            "description": "营业执照统一社会信用代码",
+            "example": "91130100MA0XXXXXXX"
+          },
+          "licenseImageKey": {
+            "type": "string",
+            "description": "营业执照图像 OSS 对象键",
+            "example": "cert/oss/2026/01/license001.jpg"
+          },
+          "category": {
+            "type": "string",
+            "description": "品类（首期农资/食材；门槛按表扩展 T-19）",
+            "maxLength": 50,
+            "example": "农资"
+          },
+          "permitImageKeys": {
+            "type": "array",
+            "description": "品类资质附件（农资：经营/生产许可 + 登记批号；食材：许可 + 检验报告）",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SupplierSubmitResult": {
+        "type": "object",
+        "required": [
+          "supplierId",
+          "auditStatus"
+        ],
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "description": "供应商编号",
+            "example": "s_20260825001"
+          },
+          "auditStatus": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "example": "PENDING"
+          }
+        }
+      },
+      "SupplierItem": {
+        "type": "object",
+        "required": [
+          "supplierId",
+          "name",
+          "category",
+          "creditScore"
+        ],
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "example": "s_20260825001"
+          },
+          "name": {
+            "type": "string",
+            "description": "供应商名称（脱敏展示）",
+            "example": "XX农资"
+          },
+          "category": {
+            "type": "string",
+            "example": "农资"
+          },
+          "creditScore": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 100,
+            "example": 92
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "放心供应商标识（≥85 且无质量投诉，动态授予/撤销）",
+            "example": true
+          },
+          "reviewRate": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "好评率（0-1）",
+            "example": 0.96
+          }
+        }
+      },
+      "SupplierPage": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+            "required": [
+              "list",
+              "total",
+              "page",
+              "pageSize"
+            ],
+            "properties": {
+              "list": {
+                "type": "array",
+                "description": "当前页数据",
+                "items": {}
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "总条数",
+                "example": 120
+              },
+              "page": {
+                "type": "integer",
+                "format": "int32",
+                "description": "当前页码（1 起始）",
+                "example": 1
+              },
+              "pageSize": {
+                "type": "integer",
+                "format": "int32",
+                "description": "每页条数",
+                "example": 20
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "supplierId",
+                    "name",
+                    "category",
+                    "creditScore"
+                  ],
+                  "properties": {
+                    "supplierId": {
+                      "type": "string",
+                      "example": "s_20260825001"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "供应商名称（脱敏展示）",
+                      "example": "XX农资"
+                    },
+                    "category": {
+                      "type": "string",
+                      "example": "农资"
+                    },
+                    "creditScore": {
+                      "type": "number",
+                      "format": "float",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "example": 92
+                    },
+                    "trusted": {
+                      "type": "boolean",
+                      "description": "放心供应商标识（≥85 且无质量投诉，动态授予/撤销）",
+                      "example": true
+                    },
+                    "reviewRate": {
+                      "type": "number",
+                      "format": "float",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "description": "好评率（0-1）",
+                      "example": 0.96
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SupplierCreditDim": {
+        "type": "object",
+        "required": [
+          "name",
+          "weight",
+          "score"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "维度名（资质合规/交易履约/质量口碑/正向贡献）",
+            "example": "资质合规"
+          },
+          "weight": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "权重（30%/30%/30%/10%，已确认）",
+            "example": 0.3
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 100,
+            "example": 95
+          }
+        }
+      },
+      "SupplierCreditDetail": {
+        "type": "object",
+        "required": [
+          "supplierId",
+          "name",
+          "category",
+          "score",
+          "dims",
+          "trusted",
+          "updatedAt"
+        ],
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "example": "s_20260825001"
+          },
+          "name": {
+            "type": "string",
+            "example": "XX农资"
+          },
+          "category": {
+            "type": "string",
+            "example": "农资"
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "信用分（T-05 公式在 TRACE 计算、CRED 权威存储公示）",
+            "example": 92
+          },
+          "dims": {
+            "type": "array",
+            "description": "四维构成（资质 30% + 履约 30% + 口碑 30% + 贡献 10%）",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "weight",
+                "score"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "维度名（资质合规/交易履约/质量口碑/正向贡献）",
+                  "example": "资质合规"
+                },
+                "weight": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "权重（30%/30%/30%/10%，已确认）",
+                  "example": 0.3
+                },
+                "score": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "example": 95
+                }
+              }
+            }
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "放心供应商标识（TRACE 动态授予/撤销，撤销公示理由）",
+            "example": true
+          },
+          "deductions": {
+            "type": "array",
+            "description": "扣分明细（申诉复用 TICKET D-03）",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "example": "质量投诉 -2 分"
+                },
+                "points": {
+                  "type": "number",
+                  "example": -2
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "example": "2026-01-10T09:00:00Z"
+                }
+              }
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T10:30:00Z"
+          }
+        }
+      },
+      "BatchCreateRequest": {
+        "type": "object",
+        "required": [
+          "supplierId",
+          "category",
+          "batchNo"
+        ],
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "description": "供应商编号（未入驻 → 3005）",
+            "example": "s_20260825001"
+          },
+          "category": {
+            "type": "string",
+            "description": "品类（首期农资/食材）",
+            "maxLength": 50,
+            "example": "农资"
+          },
+          "batchNo": {
+            "type": "string",
+            "description": "批次号",
+            "maxLength": 50,
+            "example": "B20260901-01"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "数量（可选）",
+            "example": 500
+          },
+          "unit": {
+            "type": "string",
+            "description": "单位（可选）",
+            "example": "袋"
+          }
+        }
+      },
+      "BatchSubmitResult": {
+        "type": "object",
+        "required": [
+          "batchId",
+          "code"
+        ],
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "description": "批次号",
+            "example": "b_20260901001"
+          },
+          "code": {
+            "type": "string",
+            "description": "溯源码（含品类 + 供应商 + 批号 + 校验，一物一码/一批一码）",
+            "example": "MZ-AGR-B20260901-01"
+          }
+        }
+      },
+      "BatchItem": {
+        "type": "object",
+        "required": [
+          "batchId",
+          "code",
+          "category",
+          "batchNo",
+          "progress",
+          "createdAt"
+        ],
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "example": "b_20260901001"
+          },
+          "code": {
+            "type": "string",
+            "example": "MZ-AGR-B20260901-01"
+          },
+          "supplierName": {
+            "type": "string",
+            "description": "供应商名称（脱敏展示）",
+            "example": "XX农资"
+          },
+          "category": {
+            "type": "string",
+            "example": "农资"
+          },
+          "batchNo": {
+            "type": "string",
+            "example": "B20260901-01"
+          },
+          "progress": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "环节进度（①批号 ②检测 ③温控 ④终端 已完成环节数）",
+            "example": 3
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-01T10:00:00Z"
+          }
+        }
+      },
+      "BatchPage": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+            "required": [
+              "list",
+              "total",
+              "page",
+              "pageSize"
+            ],
+            "properties": {
+              "list": {
+                "type": "array",
+                "description": "当前页数据",
+                "items": {}
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "总条数",
+                "example": 120
+              },
+              "page": {
+                "type": "integer",
+                "format": "int32",
+                "description": "当前页码（1 起始）",
+                "example": 1
+              },
+              "pageSize": {
+                "type": "integer",
+                "format": "int32",
+                "description": "每页条数",
+                "example": 20
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "batchId",
+                    "code",
+                    "category",
+                    "batchNo",
+                    "progress",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "batchId": {
+                      "type": "string",
+                      "example": "b_20260901001"
+                    },
+                    "code": {
+                      "type": "string",
+                      "example": "MZ-AGR-B20260901-01"
+                    },
+                    "supplierName": {
+                      "type": "string",
+                      "description": "供应商名称（脱敏展示）",
+                      "example": "XX农资"
+                    },
+                    "category": {
+                      "type": "string",
+                      "example": "农资"
+                    },
+                    "batchNo": {
+                      "type": "string",
+                      "example": "B20260901-01"
+                    },
+                    "progress": {
+                      "type": "integer",
+                      "format": "int32",
+                      "minimum": 0,
+                      "maximum": 4,
+                      "description": "环节进度（①批号 ②检测 ③温控 ④终端 已完成环节数）",
+                      "example": 3
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "example": "2026-09-01T10:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TraceEventType": {
+        "type": "string",
+        "description": "环节类型（①批号 ②检测 ③温控 ④终端）",
+        "enum": [
+          "BATCH_REGISTER",
+          "INSPECTION",
+          "TEMPERATURE",
+          "TERMINAL"
+        ],
+        "example": "INSPECTION"
+      },
+      "EventRequest": {
+        "type": "object",
+        "required": [
+          "eventType"
+        ],
+        "properties": {
+          "eventType": {
+            "type": "string",
+            "description": "环节类型（①批号 ②检测 ③温控 ④终端）",
+            "enum": [
+              "BATCH_REGISTER",
+              "INSPECTION",
+              "TEMPERATURE",
+              "TERMINAL"
+            ],
+            "example": "INSPECTION"
+          },
+          "data": {
+            "type": "object",
+            "description": "环节数据（温度值/检测报告对象键/终端信息等，按环节类型）",
+            "additionalProperties": true
+          },
+          "operator": {
+            "type": "string",
+            "description": "上报操作人（脱敏留痕）",
+            "maxLength": 50,
+            "example": "仓库管理员"
+          }
+        }
+      },
+      "EventSubmitResult": {
+        "type": "object",
+        "required": [
+          "eventId",
+          "eventType",
+          "recordedAt"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "description": "环节记录号（重复上报幂等返回原记录）",
+            "example": "ev_9f8e7d6c5b4a"
+          },
+          "eventType": {
+            "type": "string",
+            "description": "环节类型（①批号 ②检测 ③温控 ④终端）",
+            "enum": [
+              "BATCH_REGISTER",
+              "INSPECTION",
+              "TEMPERATURE",
+              "TERMINAL"
+            ],
+            "example": "INSPECTION"
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-02T10:00:00Z"
+          }
+        }
+      },
+      "ChainNode": {
+        "type": "object",
+        "required": [
+          "stage",
+          "status"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "description": "环节（①批号 ②检测 ③温控 ④终端）",
+            "example": "② 生产检测"
+          },
+          "status": {
+            "type": "string",
+            "description": "环节状态（REGISTERED 已登记 / MISSING 缺失/断链，显式标注）",
+            "enum": [
+              "REGISTERED",
+              "MISSING"
+            ],
+            "example": "REGISTERED"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "环节登记时间",
+            "example": "2026-09-02T10:00:00Z"
+          },
+          "detail": {
+            "type": "string",
+            "description": "环节摘要（如「检测合格 + 报告」）",
+            "example": "检测合格"
+          }
+        }
+      },
+      "ScanResult": {
+        "type": "object",
+        "required": [
+          "code",
+          "chain",
+          "brokenLinks",
+          "scanCount",
+          "verified"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "MZ-AGR-B20260901-01"
+          },
+          "batchId": {
+            "type": "string",
+            "example": "b_20260901001"
+          },
+          "supplierName": {
+            "type": "string",
+            "description": "供应商名称（脱敏展示）",
+            "example": "XX农资"
+          },
+          "category": {
+            "type": "string",
+            "example": "农资"
+          },
+          "chain": {
+            "type": "array",
+            "description": "全链时间轴（批号→检测→温控→终端）",
+            "items": {
+              "type": "object",
+              "required": [
+                "stage",
+                "status"
+              ],
+              "properties": {
+                "stage": {
+                  "type": "string",
+                  "description": "环节（①批号 ②检测 ③温控 ④终端）",
+                  "example": "② 生产检测"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "环节状态（REGISTERED 已登记 / MISSING 缺失/断链，显式标注）",
+                  "enum": [
+                    "REGISTERED",
+                    "MISSING"
+                  ],
+                  "example": "REGISTERED"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "环节登记时间",
+                  "example": "2026-09-02T10:00:00Z"
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "环节摘要（如「检测合格 + 报告」）",
+                  "example": "检测合格"
+                }
+              }
+            }
+          },
+          "brokenLinks": {
+            "type": "array",
+            "description": "断链环节列表（显式标注「缺失/断链」）",
+            "items": {
+              "type": "string",
+              "example": "③ 流通温控"
+            }
+          },
+          "scanCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "扫码次数（留痕，防伪旁证）",
+            "example": 3
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "溯源链是否完整（无断链）",
+            "example": true
+          }
+        }
+      },
+      "AnomalyType": {
+        "type": "string",
+        "description": "溯源异常类型（T-10）",
+        "enum": [
+          "BROKEN_LINK",
+          "DUPLICATE_CIRCULATION",
+          "TEMPERATURE_EXCEED"
+        ],
+        "example": "BROKEN_LINK"
+      },
+      "AnomalyStatus": {
+        "type": "string",
+        "description": "异常处理状态（预警只推送线索、人工处置，C8）",
+        "enum": [
+          "OPEN",
+          "RESOLVED"
+        ],
+        "example": "OPEN"
+      },
+      "AnomalyItem": {
+        "type": "object",
+        "required": [
+          "anomalyId",
+          "code",
+          "anomalyType",
+          "detectedAt",
+          "status"
+        ],
+        "properties": {
+          "anomalyId": {
+            "type": "string",
+            "example": "an_8f7e6d5c4b3a"
+          },
+          "code": {
+            "type": "string",
+            "description": "溯源码",
+            "example": "MZ-AGR-B20260901-01"
+          },
+          "batchId": {
+            "type": "string",
+            "example": "b_20260901001"
+          },
+          "supplierName": {
+            "type": "string",
+            "description": "供应商名称（脱敏展示）",
+            "example": "XX农资"
+          },
+          "anomalyType": {
+            "type": "string",
+            "description": "溯源异常类型（T-10）",
+            "enum": [
+              "BROKEN_LINK",
+              "DUPLICATE_CIRCULATION",
+              "TEMPERATURE_EXCEED"
+            ],
+            "example": "BROKEN_LINK"
+          },
+          "detail": {
+            "type": "string",
+            "description": "异常详情（如「环节缺失：流通温控」「温度超限：8.5℃」）",
+            "example": "环节缺失：流通温控"
+          },
+          "detectedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-03T08:00:00Z"
+          },
+          "status": {
+            "type": "string",
+            "description": "异常处理状态（预警只推送线索、人工处置，C8）",
+            "enum": [
+              "OPEN",
+              "RESOLVED"
+            ],
+            "example": "OPEN"
+          }
+        }
+      },
+      "AnomalyPage": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+            "required": [
+              "list",
+              "total",
+              "page",
+              "pageSize"
+            ],
+            "properties": {
+              "list": {
+                "type": "array",
+                "description": "当前页数据",
+                "items": {}
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "总条数",
+                "example": 120
+              },
+              "page": {
+                "type": "integer",
+                "format": "int32",
+                "description": "当前页码（1 起始）",
+                "example": 1
+              },
+              "pageSize": {
+                "type": "integer",
+                "format": "int32",
+                "description": "每页条数",
+                "example": 20
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "anomalyId",
+                    "code",
+                    "anomalyType",
+                    "detectedAt",
+                    "status"
+                  ],
+                  "properties": {
+                    "anomalyId": {
+                      "type": "string",
+                      "example": "an_8f7e6d5c4b3a"
+                    },
+                    "code": {
+                      "type": "string",
+                      "description": "溯源码",
+                      "example": "MZ-AGR-B20260901-01"
+                    },
+                    "batchId": {
+                      "type": "string",
+                      "example": "b_20260901001"
+                    },
+                    "supplierName": {
+                      "type": "string",
+                      "description": "供应商名称（脱敏展示）",
+                      "example": "XX农资"
+                    },
+                    "anomalyType": {
+                      "type": "string",
+                      "description": "溯源异常类型（T-10）",
+                      "enum": [
+                        "BROKEN_LINK",
+                        "DUPLICATE_CIRCULATION",
+                        "TEMPERATURE_EXCEED"
+                      ],
+                      "example": "BROKEN_LINK"
+                    },
+                    "detail": {
+                      "type": "string",
+                      "description": "异常详情（如「环节缺失：流通温控」「温度超限：8.5℃」）",
+                      "example": "环节缺失：流通温控"
+                    },
+                    "detectedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "example": "2026-09-03T08:00:00Z"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "异常处理状态（预警只推送线索、人工处置，C8）",
+                      "enum": [
+                        "OPEN",
+                        "RESOLVED"
+                      ],
+                      "example": "OPEN"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "InspectionType": {
+        "type": "string",
+        "description": "抽检来源（数据来源双轨：公开数据 + 商户自主申报/平台巡检）",
+        "enum": [
+          "GOVERNMENT",
+          "PLATFORM"
+        ],
+        "example": "GOVERNMENT"
+      },
+      "InspectionItem": {
+        "type": "object",
+        "required": [
+          "inspectionId",
+          "type",
+          "result",
+          "date"
+        ],
+        "properties": {
+          "inspectionId": {
+            "type": "string",
+            "example": "insp_8f7e6d5c4b3a"
+          },
+          "merchantName": {
+            "type": "string",
+            "description": "商户/供应商名称（脱敏展示）",
+            "example": "XX农资"
+          },
+          "type": {
+            "type": "string",
+            "description": "抽检来源（数据来源双轨：公开数据 + 商户自主申报/平台巡检）",
+            "enum": [
+              "GOVERNMENT",
+              "PLATFORM"
+            ],
+            "example": "GOVERNMENT"
+          },
+          "result": {
+            "type": "string",
+            "description": "抽检结果",
+            "enum": [
+              "PASSED",
+              "FAILED"
+            ],
+            "example": "PASSED"
+          },
+          "item": {
+            "type": "string",
+            "description": "抽检项目/品类",
+            "example": "农药残留"
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-09-05"
+          },
+          "reportKey": {
+            "type": "string",
+            "description": "检测报告（OSS 对象键，可选）",
+            "example": "inspection/oss/2026/09/r001.pdf"
+          }
+        }
+      },
+      "InspectionPage": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+            "required": [
+              "list",
+              "total",
+              "page",
+              "pageSize"
+            ],
+            "properties": {
+              "list": {
+                "type": "array",
+                "description": "当前页数据",
+                "items": {}
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "总条数",
+                "example": 120
+              },
+              "page": {
+                "type": "integer",
+                "format": "int32",
+                "description": "当前页码（1 起始）",
+                "example": 1
+              },
+              "pageSize": {
+                "type": "integer",
+                "format": "int32",
+                "description": "每页条数",
+                "example": 20
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "inspectionId",
+                    "type",
+                    "result",
+                    "date"
+                  ],
+                  "properties": {
+                    "inspectionId": {
+                      "type": "string",
+                      "example": "insp_8f7e6d5c4b3a"
+                    },
+                    "merchantName": {
+                      "type": "string",
+                      "description": "商户/供应商名称（脱敏展示）",
+                      "example": "XX农资"
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "抽检来源（数据来源双轨：公开数据 + 商户自主申报/平台巡检）",
+                      "enum": [
+                        "GOVERNMENT",
+                        "PLATFORM"
+                      ],
+                      "example": "GOVERNMENT"
+                    },
+                    "result": {
+                      "type": "string",
+                      "description": "抽检结果",
+                      "enum": [
+                        "PASSED",
+                        "FAILED"
+                      ],
+                      "example": "PASSED"
+                    },
+                    "item": {
+                      "type": "string",
+                      "description": "抽检项目/品类",
+                      "example": "农药残留"
+                    },
+                    "date": {
+                      "type": "string",
+                      "format": "date",
+                      "example": "2026-09-05"
+                    },
+                    "reportKey": {
+                      "type": "string",
+                      "description": "检测报告（OSS 对象键，可选）",
+                      "example": "inspection/oss/2026/09/r001.pdf"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "LiveType": {
+        "type": "string",
+        "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+        "enum": [
+          "KITCHEN",
+          "SHOP"
+        ],
+        "example": "KITCHEN"
+      },
+      "LiveStatus": {
+        "type": "string",
+        "description": "直播状态",
+        "enum": [
+          "LIVE",
+          "ENDED"
+        ],
+        "example": "LIVE"
+      },
+      "LiveCreateRequest": {
+        "type": "object",
+        "required": [
+          "merchantId",
+          "title",
+          "type"
+        ],
+        "properties": {
+          "merchantId": {
+            "type": "string",
+            "description": "商户编号（未入驻 → 3005）",
+            "example": "m_20260825001"
+          },
+          "title": {
+            "type": "string",
+            "description": "直播标题",
+            "maxLength": 100,
+            "example": "后厨明厨亮灶实况"
+          },
+          "type": {
+            "type": "string",
+            "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+            "enum": [
+              "KITCHEN",
+              "SHOP"
+            ],
+            "example": "KITCHEN"
+          }
+        }
+      },
+      "LiveSubmitResult": {
+        "type": "object",
+        "required": [
+          "liveId",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "liveId": {
+            "type": "string",
+            "description": "直播间号",
+            "example": "live_8f7e6d5c4b3a"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "LIVE"
+            ],
+            "example": "LIVE"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-08T10:00:00Z"
+          }
+        }
+      },
+      "LiveItem": {
+        "type": "object",
+        "required": [
+          "liveId",
+          "merchantId",
+          "title",
+          "type",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "liveId": {
+            "type": "string",
+            "example": "live_8f7e6d5c4b3a"
+          },
+          "merchantId": {
+            "type": "string",
+            "example": "m_20260825001"
+          },
+          "merchantName": {
+            "type": "string",
+            "description": "商户名称（脱敏展示）",
+            "example": "张*饭馆"
+          },
+          "title": {
+            "type": "string",
+            "example": "后厨明厨亮灶实况"
+          },
+          "type": {
+            "type": "string",
+            "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+            "enum": [
+              "KITCHEN",
+              "SHOP"
+            ],
+            "example": "KITCHEN"
+          },
+          "status": {
+            "type": "string",
+            "description": "直播状态",
+            "enum": [
+              "LIVE",
+              "ENDED"
+            ],
+            "example": "LIVE"
+          },
+          "viewerCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "在线观看数",
+            "example": 1024
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-08T10:00:00Z"
+          }
+        }
+      },
+      "LivePage": {
+        "allOf": [
+          {
+            "type": "object",
+            "description": "统一分页结果（放在 Envelope.data 内）。\n业务分页实体建议用 allOf 继承本结构，并覆写 list.items 为具体类型。\n",
+            "required": [
+              "list",
+              "total",
+              "page",
+              "pageSize"
+            ],
+            "properties": {
+              "list": {
+                "type": "array",
+                "description": "当前页数据",
+                "items": {}
+              },
+              "total": {
+                "type": "integer",
+                "format": "int64",
+                "description": "总条数",
+                "example": 120
+              },
+              "page": {
+                "type": "integer",
+                "format": "int32",
+                "description": "当前页码（1 起始）",
+                "example": 1
+              },
+              "pageSize": {
+                "type": "integer",
+                "format": "int32",
+                "description": "每页条数",
+                "example": 20
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "liveId",
+                    "merchantId",
+                    "title",
+                    "type",
+                    "status",
+                    "startedAt"
+                  ],
+                  "properties": {
+                    "liveId": {
+                      "type": "string",
+                      "example": "live_8f7e6d5c4b3a"
+                    },
+                    "merchantId": {
+                      "type": "string",
+                      "example": "m_20260825001"
+                    },
+                    "merchantName": {
+                      "type": "string",
+                      "description": "商户名称（脱敏展示）",
+                      "example": "张*饭馆"
+                    },
+                    "title": {
+                      "type": "string",
+                      "example": "后厨明厨亮灶实况"
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "直播类型（B-04：后厨明厨亮灶/店铺实况）",
+                      "enum": [
+                        "KITCHEN",
+                        "SHOP"
+                      ],
+                      "example": "KITCHEN"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "直播状态",
+                      "enum": [
+                        "LIVE",
+                        "ENDED"
+                      ],
+                      "example": "LIVE"
+                    },
+                    "viewerCount": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "在线观看数",
+                      "example": 1024
+                    },
+                    "startedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "example": "2026-09-08T10:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "x-external-interfaces": {
+    "description": "服务端间接口（内部调用），前端勿调，不在上方 paths 中。\n出方向依赖：\n- T-05 供应商信用分计算后回写 CRED 存储与公示（POST /cred/score/supplier，SSOT C-02 已决策）；\n  放心供应商标识动态授予/撤销同步 CRED；\n- 断链/重复流通/温度超限异常预警上报 DASH（A-08 断链预警聚合）；\n- 直播画面帧送 AICORE 识别（K-05 画面级异常，标记进复核流）；\n- 环节记录存证（时间戳 + SHA-256 哈希链，只增不改）；扣分申诉复用 TICKET D-03。\n",
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/trace/live/callback",
+        "tags": [
+          "live"
+        ],
+        "summary": "直播画面异常标记回传（服务端间，AICORE → TRACE）",
+        "description": "AICORE（K-05）对直播画面帧识别出的异常标记回传（未穿工装/卫生问题/明火离人等），\nTRACE 将标记进复核流，处置人工确认、不自动处罚（C8）；需商户已授权（B-04）。\n服务端间鉴权（内部 Token）+ 幂等。前端永远不调用此接口。\n",
+        "requestBody": {
+          "description": "异常标记回传（服务端间报文）",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "liveId",
+                  "anomalyType",
+                  "confidence"
+                ],
+                "properties": {
+                  "liveId": {
+                    "type": "string",
+                    "description": "直播间号"
+                  },
+                  "anomalyType": {
+                    "type": "string",
+                    "description": "异常类型（未穿工装/卫生问题/明火离人等）"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "置信度"
+                  },
+                  "frameKey": {
+                    "type": "string",
+                    "description": "画面帧 OSS 对象键（留痕）"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "受理成功（标记进复核流）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}
