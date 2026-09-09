@@ -1,0 +1,895 @@
+openapi: 3.0.3
+info:
+  title: 商品服务 PROD · 接口文档
+  version: 1.0.0
+  description: |
+    商品服务（PROD）前端接口文档。模块 T1 选品广场（T-02 商品上架审核与批次关联、T-03 跨行业选品广场、
+    T-04 商品透明详情页与供应商主页、T-21 采购决策辅助）。
+    口径对齐：PDD §5.8 / §6.4.7；需求口径 PRD §5.10（T 组）；边界依据 SSOT §2.8。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：R-08 轻资产原则——只做撮合、不代下单、不代定价、无包赚承诺；R-09 强监管品类仅信息撮合、
+      不替代行政许可；R-13 无竞价广告/隐性扣费、排序非竞价、价格透明。
+    - 里程碑：本服务为 M2 交付（设计先行），全部接口为 M2 占位——里程碑交付前口径以评审为准。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: item
+    description: 商品上架与详情（T-02/T-04）
+  - name: market
+    description: 跨行业选品广场（T-03）
+  - name: supplier
+    description: 供应商主页（T-04）
+  - name: assist
+    description: 采购决策辅助（T-21）
+  - name: favorite
+    description: 收藏与询价（T-21）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /prod/items:
+    post:
+      tags: [item]
+      summary: 商品上架审核（关联资质/批号/检测报告）【M2 · T-02 占位】
+      description: |
+        商品关联资质/批号与检测报告上架（T-02）：平台校验批号格式与报告有效期后审核，全程留痕；
+        资质/报告过期 → 3003 拒绝上架；批号格式非法 → 1002 拦截；批次不存在 → 3006；供应商未入驻 → 3005。
+        资质临期/投诉激增触发**强制下架**（平台事件触发，无前端接口，见附录）。
+        强监管品类仅信息撮合、不替代行政许可（R-09）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemCreateRequest'
+      responses:
+        '200':
+          description: 受理成功，返回商品号与审核状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 业务规则拦截（code=3003 资质/报告过期拒绝上架 / 3005 供应商未入驻）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3003
+                message: 资质核验不通过
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+    get:
+      tags: [market]
+      summary: 跨行业选品广场检索【M2 · T-03 占位】
+      description: |
+        按行业/品类组织商品浏览（T-03）：信用分/溯源完整/价格区间筛选排序，分页；
+        商品挂来源/批次/检测/价格/信用；首期仅农资 + 食材品类（其余随扩展）；
+        平台只做信息撮合展示、不自营销售（轻资产，R-08）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: category
+          in: query
+          required: false
+          description: 品类筛选（首期农资/食材）
+          schema:
+            type: string
+            maxLength: 50
+        - name: creditMin
+          in: query
+          required: false
+          description: 供应商信用分下限筛选
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+        - name: traceFull
+          in: query
+          required: false
+          description: 仅溯源完整
+          schema:
+            type: boolean
+            default: false
+        - name: priceMin
+          in: query
+          required: false
+          description: 价格下限（元）
+          schema:
+            type: number
+            minimum: 0
+        - name: priceMax
+          in: query
+          required: false
+          description: 价格上限（元）
+          schema:
+            type: number
+            minimum: 0
+        - name: keyword
+          in: query
+          required: false
+          description: 商品名关键词搜索
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: 成功，返回选品列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MarketPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /prod/items/mine:
+    get:
+      tags: [item]
+      summary: 我的商品列表（上架管理）【M2 · T-02 占位】
+      description: |
+        供应商本人商品列表（T-02 上架管理）：按状态（审核中/已上架/已下架）筛选，分页；
+        仅本人可见（2002 拦截）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 商品状态筛选
+          schema:
+            $ref: '#/components/schemas/ItemStatus'
+      responses:
+        '200':
+          description: 成功，返回我的商品列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /prod/items/{itemId}:
+    get:
+      tags: [item]
+      summary: 商品透明详情页（线框 S-18）【M2 · T-04 占位】
+      description: |
+        详情页聚合来源/批次/检测/信用/价格/溯源码（T-04）：含溯源码验真与投诉入口（入口路由由前端拼接，
+        投诉走 TICKET 关联溯源码）；资质临期展示风险提示；商品不存在 → 3006。M2 占位。
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          description: 商品编号
+          schema:
+            type: string
+            example: item_20260901001
+      responses:
+        '200':
+          description: 成功，返回商品详情 + 供应商主页聚合（item + supplierProfile）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ItemDetailResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /prod/items/{itemId}/delist:
+    post:
+      tags: [item]
+      summary: 商品下架（主动下架，留痕）【M2 · T-02 占位】
+      description: |
+        供应商主动下架商品（状态机：已上架 → 下架），留痕；已下架重复操作 → 3007；
+        仅本人商品可下架（2002）。强制下架（资质临期/投诉激增）为平台事件触发，无前端接口（见附录）。
+        M2 占位。
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          description: 商品编号
+          schema:
+            type: string
+            example: item_20260901001
+      responses:
+        '200':
+          description: 成功，商品已下架（留痕）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DelistResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，已下架）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /prod/suppliers/{supplierId}:
+    get:
+      tags: [supplier]
+      summary: 供应商主页（资质/信用构成/在售商品）【M2 · T-04 占位】
+      description: |
+        供应商主页聚合资质、信用分构成、红黑榜/放心供应商标识及在售商品（T-04）——作为选商决策依据；
+        数据源 CRED（信用分权威存储）+ TRACE（放心标识/资质）；对象不存在 → 3006。M2 占位。
+      parameters:
+        - name: supplierId
+          in: path
+          required: true
+          description: 供应商编号
+          schema:
+            type: string
+            example: s_20260825001
+      responses:
+        '200':
+          description: 成功，返回供应商主页聚合
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SupplierProfileResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /prod/assist:
+    post:
+      tags: [assist]
+      summary: 采购决策辅助（需求→候选收敛→横向对比）【M2 · T-21 占位】
+      description: |
+        采购需求描述（经营用途/预计用量/预算，可空）→ 品类内收敛候选（在售 + 信用分 ≥ 阈值 +
+        溯源完整，规则同 T-01/T-02）→ 供应商横向对比（信用分构成/价格/检测报告/溯源完整度/履约率/距地，
+        支持只看放心供应商）→ 收藏/询价 → 衔接 T-11 担保下单。
+        边界：只做撮合与信息辅助——不代下单、不代定价、不替代采购方专业判断、无「包赚/包销」承诺；
+        排序非竞价、价格透明；候选不足 → insufficient=true 如实提示。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistRequest'
+      responses:
+        '200':
+          description: 成功，返回候选收敛与横向对比
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AssistResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /prod/favorites:
+    post:
+      tags: [favorite]
+      summary: 收藏（商品/供应商）【M2 · T-21 占位】
+      description: |
+        采购方收藏商品/供应商（T-21 收藏/询价）：收藏后可在「我的收藏」查看并衔接询价/下单；
+        对象不存在 → 3006；重复收藏 → 3007。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FavoriteRequest'
+      responses:
+        '200':
+          description: 成功，返回收藏号
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FavoriteResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，重复收藏）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+    get:
+      tags: [favorite]
+      summary: 我的收藏列表【M2 · T-21 占位】
+      description: |
+        采购方收藏列表（商品/供应商），分页；可衔接询价/担保下单。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: targetType
+          in: query
+          required: false
+          description: 收藏类型筛选
+          schema:
+            $ref: '#/components/schemas/FavoriteTargetType'
+      responses:
+        '200':
+          description: 成功，返回收藏列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FavoritePage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /prod/inquiries:
+    post:
+      tags: [favorite]
+      summary: 询价【M2 · T-21 占位】
+      description: |
+        采购方向供应商询价（T-21）：内容 + 用量/预算（可选），供应商在经营端回应（M2 页面）；
+        对象不存在 → 3006；只做信息撮合、不代定价（R-08）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InquiryRequest'
+      responses:
+        '200':
+          description: 受理成功，返回询价单号
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/InquiryResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+
+components:
+  schemas:
+    ItemCreateRequest:
+      type: object
+      required: [supplierId, category, batchId, name, price]
+      properties:
+        supplierId:
+          type: string
+          description: 供应商编号（未入驻 → 3005）
+          example: s_20260825001
+        category:
+          type: string
+          description: 品类（首期农资/食材）
+          maxLength: 50
+          example: 农资
+        batchId:
+          type: string
+          description: 关联批次号（TRACE，批次不存在 → 3006）
+          example: b_20260901001
+        reportKeys:
+          type: array
+          description: 检测报告附件（OSS 对象键，报告过期 → 3003 拒绝上架）
+          items:
+            type: string
+        name:
+          type: string
+          description: 商品名称
+          maxLength: 100
+          example: 小麦种子（50kg/袋）
+        spec:
+          type: string
+          description: 规格（可选）
+          maxLength: 100
+          example: 50kg/袋
+        price:
+          type: number
+          minimum: 0
+          description: 价格（元；供应商自主定价，平台不代定价，R-08）
+          example: 128
+        unit:
+          type: string
+          description: 计价单位
+          maxLength: 20
+          example: 袋
+        imageKeys:
+          type: array
+          description: 商品图片（OSS 对象键）
+          items:
+            type: string
+    ItemSubmitResult:
+      type: object
+      required: [itemId, status]
+      properties:
+        itemId:
+          type: string
+          description: 商品编号
+          example: item_20260901001
+        status:
+          type: string
+          description: 审核状态（待审核 → 已上架）
+          enum: [REVIEWING]
+          example: REVIEWING
+    ItemStatus:
+      type: string
+      description: 商品状态（PDD §5.6.2 状态机：草稿 → 待审核 → 已上架 ⇄ 下架；异常强制下架）
+      enum: [DRAFT, REVIEWING, LISTED, DELISTED, FORCE_DELISTED]
+      example: LISTED
+    ItemListItem:
+      type: object
+      required: [itemId, name, category, price, status, createdAt]
+      properties:
+        itemId:
+          type: string
+          example: item_20260901001
+        name:
+          type: string
+          example: 小麦种子（50kg/袋）
+        category:
+          type: string
+          example: 农资
+        price:
+          type: number
+          example: 128
+        unit:
+          type: string
+          example: 袋
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    ItemPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/ItemListItem'
+    MarketItem:
+      type: object
+      required: [itemId, name, category, price, creditScore, traceComplete]
+      properties:
+        itemId:
+          type: string
+          example: item_20260901001
+        name:
+          type: string
+          example: 小麦种子（50kg/袋）
+        category:
+          type: string
+          example: 农资
+        price:
+          type: number
+          example: 128
+        unit:
+          type: string
+          example: 袋
+        supplierName:
+          type: string
+          description: 供应商名称（脱敏展示）
+          example: XX农资
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: 供应商信用分（CRED 权威存储）
+          example: 92
+        traceComplete:
+          type: boolean
+          description: 溯源链完整
+          example: true
+        imageKeys:
+          type: array
+          items:
+            type: string
+    MarketPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/MarketItem'
+    ItemDetail:
+      type: object
+      required: [itemId, name, category, price, status]
+      properties:
+        itemId:
+          type: string
+          example: item_20260901001
+        name:
+          type: string
+          example: 小麦种子（50kg/袋）
+        category:
+          type: string
+          example: 农资
+        price:
+          type: number
+          example: 128
+        unit:
+          type: string
+          example: 袋
+        spec:
+          type: string
+          example: 50kg/袋
+        images:
+          type: array
+          items:
+            type: string
+        batchId:
+          type: string
+          description: 关联批次
+          example: b_20260901001
+        traceCode:
+          type: string
+          description: 溯源码（验真入口，TRACE 扫码）
+          example: MZ-AGR-B20260901-01
+        reportKeys:
+          type: array
+          description: 检测报告（OSS 对象键）
+          items:
+            type: string
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 92
+        supplierId:
+          type: string
+          example: s_20260825001
+        supplierName:
+          type: string
+          description: 供应商名称（脱敏展示）
+          example: XX农资
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        riskNotice:
+          type: string
+          description: 风险提示（资质临期时展示，可选）
+          example: 该商品关联资质将于 30 天内到期
+    SupplierProfile:
+      type: object
+      required: [supplierId, name, category, creditScore, trusted]
+      properties:
+        supplierId:
+          type: string
+          example: s_20260825001
+        name:
+          type: string
+          example: XX农资
+        category:
+          type: string
+          example: 农资
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 92
+        trusted:
+          type: boolean
+          description: 放心供应商标识（TRACE 动态授予/撤销）
+          example: true
+        reviewRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.96
+        redblackStatus:
+          type: string
+          description: 红黑榜状态（CRED 公示）
+          enum: [NONE, RED, BLACK]
+          example: RED
+        itemCount:
+          type: integer
+          format: int32
+          description: 在售商品数
+          example: 12
+    ItemDetailResult:
+      type: object
+      description: 商品透明详情聚合（PDD §6.4.7：item + supplierProfile）
+      properties:
+        item:
+          $ref: '#/components/schemas/ItemDetail'
+        supplierProfile:
+          $ref: '#/components/schemas/SupplierProfile'
+    DelistResult:
+      type: object
+      required: [itemId, status, delistedAt]
+      properties:
+        itemId:
+          type: string
+          example: item_20260901001
+        status:
+          type: string
+          enum: [DELISTED]
+          example: DELISTED
+        delistedAt:
+          type: string
+          format: date-time
+          example: '2026-09-05T10:00:00Z'
+    SupplierProfileResult:
+      type: object
+      description: 供应商主页聚合（资质/信用构成/红黑榜/放心标识/在售商品）
+      properties:
+        supplierProfile:
+          $ref: '#/components/schemas/SupplierProfile'
+        creditDims:
+          type: array
+          description: 信用分构成（T-05 四维，CRED 数据源）
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                example: 资质合规
+              weight:
+                type: number
+                format: float
+                example: 0.3
+              score:
+                type: number
+                format: float
+                example: 95
+        items:
+          type: array
+          description: 在售商品列表
+          items:
+            $ref: '#/components/schemas/MarketItem'
+    AssistRequest:
+      type: object
+      description: 采购需求描述（用途/预算/用量，可空）
+      properties:
+        category:
+          type: string
+          description: 品类（可选）
+          maxLength: 50
+          example: 农资
+        purpose:
+          type: string
+          description: 经营用途
+          maxLength: 500
+          example: 秋季小麦追肥
+        quantity:
+          type: string
+          description: 预计用量
+          maxLength: 100
+          example: 20 袋
+        budget:
+          type: string
+          description: 预算
+          maxLength: 100
+          example: 3000 元以内
+    AssistCandidate:
+      type: object
+      required: [supplierId, creditScore, traceComplete]
+      properties:
+        supplierId:
+          type: string
+          example: s_20260825001
+        supplierName:
+          type: string
+          description: 供应商名称（脱敏展示）
+          example: XX农资
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 92
+        trusted:
+          type: boolean
+          description: 放心供应商标识
+          example: true
+        priceRange:
+          type: string
+          description: 价格区间（供应商自主定价，不代定价）
+          example: ¥128~135/袋
+        traceComplete:
+          type: boolean
+          example: true
+        fulfillmentRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 履约率（0-1）
+          example: 0.98
+        itemIds:
+          type: array
+          description: 相关在售商品
+          items:
+            type: string
+    AssistResult:
+      type: object
+      required: [candidates, insufficient]
+      properties:
+        candidates:
+          type: array
+          description: 收敛候选 + 横向对比（在售 + 信用分 ≥ 阈值 + 溯源完整）
+          items:
+            $ref: '#/components/schemas/AssistCandidate'
+        insufficient:
+          type: boolean
+          description: 候选不足，如实提示不硬凑
+          example: false
+        notice:
+          type: string
+          description: 候选不足提示文案
+          example: 当前品类符合标准的在售供应商较少
+    FavoriteTargetType:
+      type: string
+      description: 收藏对象类型
+      enum: [ITEM, SUPPLIER]
+      example: SUPPLIER
+    FavoriteRequest:
+      type: object
+      required: [targetType, targetId]
+      properties:
+        targetType:
+          $ref: '#/components/schemas/FavoriteTargetType'
+        targetId:
+          type: string
+          description: 商品编号/供应商编号
+          example: s_20260825001
+    FavoriteResult:
+      type: object
+      required: [favoriteId]
+      properties:
+        favoriteId:
+          type: string
+          description: 收藏号
+          example: fav_8f7e6d5c4b3a
+    FavoriteItem:
+      type: object
+      required: [favoriteId, targetType, targetId, createdAt]
+      properties:
+        favoriteId:
+          type: string
+          example: fav_8f7e6d5c4b3a
+        targetType:
+          $ref: '#/components/schemas/FavoriteTargetType'
+        targetId:
+          type: string
+          example: s_20260825001
+        name:
+          type: string
+          description: 收藏对象名称（脱敏展示）
+          example: XX农资
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    FavoritePage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/FavoriteItem'
+    InquiryRequest:
+      type: object
+      required: [content]
+      properties:
+        supplierId:
+          type: string
+          description: 询价供应商（与 itemId 二选一或同时）
+          example: s_20260825001
+        itemId:
+          type: string
+          description: 询价商品（可选）
+          example: item_20260901001
+        content:
+          type: string
+          description: 询价内容
+          maxLength: 1000
+          example: 采购 20 袋，请问批量价格与到货时间
+        quantity:
+          type: string
+          description: 用量（可选）
+          maxLength: 100
+          example: 20 袋
+        budget:
+          type: string
+          description: 预算（可选）
+          maxLength: 100
+          example: 3000 元以内
+    InquiryResult:
+      type: object
+      required: [inquiryId]
+      properties:
+        inquiryId:
+          type: string
+          description: 询价单号
+          example: inq_8f7e6d5c4b3a
+
+x-external-interfaces:
+  description: |
+    本服务无服务端间进向接口（endpoints 为空）。
+    出方向依赖：
+    - 数据源：TRACE（批次/资质关联/溯源码）、CRED（供应商信用分权威存储/红黑榜）、AICORE（商品图片审核/OCR）；
+    - 强制下架为平台事件触发（资质临期/投诉激增，MQ 事件 + 留痕 + 通知，无前端接口）；
+    - 被依赖：TRADE 下单商品来源（担保下单衔接）。
+  endpoints: []
