@@ -1,6 +1,6 @@
 # 用工服务（EMP · Employment）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.3）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.4）编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.4 / §6.4.4 为准，需求口径以 PRD §5.4（C 组）与 §5.11（I 组）为准。
 
 ## 1. 服务概述
@@ -59,4 +59,6 @@
 
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.4（C 组）、§5.11（I 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.4 用工服务、§6.4.4 接口清单、§8 非功能设计
+- 接口文档（**唯一可手改源**）：`services/emp/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 10 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；SETTLE 代付考勤校验等服务端间接口见文末 x-external-interfaces 附录）
+- Apifox 导入产物（**自动生成，禁止手改**）：`services/emp/docs/openapi.apifox.json`
 - 数据设计：PDD §4.5 ③ 用工域（EMP，`employment`/`attendance`/`labor_review`；`payroll` 已迁至 ⑨ 结算域 SETTLE）
