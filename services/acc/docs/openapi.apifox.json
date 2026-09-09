@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "账户服务 ACC · 接口文档",
-    "version": "1.0.0",
-    "description": "账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（含 I-06 强实名增强）。\n口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）已内联打包进本文件。\n\n\n【已打包】本文件为 Apifox 导入专用（自包含，无外部引用）。源文件以 openapi.yaml 为准，请勿手改本文件。"
+    "version": "1.1.0",
+    "description": "账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（含 I-06 强实名增强、G-01 人机验证）。\n口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n\n\n【已打包】本文件为 Apifox 导入专用（自包含，无外部引用）。源文件以 openapi.yaml 为准，请勿手改本文件。"
   },
   "servers": [
     {
@@ -19,6 +19,10 @@
     {
       "name": "realname",
       "description": "实名认证（I-01 / I-06）"
+    },
+    {
+      "name": "captcha",
+      "description": "人机验证（滑块/图形验证码，G-01 防机器人）"
     },
     {
       "name": "wallet",
@@ -43,27 +47,28 @@
     }
   ],
   "paths": {
-    "/acc/realname/init": {
-      "post": {
+    "/acc/captcha": {
+      "get": {
         "tags": [
-          "realname"
+          "captcha"
         ],
-        "summary": "发起实名（注册/登录入口，触发微信/支付宝授权回传）",
-        "description": "消费端/经营端一键实名登录入口。流程：一键实名 → 授权协议 → 回传实名信息 → 返回账户。\n幂等：重复 open_id 幂等返回原账户。第三方实名不可用（R-02）→ 4001，前端明示「流程暂停」，\n不接受人工证件核验降级。\n",
+        "summary": "获取人机验证（默认滑块，可降级图形）",
+        "description": "G-01 登录/注册页防机器人校验。默认下发滑块拼图（SLIDER），滑块失败后可请求 IMAGE 降级为图形验证码。\n返回 captchaId 与（可选）图片；正确结果只存服务端（Redis，内存态兜底），前端拿不到答案。\n接口做频率限制（登录爆破限速，防刷）。\n",
         "security": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RealnameInitRequest"
-              }
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "验证类型，缺省 SLIDER；滑块失败降级为 IMAGE",
+            "schema": {
+              "$ref": "#/components/schemas/CaptchaType"
             }
           }
-        },
+        ],
         "responses": {
           "200": {
-            "description": "成功，返回第三方授权跳转与业务号",
+            "description": "成功，返回验证挑战",
             "content": {
               "application/json": {
                 "schema": {
@@ -75,7 +80,108 @@
                       "type": "object",
                       "properties": {
                         "data": {
-                          "$ref": "#/components/schemas/RealnameInitResult"
+                          "$ref": "#/components/schemas/CaptchaChallenge"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "触发限流（登录爆破限速）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/acc/captcha/verify": {
+      "post": {
+        "tags": [
+          "captcha"
+        ],
+        "summary": "校验人机验证结果",
+        "description": "提交滑块偏移量（offsetX）或图形验证码答案（code）。校验通过返回一次性凭证 verifyToken，\n供注册/登录接口（POST /acc/register）回填 captchaToken，5 分钟内有效、一次性消费。\n校验失败（答案错误/过期）返回 success=false，前端重取或降级图形验证码。\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptchaVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功（success=false 表示校验未通过，非 HTTP 错误）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Envelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CaptchaVerifyResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/acc/register": {
+      "post": {
+        "tags": [
+          "realname"
+        ],
+        "summary": "注册（实名登录入口，触发微信/支付宝授权回传）",
+        "description": "消费端/经营端一键实名登录入口。流程：一键实名 → 授权协议 → 回传实名信息 → 返回账户。\n幂等：重复 open_id 幂等返回原账户。第三方实名不可用（R-02）→ 4001，前端明示「流程暂停」，\n不接受人工证件核验降级。\n注意：PDD §6.4.1 的 register 请求含 idName/idCard，但与红线 R-02「实名仅微信/支付宝回传、\n平台不收集证件照片」冲突，故证件号不在本请求入参，改为经 /acc/realname/callback 由第三方回传。\ncaptchaToken 为 POST /acc/captcha/verify 下发的一次性凭证（可选，防机器人）。\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回第三方授权跳转与业务号（幂等命中时返回 accountId）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Envelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/RegisterResult"
                         }
                       }
                     }
@@ -87,8 +193,25 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
+          "422": {
+            "description": "业务规则不满足（3001 实名未完成 / 3002 实名不匹配）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
           "502": {
-            "$ref": "#/components/responses/ThirdPartyFailure"
+            "description": "第三方实名接口失败（4001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
           }
         }
       }
@@ -145,19 +268,19 @@
         }
       }
     },
-    "/acc/realname/enhanced": {
+    "/acc/realname/nfc": {
       "post": {
         "tags": [
           "realname"
         ],
         "summary": "强实名增强（NFC 读证 + 人脸活体，I-06，M2）",
-        "description": "高风险场景（供应商入驻/大额交易）的强实名增强。基础回传路径不变（R-02）。\nNFC 读卡失败 → 降级基础实名并提示；生物特征最小化 + 加密存储（R-03/R-07），人脸模板不出域。\n",
+        "description": "高风险场景（供应商入驻/大额交易）的强实名增强，路径与 PDD §6.4.1 对齐。基础回传路径不变（R-02）。\nNFC 读卡失败 → 降级基础实名并提示；生物特征最小化 + 加密存储（R-03/R-07），人脸模板不出域。\n",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EnhancedRealnameRequest"
+                "$ref": "#/components/schemas/NfcRealnameRequest"
               }
             }
           }
@@ -176,7 +299,7 @@
                       "type": "object",
                       "properties": {
                         "data": {
-                          "$ref": "#/components/schemas/EnhancedRealnameResult"
+                          "$ref": "#/components/schemas/NfcRealnameResult"
                         }
                       }
                     }
@@ -264,7 +387,7 @@
             "name": "from",
             "in": "query",
             "required": false,
-            "description": "起止日期（含），ISO 8601",
+            "description": "起始日期（含），ISO 8601",
             "schema": {
               "type": "string",
               "format": "date",
@@ -977,7 +1100,15 @@
           "UNBOUND"
         ]
       },
-      "RealnameInitRequest": {
+      "CaptchaType": {
+        "type": "string",
+        "description": "人机验证类型",
+        "enum": [
+          "SLIDER",
+          "IMAGE"
+        ]
+      },
+      "RegisterRequest": {
         "type": "object",
         "required": [
           "mobile",
@@ -991,10 +1122,15 @@
           },
           "role": {
             "$ref": "#/components/schemas/Role"
+          },
+          "captchaToken": {
+            "type": "string",
+            "description": "人机验证一次性凭证（POST /acc/captcha/verify 下发，防机器人）",
+            "example": "ct_7f3a2b1c9d8e"
           }
         }
       },
-      "RealnameInitResult": {
+      "RegisterResult": {
         "type": "object",
         "required": [
           "bizId",
@@ -1047,16 +1183,17 @@
           }
         }
       },
-      "EnhancedRealnameRequest": {
+      "NfcRealnameRequest": {
         "type": "object",
         "required": [
-          "nfcToken",
+          "idCard",
           "faceToken"
         ],
         "properties": {
-          "nfcToken": {
+          "idCard": {
             "type": "string",
-            "description": "NFC 读证返回的加密令牌"
+            "description": "NFC 读证得到的证件号（芯片数据，加密传输）",
+            "example": "130123199001011234"
           },
           "faceToken": {
             "type": "string",
@@ -1064,20 +1201,96 @@
           }
         }
       },
-      "EnhancedRealnameResult": {
+      "NfcRealnameResult": {
         "type": "object",
+        "required": [
+          "realNameLevel"
+        ],
         "properties": {
-          "realNameStatus": {
-            "$ref": "#/components/schemas/RealNameStatus"
-          },
-          "level": {
+          "realNameLevel": {
             "type": "string",
-            "description": "实名等级",
+            "description": "实名等级：BASE 基础回传 / ENHANCED 强实名",
             "enum": [
               "BASE",
               "ENHANCED"
             ],
             "example": "ENHANCED"
+          }
+        }
+      },
+      "CaptchaChallenge": {
+        "type": "object",
+        "required": [
+          "captchaId",
+          "type",
+          "expireAt"
+        ],
+        "properties": {
+          "captchaId": {
+            "type": "string",
+            "description": "验证挑战 ID，校验时回传",
+            "example": "cap_6d5e4f3a2b1c"
+          },
+          "type": {
+            "$ref": "#/components/schemas/CaptchaType"
+          },
+          "backgroundImage": {
+            "type": "string",
+            "description": "滑块背景图（base64 或 URL）；最小实现返回占位，正式接入验证码 SDK 后返回真实图",
+            "nullable": true
+          },
+          "sliderImage": {
+            "type": "string",
+            "description": "滑块缺口图（base64 或 URL，仅 SLIDER）",
+            "nullable": true
+          },
+          "expireAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "挑战过期时间（UTC）",
+            "example": "2026-01-15T10:35:00Z"
+          }
+        }
+      },
+      "CaptchaVerifyRequest": {
+        "type": "object",
+        "required": [
+          "captchaId"
+        ],
+        "properties": {
+          "captchaId": {
+            "type": "string",
+            "example": "cap_6d5e4f3a2b1c"
+          },
+          "offsetX": {
+            "type": "integer",
+            "format": "int32",
+            "description": "滑块拖动距离（SLIDER 校验用，单位 px）",
+            "example": 137
+          },
+          "code": {
+            "type": "string",
+            "description": "图形验证码答案（IMAGE 校验用）",
+            "example": "8A3F"
+          }
+        }
+      },
+      "CaptchaVerifyResult": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "是否通过；false 表示答案错误/过期，前端重取或降级",
+            "example": true
+          },
+          "verifyToken": {
+            "type": "string",
+            "description": "一次性凭证（成功时下发，5 分钟内有效，供注册回填 captchaToken）",
+            "nullable": true,
+            "example": "ct_7f3a2b1c9d8e"
           }
         }
       },
@@ -1233,8 +1446,7 @@
         "type": "object",
         "required": [
           "channel",
-          "payeeAccount",
-          "payeeName"
+          "payeeAccount"
         ],
         "properties": {
           "channel": {
@@ -1242,13 +1454,8 @@
           },
           "payeeAccount": {
             "type": "string",
-            "description": "收款账号（对公/对私）",
+            "description": "收款账号（对公/对私）；户名与实名一致性由服务端向通道校验，不一致报 3002",
             "example": "6222021234567890"
-          },
-          "payeeName": {
-            "type": "string",
-            "description": "收款人姓名/户名，须与实名一致（否则 3002）",
-            "example": "张三"
           }
         }
       },
