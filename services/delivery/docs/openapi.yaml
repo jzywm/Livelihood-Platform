@@ -1,0 +1,1623 @@
+openapi: 3.0.3
+info:
+  title: 配送服务 DELIVERY · 接口文档
+  version: 1.0.0
+  description: |
+    配送服务（DELIVERY）前端接口文档。模块 L 组：L-01 配送下单与地址定位选点、L-02 订单状态机与全程跟踪、
+    L-03 商家接单与备货出餐、L-04 运营调度看板、L-05 运力管理、L-06 位置轨迹存证与异常预警。
+    口径对齐：PDD §5.15（本地配送服务，页面结构 8 页）；需求口径 PRD §5.14（L 组，L-01~L-06）；
+    边界依据 SSOT §2.14。**PDD §6.4 无 DELIVERY 接口草案（SSOT C-01），本文件按 8 页线框逐页映射设计。**
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（骑手轨迹上报）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：复用 SETTLE 结算与 P-02 存证，**不重复建结算/存证体系**；不做北斗硬件对接（位置/轨迹复用手机 GPS，同 F-02）；
+      R-03 位置/轨迹分级授权（本人可见→授权可见→脱敏公示）、敏感个人信息加密存储（R-07）。
+    - 里程碑：本服务为 M2 交付、**骑手端 App 后置**（骑手侧动作暂由运营端人工调度 + 运力档案承载）；
+      全部接口为 M2 占位——里程碑交付前口径以评审为准。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: order
+    description: 配送下单与订单跟踪（L-01/L-02，消费端）
+  - name: merchant
+    description: 商家接单与备货出餐（L-03，经营端）
+  - name: ops
+    description: 运营调度与运力管理（L-04/L-05/L-06，运营端 /ops）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /delivery/quote:
+    post:
+      tags: [order]
+      summary: 配送费报价与范围校验【M2 · L-01 占位】
+      description: |
+        下单前报价（L-01，线框 S-29）：**校验配送范围**——超范围 deliverable=false 并显式提示「超出配送范围，
+        请更换地址」（前端禁用提交）；范围内返回配送费/预计送达分钟数。
+        地址经 GPS 定位/地图选点/常用地址三选一联动回填；位置数据最小化使用、脱敏存储（R-03/R-07）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuoteRequest'
+      responses:
+        '200':
+          description: 成功，返回可配送判定与报价（超范围 deliverable=false，非错误）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/QuoteResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /delivery/orders:
+    post:
+      tags: [order]
+      summary: 配送下单【M2 · L-01 占位】
+      description: |
+        生成配送订单（L-01，线框 S-29）：校验配送范围（超范围 → 1003 拦截提示更换地址）、
+        计算配送费/预计送达；结算与退款复用 SETTLE（I-04 分账反向），本服务不重复建结算体系。
+        位置数据最小化、脱敏存储（R-03/R-07）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryOrderCreateRequest'
+      responses:
+        '200':
+          description: 受理成功，返回配送单号与状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '422':
+          description: 业务规则拦截（code=1003，超出配送范围，请更换地址）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 1003
+                message: 超出配送范围，请更换地址
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+    get:
+      tags: [order]
+      summary: 我的配送订单列表（线框 S-30）【M2 · L-02 占位】
+      description: |
+        消费端「我的配送订单」（S-30）：状态筛选 Tab + 订单列表（状态徽章+商家+金额+时间），分页；
+        仅本人可见（2002 拦截）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/DeliveryOrderStatus'
+      responses:
+        '200':
+          description: 成功，返回我的配送订单（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DeliveryOrderPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /delivery/orders/{orderId}:
+    get:
+      tags: [order]
+      summary: 配送订单详情 + 状态时间轴（线框 S-31）【M2 · L-02 占位】
+      description: |
+        订单详情（S-31）：状态时间轴 + 预计送达 + 操作区（催单/投诉/确认收货）；骑手实时位置与轨迹
+        走 GET /delivery/orders/{orderId}/track；仅当事方/运营可见（2002 拦截）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，返回订单详情与时间轴
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DeliveryOrderDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/orders/{orderId}/track:
+    get:
+      tags: [order]
+      summary: 骑手位置与轨迹存证查询（线框 S-31 地图）【M2 · L-02/L-06 占位】
+      description: |
+        配送全程位置轨迹查询（S-31 地图 + L-06）：轨迹点时间戳 + 哈希存证（复用 P-02，只增不改）、
+        分段加载（README §4.2 轨迹抽稀 + 分段加载降低带宽）；按 R-03 分级授权（本人可见→授权可见→脱敏）；
+        轨迹可出证供纠纷仲裁（复用 TICKET D-02/T-15 机制，本服务不建出证体系）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，返回轨迹点与存证哈希
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TrackResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/orders/{orderId}/urge:
+    post:
+      tags: [order]
+      summary: 催单（消费者/运营共用）【M2 · L-02/L-04 占位】
+      description: |
+        消费者对配送中订单催单（S-30/S-31），运营端也可代催（O-02）；催单留痕审计（L-04 治理口径）；
+        非配送中状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，催单已触达（留痕）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UrgeResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非配送中状态不可催单）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/orders/{orderId}/confirm:
+    post:
+      tags: [order]
+      summary: 确认收货（已送达 → 已完成）【M2 · L-02 占位】
+      description: |
+        消费者确认收货（S-31 操作区）：已送达 → 已完成；仅消费者本人可确认（2002）；非已送达状态 → 3007。
+        M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，订单已完成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ConfirmResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非已送达状态不可确认收货）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/orders/merchant:
+    get:
+      tags: [merchant]
+      summary: 商户配送订单列表（线框 M-40）【M2 · L-03 占位】
+      description: |
+        经营端「配送订单管理」（M-40）：状态筛选 Tab + 订单列表（超时倒计时）+ 操作区
+        （接单/拒单/备货/出餐/转调度）；仅本商户可见（2002 拦截）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/DeliveryOrderStatus'
+      responses:
+        '200':
+          description: 成功，返回商户配送订单（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantOrderPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/orders/{orderId}/accept:
+    post:
+      tags: [merchant]
+      summary: 商家接单（待接单 → 商户备货）【M2 · L-03 占位】
+      description: |
+        商户接单（M-40 操作区）：二次确认；超时未接自动拒单转运营调度并预警（系统动作）；
+        仅本商户可接（2002）；非待接单状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，订单进入商户备货
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AcceptResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非待接单状态）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/orders/{orderId}/reject:
+    post:
+      tags: [merchant]
+      summary: 商家拒单（留痕计入信用）【M2 · L-03 占位】
+      description: |
+        商户拒单（M-40 操作区）：二次确认；**拒单原因留痕计入信用（A-07）**；仅本商户可拒（2002）；
+        非待接单状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectRequest'
+      responses:
+        '200':
+          description: 成功，订单已拒单（原因留痕计信用）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RejectResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非待接单状态）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/orders/{orderId}/progress:
+    post:
+      tags: [merchant]
+      summary: 备货/出餐状态上报【M2 · L-03 占位】
+      description: |
+        备货/出餐一键上报（M-40 操作区）：PREPARE 备货中（商户备货）、READY 出餐完成（待取货）；
+        仅本商户可上报（2002）；状态不允许 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProgressRequest'
+      responses:
+        '200':
+          description: 成功，返回最新状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProgressResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/orders/{orderId}/transfer:
+    post:
+      tags: [merchant]
+      summary: 请求取货 / 转运营调度【M2 · L-03 占位】
+      description: |
+        出餐完成后请求取货，骑手不可达/异常时转运营调度（M-40 操作区）：订单转运营端人工派单；
+        仅本商户可操作（2002）；状态不允许 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，订单已转运营调度（待取货/待派单）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TransferResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/ops/overview:
+    get:
+      tags: [ops]
+      summary: 配送运营工作台总览（线框 O-01）【M2 · L-04 占位】
+      description: |
+        运营工作台今日总览（O-01）：订单量/履约率/异常数/在线运力 + 待办（待派单/超时/偏航）；
+        `/ops` 仅平台运营角色可见（2002 拦截）。M2 占位。
+      responses:
+        '200':
+          description: 成功，返回今日总览与待办
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OpsOverview'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/ops/orders:
+    get:
+      tags: [ops]
+      summary: 运营全量配送订单（线框 O-02）【M2 · L-04 占位】
+      description: |
+        运营端全量订单列表（O-02）：待派单/配送中/异常/已完成筛选，分页；
+        操作区（派单/改派/取消/催单）处置留痕可审计（L-04 治理口径）；需运营角色（2002）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/DeliveryOrderStatus'
+      responses:
+        '200':
+          description: 成功，返回全量订单（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OpsOrderPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/ops/orders/{orderId}/assign:
+    post:
+      tags: [ops]
+      summary: 派单（智能建议 + 人工确认）【M2 · L-04 占位】
+      description: |
+        运营派单（O-02/O-03）：智能派单建议（AI 辅助，R-05）+ 人工确认后执行；
+        同一骑手并发派单 → 幂等/乐观锁拦截（3007，提示「已改派，请刷新」）；留痕审计；
+        需运营角色（2002）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRequest'
+      responses:
+        '200':
+          description: 成功，订单已派单（配送中）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AssignResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许/派单冲突（code=3007，已改派请刷新）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 已改派，请刷新
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/ops/orders/{orderId}/reassign:
+    post:
+      tags: [ops]
+      summary: 改派【M2 · L-04 占位】
+      description: |
+        运营改派（O-02）：更换骑手并留痕审计；非配送中状态 → 3007；需运营角色（2002）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReassignRequest'
+      responses:
+        '200':
+          description: 成功，订单已改派（留痕）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AssignResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/ops/orders/{orderId}/cancel:
+    post:
+      tags: [ops]
+      summary: 运营取消订单【M2 · L-04 占位】
+      description: |
+        运营取消（O-02）：展示取消原因 + 退款进度（复用 SETTLE I-04 分账反向，本服务不建退款体系）；
+        取消需二次确认 + 留痕审计；需运营角色（2002）；已取消/已完成 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelRequest'
+      responses:
+        '200':
+          description: 成功，订单已取消（退款经 SETTLE）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CancelResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/ops/alerts:
+    get:
+      tags: [ops]
+      summary: 配送异常预警列表（超时/偏航/异常停留，线框 O-03）【M2 · L-06 占位】
+      description: |
+        配送异常预警（L-06，O-03 预警列表）：超时/偏航/异常停留自动预警并推送运营端；
+        预警只推送线索、人工处置（C8）；需运营角色（2002）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: type
+          in: query
+          required: false
+          description: 异常类型筛选
+          schema:
+            $ref: '#/components/schemas/DeliveryAlertType'
+      responses:
+        '200':
+          description: 成功，返回异常预警列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OpsAlertPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/ops/riders:
+    get:
+      tags: [ops]
+      summary: 运力管理 · 骑手列表（线框 O-04）【M2 · L-05 占位】
+      description: |
+        骑手/配送员档案列表（O-04）：实名/健康证/履约率/在线状态，分页；骑手端 App 后置，
+        本页为运营端运力档案；需运营角色（2002）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: onlineStatus
+          in: query
+          required: false
+          description: 在线状态筛选
+          schema:
+            $ref: '#/components/schemas/RiderOnlineStatus'
+      responses:
+        '200':
+          description: 成功，返回骑手列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/ops/riders/{riderId}:
+    get:
+      tags: [ops]
+      summary: 骑手档案详情（线框 O-04 查看档案）【M2 · L-05 占位】
+      description: |
+        骑手档案（L-05）：实名、健康证、背景核验（复用 A-06/F-03 思路）、信用档案
+        （接单履约率/超时/投诉）；需运营角色（2002）。M2 占位。
+      parameters:
+        - name: riderId
+          in: path
+          required: true
+          description: 骑手编号
+          schema:
+            type: string
+            example: r_20260901001
+      responses:
+        '200':
+          description: 成功，返回骑手档案
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/ops/riders/{riderId}/status:
+    post:
+      tags: [ops]
+      summary: 骑手停用/启用（线框 O-04）【M2 · L-05 占位】
+      description: |
+        骑手停用/启用（O-04）：停用需二次确认并留痕；需运营角色（2002）。M2 占位。
+      parameters:
+        - name: riderId
+          in: path
+          required: true
+          description: 骑手编号
+          schema:
+            type: string
+            example: r_20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderStatusRequest'
+      responses:
+        '200':
+          description: 成功，返回停用/启用结果（留痕）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderStatusResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/ops/riders/locations:
+    get:
+      tags: [ops]
+      summary: 骑手实时位置（调度看板地图，线框 O-03）【M2 · L-04 占位】
+      description: |
+        调度看板地图（O-03）：在线骑手实时位置（订单热力 + 骑手位置一屏可见）；
+        位置按 R-03 分级授权、最小化展示；需运营角色（2002）。M2 占位。
+      responses:
+        '200':
+          description: 成功，返回在线骑手实时位置
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderLocationsResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+
+components:
+  schemas:
+    QuoteRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: object
+          description: 收货地址（GPS 定位/地图选点/常用地址三选一联动回填）
+          required: [lng, lat, detail]
+          properties:
+            lng:
+              type: number
+              format: double
+              description: 经度
+              example: 114.51
+            lat:
+              type: number
+              format: double
+              description: 纬度
+              example: 38.04
+            detail:
+              type: string
+              description: 地址详情（脱敏存储）
+              maxLength: 200
+              example: 裕华区 XX 路 88 号
+        merchantId:
+          type: string
+          description: 商户编号（可选，按商家配送范围校验）
+          example: m_20260825001
+        items:
+          type: array
+          description: 商品清单（配送费计算）
+          items:
+            type: object
+            required: [itemId, qty]
+            properties:
+              itemId:
+                type: string
+              qty:
+                type: integer
+                format: int32
+                minimum: 1
+    QuoteResult:
+      type: object
+      required: [deliverable]
+      properties:
+        deliverable:
+          type: boolean
+          description: 是否可配送（超范围 false，前端禁用提交）
+          example: true
+        reason:
+          type: string
+          description: 不可配送原因
+          example: 超出配送范围，请更换地址
+        deliveryFee:
+          type: number
+          description: 配送费（元）
+          example: 6
+        estimatedMinutes:
+          type: integer
+          format: int32
+          description: 预计送达（分钟）
+          example: 35
+    DeliveryOrderStatus:
+      type: string
+      description: |
+        配送订单状态机（PDD §5.15.5 / PRD §6.10）：PENDING_PAYMENT 待支付 → PENDING_ACCEPT 待接单 →
+        PREPARING 商户备货 → READY 待取货 → DELIVERING 配送中 → DELIVERED 已送达 → COMPLETED 已完成；
+        分支：CANCELLED 已取消、ABNORMAL 异常。
+      enum: [PENDING_PAYMENT, PENDING_ACCEPT, PREPARING, READY, DELIVERING, DELIVERED, COMPLETED, CANCELLED, ABNORMAL]
+      example: DELIVERING
+    DeliveryOrderCreateRequest:
+      type: object
+      required: [address, merchantId, items]
+      properties:
+        address:
+          type: object
+          description: 收货地址（位置最小化、脱敏存储，R-03/R-07）
+          required: [lng, lat, detail]
+          properties:
+            lng:
+              type: number
+              format: double
+              example: 114.51
+            lat:
+              type: number
+              format: double
+              example: 38.04
+            detail:
+              type: string
+              maxLength: 200
+              example: 裕华区 XX 路 88 号
+        receiverName:
+          type: string
+          description: 收货人姓名（脱敏存储）
+          maxLength: 50
+          example: 李*
+        receiverPhone:
+          type: string
+          description: 收货人电话（加密存储）
+          maxLength: 20
+          example: '138****5678'
+        merchantId:
+          type: string
+          description: 商户编号
+          example: m_20260825001
+        items:
+          type: array
+          description: 商品清单
+          items:
+            type: object
+            required: [itemId, qty]
+            properties:
+              itemId:
+                type: string
+              qty:
+                type: integer
+                format: int32
+                minimum: 1
+        remark:
+          type: string
+          description: 备注（可选）
+          maxLength: 200
+          example: 放前台即可
+    OrderSubmitResult:
+      type: object
+      required: [orderId, status, deliveryFee]
+      properties:
+        orderId:
+          type: string
+          description: 配送单号
+          example: D-2026090801
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        deliveryFee:
+          type: number
+          description: 配送费（元）
+          example: 6
+        estimatedAt:
+          type: string
+          format: date-time
+          description: 预计送达时间
+          example: '2026-09-08T12:45:00Z'
+    DeliveryOrderItem:
+      type: object
+      required: [orderId, status, totalAmount, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        merchantName:
+          type: string
+          description: 商家名称（脱敏展示）
+          example: XX面馆
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        totalAmount:
+          type: number
+          description: 订单总额（元，含配送费）
+          example: 27
+        deliveryFee:
+          type: number
+          example: 6
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:10:00Z'
+        estimatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:45:00Z'
+    DeliveryOrderPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/DeliveryOrderItem'
+    TimelineEvent:
+      type: object
+      required: [status, at]
+      properties:
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        at:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:10:00Z'
+    DeliveryOrderDetail:
+      type: object
+      required: [orderId, status, timeline, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        address:
+          type: string
+          description: 收货地址（脱敏展示，R-03）
+          example: 裕华区 XX 路 88 号
+        receiverName:
+          type: string
+          example: 李*
+        merchantName:
+          type: string
+          example: XX面馆
+        items:
+          type: array
+          description: 商品清单
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              qty:
+                type: integer
+                format: int32
+        totalAmount:
+          type: number
+          example: 27
+        deliveryFee:
+          type: number
+          example: 6
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        riderName:
+          type: string
+          description: 骑手名称（脱敏展示，配送中后可见）
+          example: 王*傅
+        timeline:
+          type: array
+          description: 状态时间轴（全程进度可见）
+          items:
+            $ref: '#/components/schemas/TimelineEvent'
+        estimatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:45:00Z'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:10:00Z'
+    TrackPoint:
+      type: object
+      required: [lng, lat, at]
+      properties:
+        lng:
+          type: number
+          format: double
+          example: 114.511
+        lat:
+          type: number
+          format: double
+          example: 38.042
+        at:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:30:00Z'
+    TrackResult:
+      type: object
+      required: [orderId, points]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        points:
+          type: array
+          description: 轨迹点（分段加载，抽稀后）
+          items:
+            $ref: '#/components/schemas/TrackPoint'
+        hash:
+          type: string
+          description: 轨迹存证哈希（时间戳 + 哈希，复用 P-02，只增不改）
+          example: c8d4e1f0a9b2c3d4
+    UrgeResult:
+      type: object
+      required: [orderId, urgedAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        urgedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:50:00Z'
+    ConfirmResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          enum: [COMPLETED]
+          example: COMPLETED
+    MerchantOrderItem:
+      allOf:
+        - $ref: '#/components/schemas/DeliveryOrderItem'
+        - type: object
+          properties:
+            deadlineAt:
+              type: string
+              format: date-time
+              description: 接单/备货超时倒计时（超时自动处理并预警）
+              example: '2026-09-08T12:12:00Z'
+    MerchantOrderPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/MerchantOrderItem'
+    AcceptResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          enum: [PREPARING]
+          example: PREPARING
+    RejectRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 拒单原因（留痕计入信用 A-07）
+          maxLength: 500
+          example: 高峰期无法按时出餐
+    RejectResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          enum: [CANCELLED]
+          example: CANCELLED
+    ProgressAction:
+      type: string
+      description: 备货/出餐上报动作（PREPARE 备货中 → READY 出餐完成/待取货）
+      enum: [PREPARE, READY]
+      example: PREPARE
+    ProgressRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/ProgressAction'
+    ProgressResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+    TransferResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          description: 转运营调度后状态（READY 待取货/待派单）
+          enum: [READY]
+          example: READY
+    OpsOverview:
+      type: object
+      required: [orderCount, completionRate, abnormalCount, onlineRiders]
+      properties:
+        orderCount:
+          type: integer
+          format: int32
+          description: 今日订单量
+          example: 328
+        completionRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 履约率
+          example: 0.95
+        abnormalCount:
+          type: integer
+          format: int32
+          description: 异常订单数
+          example: 6
+        onlineRiders:
+          type: integer
+          format: int32
+          description: 在线运力
+          example: 12
+        pendingAssign:
+          type: integer
+          format: int32
+          description: 待派单
+          example: 5
+        overdue:
+          type: integer
+          format: int32
+          description: 超时订单
+          example: 2
+        deviation:
+          type: integer
+          format: int32
+          description: 偏航
+          example: 1
+    OpsOrderItem:
+      type: object
+      required: [orderId, status, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        merchantName:
+          type: string
+          description: 商家名称（脱敏展示）
+          example: XX面馆
+        riderName:
+          type: string
+          description: 骑手名称（脱敏展示，未派单为空）
+          example: 王*傅
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:10:00Z'
+    OpsOrderPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/OpsOrderItem'
+    AssignRequest:
+      type: object
+      required: [riderId]
+      properties:
+        riderId:
+          type: string
+          description: 骑手编号
+          example: r_20260901001
+    AssignResult:
+      type: object
+      required: [orderId, riderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        riderId:
+          type: string
+          example: r_20260901001
+        status:
+          type: string
+          enum: [DELIVERING]
+          example: DELIVERING
+    ReassignRequest:
+      type: object
+      required: [riderId]
+      properties:
+        riderId:
+          type: string
+          description: 新骑手编号
+          example: r_20260901002
+        reason:
+          type: string
+          description: 改派原因（留痕审计）
+          maxLength: 500
+          example: 原骑手车辆故障
+    CancelRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 取消原因（展示 + 留痕）
+          maxLength: 500
+          example: 商家无法履约
+    CancelResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          enum: [CANCELLED]
+          example: CANCELLED
+    DeliveryAlertType:
+      type: string
+      description: 配送异常类型（L-06：超时/偏航/异常停留）
+      enum: [OVERDUE, DEVIATION, ABNORMAL_STAY]
+      example: OVERDUE
+    OpsAlertItem:
+      type: object
+      required: [alertId, orderId, type, detectedAt, status]
+      properties:
+        alertId:
+          type: string
+          description: 预警编号
+          example: dal_8f7e6d5c4b3a
+        orderId:
+          type: string
+          example: D-2026090719
+        type:
+          $ref: '#/components/schemas/DeliveryAlertType'
+        detail:
+          type: string
+          description: 异常详情
+          example: 超出预计送达时间 15 分钟
+        detectedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:30:00Z'
+        status:
+          type: string
+          description: 处理状态（人工处置，C8）
+          enum: [OPEN, RESOLVED]
+          example: OPEN
+    OpsAlertPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/OpsAlertItem'
+    RiderOnlineStatus:
+      type: string
+      description: 骑手在线状态（O-04）
+      enum: [ONLINE, DELIVERING, OFFLINE]
+      example: ONLINE
+    RiderItem:
+      type: object
+      required: [riderId, name, completionRate, onlineStatus, enabled]
+      properties:
+        riderId:
+          type: string
+          example: r_20260901001
+        name:
+          type: string
+          description: 骑手姓名（脱敏展示）
+          example: 王*傅
+        realnameStatus:
+          type: boolean
+          description: 实名核验状态
+          example: true
+        healthCertStatus:
+          type: string
+          description: 健康证状态（VALID/EXPIRING/INVALID）
+          enum: [VALID, EXPIRING, INVALID]
+          example: VALID
+        completionRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 接单履约率
+          example: 0.98
+        onlineStatus:
+          $ref: '#/components/schemas/RiderOnlineStatus'
+        enabled:
+          type: boolean
+          description: 启用状态（停用后不可派单）
+          example: true
+    RiderPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiderItem'
+    RiderDetail:
+      allOf:
+        - $ref: '#/components/schemas/RiderItem'
+        - type: object
+          properties:
+            healthCert:
+              type: object
+              description: 健康证（复用 A-06/F-03 思路）
+              properties:
+                status:
+                  type: string
+                  enum: [VALID, EXPIRING, INVALID]
+                  example: VALID
+                validTo:
+                  type: string
+                  format: date
+                  example: '2027-01-31'
+            backgroundCheck:
+              type: string
+              description: 背景核验状态
+              enum: [PASSED, PENDING, REJECTED]
+              example: PASSED
+            overdueRate:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+              description: 超时率
+              example: 0.01
+            complaintCount:
+              type: integer
+              format: int32
+              description: 投诉数（信用档案，复用 A-06/F-03 思路）
+              example: 0
+    RiderStatusRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          description: DISABLE 停用 / ENABLE 启用
+          enum: [DISABLE, ENABLE]
+          example: DISABLE
+        reason:
+          type: string
+          description: 停用原因（停用必填，留痕）
+          maxLength: 500
+          example: 健康证过期
+    RiderStatusResult:
+      type: object
+      required: [riderId, enabled]
+      properties:
+        riderId:
+          type: string
+          example: r_20260901001
+        enabled:
+          type: boolean
+          example: false
+    RiderLocation:
+      type: object
+      required: [riderId, lng, lat, onlineStatus]
+      properties:
+        riderId:
+          type: string
+          example: r_20260901001
+        name:
+          type: string
+          description: 骑手姓名（脱敏展示）
+          example: 王*傅
+        lng:
+          type: number
+          format: double
+          example: 114.511
+        lat:
+          type: number
+          format: double
+          example: 38.042
+        onlineStatus:
+          $ref: '#/components/schemas/RiderOnlineStatus'
+        currentOrderId:
+          type: string
+          description: 当前配送单（配送中时有值）
+          example: D-2026090802
+    RiderLocationsResult:
+      type: object
+      required: [riders]
+      properties:
+        riders:
+          type: array
+          description: 在线骑手实时位置（R-03 分级授权、最小化展示）
+          items:
+            $ref: '#/components/schemas/RiderLocation'
+
+x-external-interfaces:
+  description: |
+    服务端间接口（内部调用），前端勿调，不在上方 paths 中。
+    出方向依赖：
+    - 结算/退款复用 SETTLE（I-04 分账反向），轨迹存证复用 P-02，**本服务不重复建结算/存证体系**；
+    - 骑手信用档案复用 CRED（A-06/F-03 思路）、拒单/履约事件上报 CRED 评分；
+    - 超时/偏航/异常停留预警上报 DASH（A-08 聚合）；轨迹出证与纠纷仲裁复用 TICKET（D-02/T-15）；
+    - 位置/轨迹手机 GPS 前端直连（不做北斗硬件对接，同 F-02）。
+  endpoints:
+    - method: POST
+      path: /delivery/track
+      tags: [order]
+      summary: 骑手位置轨迹上报（前端直连 GPS，服务端间承载）
+      description: |
+        配送全程 GPS 点按时间戳 + 哈希写入存证链（L-06，复用 P-02）：骑手端 App 后置期间，
+        由骑手侧临时载体（轻量页面/链接）前端直连上报；本接口供该载体调用，不在常规前端页面路由中。
+        轨迹抽稀 + 分段存储；位置按 R-03 分级授权。前端业务页面永远不调用此接口。
+      requestBody:
+        description: 轨迹点上报（时间戳 + 哈希存证）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, lng, lat, at]
+              properties:
+                orderId:
+                  type: string
+                  description: 配送单号
+                lng:
+                  type: number
+                  format: double
+                lat:
+                  type: number
+                  format: double
+                at:
+                  type: string
+                  format: date-time
+                  description: 定位时间戳
+      responses:
+        '200':
+          description: 受理成功（存证写入，只增不改）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
