@@ -1,0 +1,1263 @@
+openapi: 3.0.3
+info:
+  title: 交易服务 TRADE · 接口文档
+  version: 1.0.0
+  description: |
+    交易服务（TRADE）前端接口文档。模块 T4 担保撮合 + B2C 购买：T-11 担保交易与货款托管、T-12 到货验收与拒收退款、
+    T-13 交易互评与信用联动、T-14 履约异常处置与防刷单风控、T-15 争议仲裁与结果公示；
+    D-04 退货/退款【§5.14】、T-23 上门服务【§5.14】、A-09 未成年人交易拦截（下单校验部分）。
+    口径对齐：PDD §5.9 / §6.4.8 / §5.14.5 / §5.14.7；需求口径 PRD §5.10（T 组）；边界依据 SSOT §2.9。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（支付回调、SETTLE 分账触发）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权 / 幂等键）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：R-01 货款托管于持牌机构（非平台账户）、平台仅收服务费（0.5%~1% 分品类公开）、不碰货款 = 不二清；
+      R-15 防刷单防作弊（同 IP/设备高频、价格异常拦截）；R-03 仲裁结果脱敏公示。
+    - 里程碑：本服务为 M2 交付（设计先行），全部接口为 M2 占位——里程碑交付前口径以评审为准。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: order
+    description: 担保交易与履约（T-11/T-12/T-14）
+  - name: dispute
+    description: 争议仲裁（T-15）
+  - name: return
+    description: 退货退款（D-04）
+  - name: review
+    description: 交易互评（T-13）
+  - name: homeservice
+    description: 上门服务（T-23）
+  - name: agegate
+    description: 未成年人交易拦截（A-09）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /trade/orders:
+    post:
+      tags: [order]
+      summary: 担保下单（货款第三方持牌通道托管）【M2 · T-11 占位】
+      description: |
+        下单后货款进入第三方持牌通道托管（T-11）：平台不沉淀、不做二清；验收通过后分账
+        （货款→卖方、服务费→平台，费率 0.5%~1% 分品类公开，P-01），分账执行经 SETTLE
+        （服务端间触发，见附录）。携带幂等键（Idempotency-Key 头）提交，重复下单 → 3008 幂等返回；
+        通道失败/超时 → 4002 重试。放款类敏感操作后续环节强制 MFA。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+      responses:
+        '200':
+          description: 受理成功，返回订单号与托管状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '409':
+          description: 幂等键冲突（code=3008，返回原订单）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3008
+                message: 幂等键冲突，返回原结果
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '502':
+          description: 支付通道失败或超时（code=4002，幂等重试）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 4002
+                message: 支付通道失败或超时
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+    get:
+      tags: [order]
+      summary: 订单列表（买家/卖家视角）【M2 · T-11 占位】
+      description: |
+        订单列表：买家（采购/消费）与卖家（供货/收款）按角色自动过滤，按状态筛选，分页；M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 订单状态筛选
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+      responses:
+        '200':
+          description: 成功，返回订单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /trade/orders/{orderId}:
+    get:
+      tags: [order]
+      summary: 订单详情（托管/验收/分账状态）【M2 · T-11 占位】
+      description: |
+        订单详情（PDD §6.4.8 order/{id}）：订单信息 + 托管状态 + 分账状态聚合（{order, escrow, split}）；
+        仅交易双方/监管可见（2002 拦截）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      responses:
+        '200':
+          description: 成功，返回订单详情聚合
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetailResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /trade/orders/{orderId}/ship:
+    post:
+      tags: [order]
+      summary: 卖家发货（已付款 → 已发货）【M2 · T-14 占位】
+      description: |
+        卖家发货（状态机：已付款(托管) → 已发货(在途)）；仅卖家本人可操作（2002）；
+        非已付款状态发货 → 3007；超时未发货由平台自动催发/可取消退款（T-14，系统动作无前端接口）。
+        M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShipRequest'
+      responses:
+        '200':
+          description: 成功，订单已发货
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShipResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非已付款状态不可发货）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/orders/{orderId}/accept:
+    post:
+      tags: [order]
+      summary: 到货验收（48h，可部分/全额拒收）【M2 · T-12 占位】
+      description: |
+        收货后 48h 验收期（已确认，生鲜/农资品类可差异化调整）：确认/部分拒收/全额拒收并附证据；
+        验收通过触发 SETTLE 分账放款 + 互评入口，拒收转退款；超期未确认自动确认并提示（系统动作）。
+        放款类敏感操作强制 MFA（2003 拦截）；非待验收状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptRequest'
+      responses:
+        '200':
+          description: 成功，返回验收结果（放款/退款触发）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AcceptResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非待验收状态）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/orders/{orderId}/refund:
+    post:
+      tags: [order]
+      summary: 拒收退款【M2 · T-12 占位】
+      description: |
+        拒收转退款（T-12）：拒收 → 退款中 → 已完成(退款)，退款经持牌通道分账反向（SETTLE 执行）；
+        退款敏感操作强制 MFA（2003）；非拒收/待验收状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: 受理成功，退款中
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RefundResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/orders/{orderId}/dispute:
+    post:
+      tags: [dispute]
+      summary: 发起争议【M2 · T-15 占位】
+      description: |
+        验收分歧/货款争议进入存证仲裁（T-15）：双方提交证据、平台给出结论并公示（脱敏，R-03）；
+        证据不足提示补充（1001）；重复争议 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DisputeRequest'
+      responses:
+        '200':
+          description: 受理成功，返回争议单号（仲裁中）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DisputeSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，重复争议）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/disputes/{disputeId}:
+    get:
+      tags: [dispute]
+      summary: 争议详情与仲裁结论公示【M2 · T-15 占位】
+      description: |
+        争议详情（T-15）：双方主张与证据 + 平台仲裁结论（放款/退款），结论脱敏公示（R-03）、
+        计入双方信用分（评分事件上报 CRED）；仅当事双方/监管可见（2002）。M2 占位。
+      parameters:
+        - name: disputeId
+          in: path
+          required: true
+          description: 争议单号
+          schema:
+            type: string
+            example: D-20260901001
+      responses:
+        '200':
+          description: 成功，返回争议详情与仲裁结论
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DisputeDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /trade/orders/{orderId}/return:
+    post:
+      tags: [return]
+      summary: 退货申请（验收通过后）【M2 · D-04 占位】
+      description: |
+        验收通过后买家申请退货（D-04）：状态机 申请 → 审核 → 寄回/上门取 → 退款（分账反向）→
+        完成/驳回；争议复用 T-15 仲裁；非已完成状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReturnRequest'
+      responses:
+        '200':
+          description: 受理成功，退货申请待商家审核
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReturnSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/returns/{returnId}/review:
+    post:
+      tags: [return]
+      summary: 商家审核退货【M2 · D-04 占位】
+      description: |
+        商家审核退货申请（D-04 状态机：申请 → 审核 → 寄回 → 退款完成/驳回）：通过后买家寄回/上门取，
+        退款经 SETTLE 分账反向；仅卖家本人可审核（2002）；已审核 → 3007。M2 占位。
+      parameters:
+        - name: returnId
+          in: path
+          required: true
+          description: 退货单号
+          schema:
+            type: string
+            example: R-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReturnReviewRequest'
+      responses:
+        '200':
+          description: 成功，返回审核结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReturnReviewResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，已审核）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/orders/{orderId}/review:
+    post:
+      tags: [review]
+      summary: 交易互评（信用联动）【M2 · T-13 占位】
+      description: |
+        交易完成双方互评（T-13）：评分 + 评价 + 可附证据，更新 T-05 供应商信用与 A-07 商户信用
+        （评分事件上报 CRED）；恶意差评走 TICKET D-03 申诉；重复互评 → 3007；防刷单拦截（R-15）。
+        仅交易双方可评（2002）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 订单号
+          schema:
+            type: string
+            example: O-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TradeReviewRequest'
+      responses:
+        '200':
+          description: 成功，返回互评号（异步更新信用分）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TradeReviewResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，重复互评）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/home-service:
+    post:
+      tags: [homeservice]
+      summary: 上门服务预约【M2 · T-23 占位】
+      description: |
+        消费者浏览上门服务（家政/维修等）→ 预约（T-23）：服务方接单 → 上门服务 → 双方扫码核验
+        （复用 TRACE 溯源/信用链路）；服务方建立信用档案（复用 T-05 思路）；服务类型不存在 → 3006。
+        M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HomeServiceRequest'
+      responses:
+        '200':
+          description: 受理成功，返回服务单号（待接单）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HomeServiceSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /trade/home-services:
+    get:
+      tags: [homeservice]
+      summary: 上门服务列表（消费者预约/服务方接单）【M2 · T-23 占位】
+      description: |
+        上门服务单列表：消费者（我的预约）与服务方（待接单/进行中）按角色过滤，分页；M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选
+          schema:
+            $ref: '#/components/schemas/HomeServiceStatus'
+      responses:
+        '200':
+          description: 成功，返回服务单列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HomeServicePage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /trade/home-services/{orderId}/accept:
+    post:
+      tags: [homeservice]
+      summary: 服务方接单【M2 · T-23 占位】
+      description: |
+        服务方接单（T-23 流程：预约 → 接单 → 上门）；超时未接单 → 取消/重新匹配（系统动作）；
+        仅服务方角色可接单（2002）；已接单 → 3007。上门扫码核验复用 TRACE 溯源链路（不另建接口）。
+        M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 服务单号
+          schema:
+            type: string
+            example: O-20260901002
+      responses:
+        '200':
+          description: 成功，服务单已接单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HomeServiceAcceptResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，已接单）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /trade/order/age-check:
+    post:
+      tags: [agegate]
+      summary: 未成年人下单拦截校验【M2 · A-09 占位】
+      description: |
+        商品/店铺带「禁未成年」标记（CRED A-09 标记）时下单前校验买家实名年龄（A-09）：
+        <18 岁拦截下单并提示（3010）；无标记商品直接放行；违规商家计入信用分（A-07）。
+        仅作下单校验，下单执行在 POST /trade/orders。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgeCheckRequest'
+      responses:
+        '200':
+          description: 成功，返回校验结论（allowed + reason）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AgeCheckResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '422':
+          description: 违规对象拦截（code=3010，未成年人）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3010
+                message: 违规对象（未成年人）
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+
+components:
+  schemas:
+    OrderCreateRequest:
+      type: object
+      required: [itemId, qty]
+      properties:
+        itemId:
+          type: string
+          description: 商品编号（PROD）
+          example: item_20260901001
+        qty:
+          type: integer
+          format: int32
+          minimum: 1
+          description: 数量
+          example: 20
+        remark:
+          type: string
+          description: 备注（可选）
+          maxLength: 200
+          example: 请按批次发货
+    OrderSubmitResult:
+      type: object
+      required: [orderId, escrowStatus]
+      properties:
+        orderId:
+          type: string
+          description: 订单号
+          example: O-20260901001
+        escrowStatus:
+          $ref: '#/components/schemas/EscrowStatus'
+    EscrowStatus:
+      type: string
+      description: 货款托管状态（货款托管于持牌机构，平台不沉淀）
+      enum: [FROZEN, RELEASED, REFUNDED]
+      example: FROZEN
+    OrderStatus:
+      type: string
+      description: |
+        订单状态（PDD §5.9.2 状态机，`20` T4 已确认）：PENDING_PAYMENT 待付款 → PAID 已付款(托管) →
+        SHIPPED 已发货(在途) → PENDING_ACCEPTANCE 待验收(48h) → COMPLETED 已完成(放款+互评)；
+        分支：REFUNDING 退款中 → REFUNDED 已退款；DISPUTING 争议中 → CLOSED 已关闭(仲裁完成)。
+      enum: [PENDING_PAYMENT, PAID, SHIPPED, PENDING_ACCEPTANCE, COMPLETED, REFUNDING, REFUNDED, DISPUTING, CLOSED]
+      example: PENDING_ACCEPTANCE
+    OrderItem:
+      type: object
+      required: [orderId, totalAmount, status, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901001
+        itemName:
+          type: string
+          description: 商品名称
+          example: 小麦种子（50kg/袋）
+        counterpartName:
+          type: string
+          description: 对方名称（脱敏展示）
+          example: XX农资
+        totalAmount:
+          type: number
+          description: 订单总额（元，含服务费）
+          example: 2560
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    OrderPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/OrderItem'
+    OrderDetail:
+      type: object
+      required: [orderId, itemId, qty, totalAmount, status, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901001
+        itemId:
+          type: string
+          example: item_20260901001
+        itemName:
+          type: string
+          example: 小麦种子（50kg/袋）
+        buyerName:
+          type: string
+          description: 买方名称（脱敏展示）
+          example: 李*店
+        sellerName:
+          type: string
+          description: 卖方名称（脱敏展示）
+          example: XX农资
+        qty:
+          type: integer
+          format: int32
+          example: 20
+        totalAmount:
+          type: number
+          example: 2560
+        feeRate:
+          type: number
+          format: float
+          description: 服务费率（0.5%~1% 分品类公开，P-01）
+          example: 0.01
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+        shippedAt:
+          type: string
+          format: date-time
+          example: '2026-09-02T10:00:00Z'
+        acceptedAt:
+          type: string
+          format: date-time
+          example: '2026-09-05T10:00:00Z'
+    EscrowInfo:
+      type: object
+      required: [escrowId, status, amount]
+      properties:
+        escrowId:
+          type: string
+          description: 托管单号（持牌机构）
+          example: esc_8f7e6d5c4b3a
+        status:
+          $ref: '#/components/schemas/EscrowStatus'
+        amount:
+          type: number
+          description: 托管金额（元）
+          example: 2560
+        channelOrderNo:
+          type: string
+          description: 通道交易号（证据链）
+          example: wx4200001234567890
+    SplitInfo:
+      type: object
+      description: 分账信息（验收通过后 SETTLE 执行）
+      properties:
+        splitId:
+          type: string
+          example: spl_8f7e6d5c4b3a
+        goodsAmount:
+          type: number
+          description: 卖方货款（元）
+          example: 2534.4
+        feeAmount:
+          type: number
+          description: 平台服务费（元）
+          example: 25.6
+        status:
+          type: string
+          enum: [PENDING, SUCCESS, FAILED]
+          example: SUCCESS
+    OrderDetailResult:
+      type: object
+      description: 订单详情聚合（PDD §6.4.8：order + escrow + split）
+      properties:
+        order:
+          $ref: '#/components/schemas/OrderDetail'
+        escrow:
+          $ref: '#/components/schemas/EscrowInfo'
+        split:
+          $ref: '#/components/schemas/SplitInfo'
+    ShipRequest:
+      type: object
+      properties:
+        logisticsNo:
+          type: string
+          description: 物流单号（可选）
+          maxLength: 64
+          example: SF1234567890
+        carrier:
+          type: string
+          description: 承运方（可选）
+          maxLength: 50
+          example: 顺丰
+    ShipResult:
+      type: object
+      required: [orderId, status, shippedAt]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901001
+        status:
+          type: string
+          enum: [SHIPPED]
+          example: SHIPPED
+        shippedAt:
+          type: string
+          format: date-time
+          example: '2026-09-02T10:00:00Z'
+    AcceptType:
+      type: string
+      description: 验收结果（确认/部分拒收/全额拒收）
+      enum: [ACCEPTED, PARTIAL_REJECT, FULL_REJECT]
+      example: ACCEPTED
+    AcceptRequest:
+      type: object
+      required: [result]
+      properties:
+        result:
+          $ref: '#/components/schemas/AcceptType'
+        evidenceKeys:
+          type: array
+          description: 证据附件（拒收必填，OSS 对象键）
+          items:
+            type: string
+        note:
+          type: string
+          description: 验收说明（可选）
+          maxLength: 500
+          example: 包装完好，数量无误
+    AcceptResult:
+      type: object
+      required: [orderId, status, action]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901001
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        action:
+          type: string
+          description: 后续动作（验收通过 → RELEASE 放款 + 互评；拒收 → REFUND 退款）
+          enum: [RELEASE, REFUND]
+          example: RELEASE
+    RefundRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 拒收/退款原因
+          maxLength: 1000
+          example: 货不对板
+        evidenceKeys:
+          type: array
+          description: 证据附件（OSS 对象键）
+          items:
+            type: string
+    RefundResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901001
+        status:
+          type: string
+          enum: [REFUNDING]
+          example: REFUNDING
+    DisputeRequest:
+      type: object
+      required: [claim]
+      properties:
+        claim:
+          type: string
+          description: 争议主张
+          maxLength: 2000
+          example: 商品与描述不符，要求全额退款
+        evidenceKeys:
+          type: array
+          description: 证据附件（OSS 对象键，证据不足提示补充）
+          items:
+            type: string
+    DisputeSubmitResult:
+      type: object
+      required: [disputeId, status]
+      properties:
+        disputeId:
+          type: string
+          description: 争议单号
+          example: D-20260901001
+        status:
+          type: string
+          enum: [DISPUTING]
+          example: DISPUTING
+    DisputeDetail:
+      type: object
+      required: [disputeId, orderId, claim, status]
+      properties:
+        disputeId:
+          type: string
+          example: D-20260901001
+        orderId:
+          type: string
+          example: O-20260901001
+        claim:
+          type: string
+          example: 商品与描述不符，要求全额退款
+        evidenceKeys:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          description: 争议状态（仲裁完成后 CLOSED）
+          enum: [DISPUTING, ARBITRATED]
+          example: ARBITRATED
+        verdict:
+          type: string
+          description: 仲裁结论（放款/退款，脱敏公示，R-03）
+          example: 支持买方退款主张
+        publishedAt:
+          type: string
+          format: date-time
+          description: 公示时间
+          example: '2026-09-06T10:00:00Z'
+    ReturnRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: 退货原因
+          maxLength: 1000
+          example: 商品有质量问题
+        evidenceKeys:
+          type: array
+          description: 证据附件（OSS 对象键）
+          items:
+            type: string
+    ReturnSubmitResult:
+      type: object
+      required: [returnId, status]
+      properties:
+        returnId:
+          type: string
+          description: 退货单号
+          example: R-20260901001
+        status:
+          type: string
+          enum: [PENDING_REVIEW]
+          example: PENDING_REVIEW
+    ReturnReviewRequest:
+      type: object
+      required: [approve]
+      properties:
+        approve:
+          type: boolean
+          description: 审核结论（通过/驳回）
+          example: true
+        reason:
+          type: string
+          description: 驳回原因（驳回时必填）
+          maxLength: 1000
+          example: 商品已拆封影响二次销售
+    ReturnReviewResult:
+      type: object
+      required: [returnId, status]
+      properties:
+        returnId:
+          type: string
+          example: R-20260901001
+        status:
+          type: string
+          description: 审核后状态（通过 → 寄回/上门取；驳回 → 关闭）
+          enum: [APPROVED, REJECTED]
+          example: APPROVED
+    TradeReviewRequest:
+      type: object
+      required: [rating]
+      properties:
+        rating:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 5
+          description: 评分（1~5 星）
+          example: 5
+        comment:
+          type: string
+          description: 评价内容
+          maxLength: 1000
+          example: 货真价实，发货及时
+        evidenceKeys:
+          type: array
+          description: 证据附件（可选）
+          items:
+            type: string
+    TradeReviewResult:
+      type: object
+      required: [reviewId]
+      properties:
+        reviewId:
+          type: string
+          description: 互评号
+          example: trev_8f7e6d5c4b3a
+    HomeServiceRequest:
+      type: object
+      required: [serviceType, address, time]
+      properties:
+        serviceType:
+          type: string
+          description: 服务类型（家政/维修等）
+          maxLength: 50
+          example: 家政
+        address:
+          type: string
+          description: 服务地址
+          maxLength: 200
+          example: 裕华区 XX 路 88 号
+        time:
+          type: string
+          format: date-time
+          description: 预约时间
+          example: '2026-09-10T09:00:00Z'
+        remark:
+          type: string
+          description: 备注（可选）
+          maxLength: 500
+          example: 深度保洁，约 120 平
+    HomeServiceSubmitResult:
+      type: object
+      required: [orderId]
+      properties:
+        orderId:
+          type: string
+          description: 服务单号（待接单）
+          example: O-20260901002
+    HomeServiceStatus:
+      type: string
+      description: 上门服务单状态（预约 → 接单 → 上门 → 完成）
+      enum: [PENDING_ACCEPT, ACCEPTED, SERVING, COMPLETED]
+      example: PENDING_ACCEPT
+    HomeServiceItem:
+      type: object
+      required: [orderId, serviceType, time, status, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901002
+        serviceType:
+          type: string
+          example: 家政
+        address:
+          type: string
+          description: 服务地址（脱敏展示）
+          example: 裕华区 XX 路 88 号
+        time:
+          type: string
+          format: date-time
+          example: '2026-09-10T09:00:00Z'
+        status:
+          $ref: '#/components/schemas/HomeServiceStatus'
+        counterpartName:
+          type: string
+          description: 对方名称（脱敏展示）
+          example: XX家政
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T10:00:00Z'
+    HomeServicePage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/HomeServiceItem'
+    HomeServiceAcceptResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: O-20260901002
+        status:
+          type: string
+          enum: [ACCEPTED]
+          example: ACCEPTED
+    AgeCheckRequest:
+      type: object
+      required: [accountId, itemId]
+      properties:
+        accountId:
+          type: string
+          description: 买家账号（下单人）
+          example: acc_9f8e7d6c5b4a
+        itemId:
+          type: string
+          description: 商品编号（带「禁未成年」标记时校验）
+          example: item_20260901001
+    AgeCheckResult:
+      type: object
+      required: [allowed]
+      properties:
+        allowed:
+          type: boolean
+          description: 是否允许下单（<18 且商品带禁购标记 → false）
+          example: true
+        reason:
+          type: string
+          description: 拦截原因（allowed=false 时有值）
+          example: 该商品禁止未成年人购买
+
+x-external-interfaces:
+  description: |
+    服务端间接口（内部/外部回调），前端勿调，不在上方 paths 中。
+    出方向依赖：
+    - 验收通过 → 触发 SETTLE 分账（POST /settle/split/execute，已在 SETTLE 文档附录定义）；
+    - 交易互评/仲裁结论 → 评分事件上报 CRED（/cred/score/events，更新 T-05 供应商信用与 A-07 商户信用）；
+    - 商品信息来自 PROD（下单商品来源）；防刷单风控与交易合规监控上报 DASH；
+    - 超时未发货自动催发/可取消、验收超期自动确认、同 IP/设备高频/价格异常拦截为系统动作（JOB/MQ，无前端接口）。
+  endpoints:
+    - method: POST
+      path: /trade/order/callback
+      tags: [order]
+      summary: 支付通道托管结果回调（服务端验签 + 幂等）
+      description: |
+        第三方持牌通道货款托管结果异步回调（PDD §5.9 托管流程）。服务端验签 + 幂等 +
+        超时状态机自动查单兜底；回调报文以通道文档为准。前端永远不调用此接口。
+      requestBody:
+        description: 通道回调报文（字段名以通道文档为准）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, channelOrderNo, result, sign]
+              properties:
+                orderId:
+                  type: string
+                  description: 平台订单号
+                channelOrderNo:
+                  type: string
+                  description: 通道交易号
+                result:
+                  type: string
+                  description: 通道处理结果
+                sign:
+                  type: string
+                  description: 通道签名，服务端验签
+      responses:
+        '200':
+          description: 收到并受理（异步入账 + 对账）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'

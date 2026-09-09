@@ -1,6 +1,6 @@
 # 交易服务（TRADE · Trade）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.3）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.4）编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.9 / §6.4.8 为准，需求口径以 PRD §5.10（T 组，T4 担保撮合 + B2C）为准。
 
 ## 1. 服务概述
@@ -71,4 +71,6 @@
 
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.10（T 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.9 交易服务、§6.4.8 接口清单、§8 非功能设计
+- 接口文档（**唯一可手改源**）：`services/trade/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 15 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；支付回调等服务端间接口见文末 x-external-interfaces 附录）
+- Apifox 导入产物（**自动生成，禁止手改**）：`services/trade/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/10-B2C购买流程.md`、`docs/design/diagrams/11-B2B选品采购撮合流程-T4.md`
