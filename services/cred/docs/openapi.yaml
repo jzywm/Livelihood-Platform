@@ -1,0 +1,1254 @@
+openapi: 3.0.3
+info:
+  title: 信用档案服务 CRED · 接口文档
+  version: 1.0.0
+  description: |
+    信用档案服务（CRED）前端接口文档。模块 A1 一店一档（A-01/A-02/A-03）、A-04 价格公示（基础版）、
+    A-05 未成年人禁入承诺标注、A2 一人一档（A-06）、A3 信用分与红黑榜（A-07）、A-09 未成年人交易拦截（禁购标记）。
+    口径对齐：PDD §5.3 / §6.4.3；需求口径 PRD §5.2（A 组）；边界依据 SSOT §2.3（C-02 已决策：CRED 为信用分
+    唯一权威存储与公示；供应商信用分公式在 TRACE、经接口回写；EMP/TRADE/TICKET/AICORE 仅上报评分事件）。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（评分事件上报、TRACE 供应商信用分回写）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：R-03 档案脱敏公示、不泄露 L1/L2 敏感数据；R-07 价目表仅展示、平台不代定价、同品同价不杀熟；
+      R-02 实名仅微信/支付宝回传（入驻/建档请求不含证件号与证件照片，法人身份证号经实名回传）。
+    - 里程碑：除 A-09 禁购标记【M2 随购买链路】外均为【M1】。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: merchant
+    description: 商户档案与一店一档（A-01/A-02/A-03）
+  - name: price
+    description: 价格公示（A-04）
+  - name: commitment
+    description: 未成年人禁入承诺（A-05）
+  - name: person
+    description: 一人一档与从业履历（A-06）
+  - name: score
+    description: 信用分与红黑榜（A-07）
+  - name: agegate
+    description: 未成年人交易拦截标记（A-09）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /cred/merchant:
+    post:
+      tags: [merchant]
+      summary: 商户入驻与证照核验建档【M1 · A-01】
+      description: |
+        商户注册 → 实名（对公/法人，微信/支付宝回传）→ 上传营业执照/许可证 → 核验建档（A-01）。
+        核验方式 = AICORE 证照 OCR 自动预审（K-01）+ 人工核验兜底；录入 ≤1 分钟（扫码/拍照，PC Web）。
+        实名未完成 → 3001 拦截；证照核验不通过 → 3003 退回补传（保存草稿可续传）。
+        注意：R-02 口径——法人证件号/身份证照片不在请求入参，经实名回传获取，平台不收集证件照片。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MerchantOnboardRequest'
+      responses:
+        '200':
+          description: 受理成功，返回商户号与核验状态（OCR 预审 + 人工核验）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '422':
+          description: 业务规则拦截（code=3001 实名未完成 / 3003 证照核验不通过，退回补传）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3003
+                message: 证照核验不通过
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /cred/merchants:
+    get:
+      tags: [merchant]
+      summary: 找好店列表（按信用分排序，线框 S-01）【M1 · A-02】
+      description: |
+        消费端「找好店」（S-01）：商户列表按品类/信用分/位置筛选排序，分页；列表含在售商品卡片，
+        非仅证照；信用分脱敏公示（R-03）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: category
+          in: query
+          required: false
+          description: 品类筛选
+          schema:
+            type: string
+            maxLength: 50
+        - name: keyword
+          in: query
+          required: false
+          description: 商户名/商品关键词搜索
+          schema:
+            type: string
+            maxLength: 50
+        - name: minScore
+          in: query
+          required: false
+          description: 信用分下限筛选
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+      responses:
+        '200':
+          description: 成功，返回商户列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /cred/merchants/audit:
+    get:
+      tags: [merchant]
+      summary: 监管全量档案核验列表（线框 R-02）【M1 · A-02】
+      description: |
+        监管端辖区全量商户档案核验（R-02）：按行业/证照状态筛选，分页；需监管角色（2002 拦截）。
+        人员档案核验经 GET /cred/persons/{personId} 点查（A-06）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: industry
+          in: query
+          required: false
+          description: 行业筛选
+          schema:
+            type: string
+            maxLength: 50
+        - name: certStatus
+          in: query
+          required: false
+          description: 证照状态筛选
+          schema:
+            $ref: '#/components/schemas/CertStatus'
+        - name: keyword
+          in: query
+          required: false
+          description: 商户名/编号关键词
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: 成功，返回全量档案列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantAuditPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /cred/merchants/{merchantId}:
+    get:
+      tags: [merchant]
+      summary: 一店一档档案公开页（线框 S-02）【M1 · A-02】
+      description: |
+        证照（含有效期）/处罚/抽检/投诉率/好评率/信用分/价目表/禁入承诺聚合一页（A-02），
+        脱敏公示、核心信息一屏可查；含溯源/后厨入口标识（入口路由由前端拼接，本接口只回数据）。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      responses:
+        '200':
+          description: 成功，返回一店一档聚合（archive + priceList + commitment + ageGate）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+    put:
+      tags: [merchant]
+      summary: 商户档案维护（更新证照/经营信息，线框 M-03）【M1 · A-03】
+      description: |
+        商户自助维护档案（A-03）：更新证照/经营信息；证照临期/年检/投诉激增异常标记随更新自动销警，
+        同步监管端预警（A-08）。仅商户本人可改（2002 拦截）；商户未入驻 → 3005。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MerchantUpdateRequest'
+      responses:
+        '200':
+          description: 成功，返回更新留痕
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MerchantUpdateResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /cred/merchants/{merchantId}/price:
+    get:
+      tags: [price]
+      summary: 价目表查询（含更新历史，线框 S-03）【M1 · A-04】
+      description: |
+        价目表公示查询（A-04）：当前价目表 + 版本更新历史；平台只做公示载体，不代定价（R-07）。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      responses:
+        '200':
+          description: 成功，返回价目表与更新历史
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PriceListQueryResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+    put:
+      tags: [price]
+      summary: 价目表维护（版本留痕，线框 M-05）【M1 · A-04】
+      description: |
+        商户自主维护价目表（A-04，M-05）：提交更新 → 留痕 + 轻量审核 → 一店一档「价格公示」区展示；
+        版本号乐观锁（version 不匹配 → 3007 冲突）；商户未入驻 → 3005。
+        价目与实收不符被投诉 → 标记「价格争议」关联 D-02 投诉；差异化定价禁止（同品同价，R-07）。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceListUpdateRequest'
+      responses:
+        '200':
+          description: 成功，返回新版本号与公示状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PriceListResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 业务规则拦截（code=3005 商户未入驻 / 3007 版本冲突）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 价目表已被他人更新，请刷新后重试
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /cred/merchants/{merchantId}/commitment:
+    put:
+      tags: [commitment]
+      summary: 未成年人禁入承诺标注（线框 M-06）【M1 · A-05】
+      description: |
+        娱乐场所/网吧类档案标注「未成年人禁入承诺」（A-05）：标注后挂载一店一档（S-02）脱敏可见，
+        举报数据流向 A-08 预警；非该类目商户接口拒绝（3007）；撤销承诺留痕并记录原因。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitmentUpdateRequest'
+      responses:
+        '200':
+          description: 成功，返回标注状态（留痕）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CommitmentResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 业务规则拦截（code=3005 商户未入驻 / 3007 非娱乐/网吧类目不可标注）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 非娱乐/网吧类目不可标注
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /cred/merchants/{merchantId}/age-gate:
+    put:
+      tags: [agegate]
+      summary: 未成年人禁购标记【M2 · A-09】
+      description: |
+        商品/店铺打「禁未成年」标记（A-09，联动 A-05 禁入承诺）：标记后购买链路（TRADE，M2）
+        下单时校验买家实名年龄，<18 岁拦截下单并提示；违规商家计入信用分（A-07）。
+        仅商户本人/监管可改（2002）；商户未入驻 → 3005。M2 占位，随购买链路交付。
+      parameters:
+        - name: merchantId
+          in: path
+          required: true
+          description: 商户编号
+          schema:
+            type: string
+            example: m_20260825001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgeGateRequest'
+      responses:
+        '200':
+          description: 成功，返回标记状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AgeGateResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /cred/persons:
+    post:
+      tags: [person]
+      summary: 一人一档建档（健康证/技能证核验）【M1 · A-06】
+      description: |
+        从业人员实名 → 健康证/技能证核验 → 一人一档（A-06）；在职/离职经历由雇佣关系自动累积为履历
+        （仅本人/授权雇主可见，分级授权）；与 C-01 防童工联动（年龄 <16 → 3010 拦截）。
+        注意：R-02 口径——身份证号/证件照片不在请求入参，经实名回传获取，平台不收集证件照片。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonOnboardRequest'
+      responses:
+        '200':
+          description: 受理成功，返回人员档案号与核验状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PersonSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '422':
+          description: 业务规则拦截（code=3001 实名未完成 / 3003 证照核验不通过 / 3010 年龄<16 违规对象拦截）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3010
+                message: 违规对象（未成年人）
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /cred/persons/{personId}:
+    get:
+      tags: [person]
+      summary: 人员档案（本人/授权雇主可见）【M1 · A-06】
+      description: |
+        一人一档查询（A-06）：健康证/技能证状态 + 雇佣履历 + 信用分，仅本人/授权雇主可见（2002 拦截）。
+      parameters:
+        - name: personId
+          in: path
+          required: true
+          description: 人员档案号
+          schema:
+            type: string
+            example: p_20260115001
+      responses:
+        '200':
+          description: 成功，返回人员档案
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PersonDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /cred/scores/{subjectId}:
+    get:
+      tags: [score]
+      summary: 信用分构成查询【M1 · A-07】
+      description: |
+        商户/人员/供应商信用分与维度构成（A-07）：分数公示可查、可筛；M1 以基础合规 + 经营行为两维度起步
+        （权重细节【待评审】）；供应商信用分由 TRACE 计算回写（SSOT C-02）。对象不存在 → 3006。
+      parameters:
+        - name: subjectId
+          in: path
+          required: true
+          description: 主体编号（商户/人员/供应商）
+          schema:
+            type: string
+            example: m_20260825001
+      responses:
+        '200':
+          description: 成功，返回信用分与维度构成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CreditScoreResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /cred/score/mine:
+    get:
+      tags: [score]
+      summary: 我的信用分（构成 + 扣分明细，线框 M-07）【M1 · A-07】
+      description: |
+        商户/从业人员查看本人信用分（M-07）：维度构成 + 扣分明细（可申诉，申诉复用 TICKET D-03 机制）；
+        防刷拦截（R-15）。按登录主体自动定位，无需传参。
+      responses:
+        '200':
+          description: 成功，返回我的信用分与扣分明细
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ScoreMineResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /cred/redblack:
+    get:
+      tags: [score]
+      summary: 红黑榜公示（脱敏，线框 S-04）【M1 · A-07】
+      description: |
+        商户/人员/供应商红黑榜脱敏公示（A-07/S-04）：分类榜单并列展示不设唯一头部，分页；
+        支撑分级监管（低分多查/高分少查）与放心供应商联动；刷分作弊 → 防刷拦截（R-15）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: type
+          in: query
+          required: false
+          description: 主体类型筛选
+          schema:
+            $ref: '#/components/schemas/ScoreSubjectType'
+        - name: listType
+          in: query
+          required: false
+          description: 红榜/黑榜筛选
+          schema:
+            type: string
+            enum: [RED, BLACK]
+        - name: category
+          in: query
+          required: false
+          description: 品类筛选（商户榜）
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: 成功，返回红黑榜（分页，脱敏公示）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RedBlackPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+
+components:
+  schemas:
+    CertStatus:
+      type: string
+      description: 证照状态（临期/年检扫描每日更新）
+      enum: [VALID, EXPIRING, EXPIRED, UNDER_REVIEW]
+      example: VALID
+    MerchantOnboardRequest:
+      type: object
+      required: [licenseNo, licenseImageKey, legalPerson, scope, category]
+      properties:
+        licenseNo:
+          type: string
+          description: 营业执照统一社会信用代码
+          example: '91130100MA0XXXXXXX'
+        licenseImageKey:
+          type: string
+          description: 营业执照图像 OSS 对象键（OCR 预审 K-01）
+          example: cert/oss/2026/01/license001.jpg
+        permitImageKey:
+          type: string
+          description: 许可证图像 OSS 对象键（行业要求时必填）
+          example: cert/oss/2026/01/permit001.jpg
+        legalPerson:
+          type: string
+          description: 法定代表人姓名（实名回传校验，平台不收集证件照片）
+          example: 张*
+        scope:
+          type: string
+          description: 经营范围
+          maxLength: 2000
+          example: 餐饮服务；食品销售
+        category:
+          type: string
+          description: 主营类目
+          maxLength: 50
+          example: 餐饮
+    MerchantSubmitResult:
+      type: object
+      required: [merchantId, auditStatus]
+      properties:
+        merchantId:
+          type: string
+          description: 商户编号
+          example: m_20260825001
+        auditStatus:
+          type: string
+          description: 核验状态（OCR 预审 + 人工核验兜底）
+          enum: [PENDING, APPROVED, REJECTED]
+          example: PENDING
+    MerchantListItem:
+      type: object
+      required: [merchantId, name, category, creditScore, reviewRate]
+      properties:
+        merchantId:
+          type: string
+          example: m_20260825001
+        name:
+          type: string
+          description: 商户名称（脱敏展示）
+          example: 张*饭馆
+        category:
+          type: string
+          example: 餐饮
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 90
+        reviewRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 好评率（0-1）
+          example: 0.95
+        complaintRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 投诉率（0-1）
+          example: 0.01
+    MerchantPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/MerchantListItem'
+    MerchantAuditItem:
+      type: object
+      required: [merchantId, name, industry, certStatus, creditScore, updatedAt]
+      properties:
+        merchantId:
+          type: string
+          example: m_20260825001
+        name:
+          type: string
+          description: 商户名称（监管视图，脱敏）
+          example: 张*饭馆
+        industry:
+          type: string
+          example: 餐饮
+        certStatus:
+          $ref: '#/components/schemas/CertStatus'
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 90
+        anomalyTags:
+          type: array
+          description: 异常标记（证照临期/年检/投诉激增，A-03 自动挂档案）
+          items:
+            type: string
+            example: 证照临期
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    MerchantAuditPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/MerchantAuditItem'
+    MerchantArchive:
+      type: object
+      required: [merchantId, name, category, creditScore]
+      properties:
+        merchantId:
+          type: string
+          example: m_20260825001
+        name:
+          type: string
+          example: 张*饭馆
+        category:
+          type: string
+          example: 餐饮
+        license:
+          type: object
+          description: 营业执照（证照号脱敏）
+          properties:
+            licenseNo:
+              type: string
+              description: 统一社会信用代码（脱敏展示）
+              example: '91130100**********'
+            validTo:
+              type: string
+              format: date
+              description: 有效期至
+              example: '2030-12-31'
+        punishments:
+          type: array
+          description: 处罚记录（脱敏公示）
+          items:
+            type: string
+        inspections:
+          type: array
+          description: 抽检结果（脱敏公示）
+          items:
+            type: string
+        complaintRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.01
+        reviewRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.95
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 90
+        anomalyTags:
+          type: array
+          items:
+            type: string
+    MerchantDetail:
+      type: object
+      description: 一店一档聚合（A-02：archive + priceList + commitment + ageGate）
+      properties:
+        archive:
+          $ref: '#/components/schemas/MerchantArchive'
+        priceList:
+          $ref: '#/components/schemas/PriceListResult'
+        commitment:
+          $ref: '#/components/schemas/CommitmentResult'
+        ageGate:
+          $ref: '#/components/schemas/AgeGateResult'
+    MerchantUpdateRequest:
+      type: object
+      description: 档案维护（A-03，至少提交一个更新项）
+      properties:
+        licenseImageKey:
+          type: string
+          description: 更新后的营业执照图像（OCR 预审）
+        permitImageKey:
+          type: string
+          description: 更新后的许可证图像
+        scope:
+          type: string
+          maxLength: 2000
+          description: 经营范围
+        contact:
+          type: string
+          maxLength: 100
+          description: 联系方式（可选，脱敏存储）
+    MerchantUpdateResult:
+      type: object
+      required: [merchantId, updatedAt]
+      properties:
+        merchantId:
+          type: string
+          example: m_20260825001
+        updatedAt:
+          type: string
+          format: date-time
+          description: 更新时间（留痕）
+          example: '2026-01-15T10:30:00Z'
+    PriceListItem:
+      type: object
+      required: [name, price]
+      properties:
+        name:
+          type: string
+          description: 服务/商品名称
+          example: 农药(除草剂)
+        spec:
+          type: string
+          description: 规格
+          example: 500ml/瓶
+        unit:
+          type: string
+          description: 计价单位
+          example: 瓶
+        price:
+          type: number
+          minimum: 0
+          description: 价格（元；同品同价，不杀熟）
+          example: 15.5
+    PriceListUpdateRequest:
+      type: object
+      required: [items, version]
+      properties:
+        items:
+          type: array
+          description: 价目条目
+          items:
+            $ref: '#/components/schemas/PriceListItem'
+        version:
+          type: integer
+          format: int32
+          description: 乐观锁版本号（不匹配 → 3007 冲突）
+          example: 3
+    PriceListResult:
+      type: object
+      required: [version, updatedAt]
+      properties:
+        items:
+          type: array
+          description: 价目条目（已公示）
+          items:
+            $ref: '#/components/schemas/PriceListItem'
+        version:
+          type: integer
+          format: int32
+          example: 4
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    PriceListHistoryItem:
+      type: object
+      required: [version, updatedAt]
+      properties:
+        version:
+          type: integer
+          format: int32
+          example: 3
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-08T09:00:00Z'
+    PriceListQueryResult:
+      allOf:
+        - $ref: '#/components/schemas/PriceListResult'
+        - type: object
+          properties:
+            history:
+              type: array
+              description: 更新历史（留痕可查）
+              items:
+                $ref: '#/components/schemas/PriceListHistoryItem'
+    CommitmentUpdateRequest:
+      type: object
+      required: [commit]
+      properties:
+        commit:
+          type: boolean
+          description: true 标注承诺 / false 撤销承诺
+          example: true
+        reason:
+          type: string
+          description: 撤销承诺时必填（留痕并记录原因）
+          maxLength: 200
+    CommitmentResult:
+      type: object
+      required: [status, updatedAt]
+      properties:
+        status:
+          type: string
+          description: 标注状态
+          enum: [COMMITTED, REVOKED]
+          example: COMMITTED
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    AgeGateRequest:
+      type: object
+      required: [restricted]
+      properties:
+        restricted:
+          type: boolean
+          description: true 打「禁未成年」标记 / false 移除标记
+          example: true
+    AgeGateResult:
+      type: object
+      required: [restricted, updatedAt]
+      properties:
+        restricted:
+          type: boolean
+          example: true
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    PersonOnboardRequest:
+      type: object
+      required: [occupation]
+      properties:
+        occupation:
+          type: string
+          description: 职业（餐饮/家政等）
+          maxLength: 50
+          example: 厨师
+        healthCertKeys:
+          type: array
+          description: 健康证图像（OSS 对象键，餐饮等行业必填）
+          items:
+            type: string
+        skillCertKeys:
+          type: array
+          description: 技能证图像（OSS 对象键）
+          items:
+            type: string
+    PersonSubmitResult:
+      type: object
+      required: [personId, auditStatus]
+      properties:
+        personId:
+          type: string
+          description: 人员档案号
+          example: p_20260115001
+        auditStatus:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+          example: PENDING
+    EmploymentHistoryItem:
+      type: object
+      required: [employerName, startDate]
+      properties:
+        employerName:
+          type: string
+          description: 雇主名称（授权可见）
+          example: 张*饭馆
+        startDate:
+          type: string
+          format: date
+          example: '2025-03-01'
+        endDate:
+          type: string
+          format: date
+          description: 离职日期（在职为空）
+          example: '2026-01-31'
+    PersonDetail:
+      type: object
+      required: [personId, name, occupation]
+      properties:
+        personId:
+          type: string
+          example: p_20260115001
+        name:
+          type: string
+          description: 姓名（脱敏展示）
+          example: 李*华
+        occupation:
+          type: string
+          example: 厨师
+        healthCert:
+          type: object
+          description: 健康证核验状态
+          properties:
+            status:
+              type: string
+              enum: [PENDING, APPROVED, REJECTED, EXPIRED]
+              example: APPROVED
+            validTo:
+              type: string
+              format: date
+              example: '2027-01-31'
+        skillCerts:
+          type: array
+          description: 技能证（核验状态 + 有效期）
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                example: 中式烹调师（中级）
+              status:
+                type: string
+                enum: [PENDING, APPROVED, REJECTED]
+                example: APPROVED
+        employmentHistory:
+          type: array
+          description: 雇佣履历（雇佣关系自动累积，仅本人/授权雇主可见）
+          items:
+            $ref: '#/components/schemas/EmploymentHistoryItem'
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: 人员信用分
+          example: 88
+    ScoreSubjectType:
+      type: string
+      description: 信用分主体类型
+      enum: [MERCHANT, PERSON, SUPPLIER]
+      example: MERCHANT
+    ScoreDim:
+      type: object
+      required: [name, score]
+      properties:
+        name:
+          type: string
+          description: 维度名（M1 基础合规 + 经营行为，权重细节待评审）
+          example: 基础合规
+        weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 权重（0-1）
+          example: 0.5
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 92
+    CreditScoreResult:
+      type: object
+      required: [subjectId, subjectType, score, dims, updatedAt]
+      properties:
+        subjectId:
+          type: string
+          example: m_20260825001
+        subjectType:
+          $ref: '#/components/schemas/ScoreSubjectType'
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 90
+        dims:
+          type: array
+          description: 维度构成（脱敏可查）
+          items:
+            $ref: '#/components/schemas/ScoreDim'
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    ScoreDeduction:
+      type: object
+      required: [reason, points, at]
+      properties:
+        reason:
+          type: string
+          description: 扣分原因
+          example: 投诉办结扣分
+        points:
+          type: number
+          description: 扣分（负值）
+          example: -2
+        at:
+          type: string
+          format: date-time
+          example: '2026-01-10T09:00:00Z'
+        appealable:
+          type: boolean
+          description: 是否可申诉（申诉复用 TICKET D-03）
+          example: true
+    ScoreMineResult:
+      allOf:
+        - $ref: '#/components/schemas/CreditScoreResult'
+        - type: object
+          properties:
+            deductions:
+              type: array
+              description: 扣分明细（可申诉）
+              items:
+                $ref: '#/components/schemas/ScoreDeduction'
+    RedBlackItem:
+      type: object
+      required: [subjectId, name, subjectType, score, listType]
+      properties:
+        subjectId:
+          type: string
+          example: m_20260825001
+        name:
+          type: string
+          description: 主体名称（脱敏公示，R-03）
+          example: 张*饭馆
+        subjectType:
+          $ref: '#/components/schemas/ScoreSubjectType'
+        score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 90
+        listType:
+          type: string
+          description: 红榜/黑榜
+          enum: [RED, BLACK]
+          example: RED
+        reason:
+          type: string
+          description: 上榜原因（脱敏）
+          example: 放心供应商
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:30:00Z'
+    RedBlackPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/RedBlackItem'
+
+x-external-interfaces:
+  description: |
+    服务端间接口（内部调用），前端勿调，不在上方 paths 中。
+    出方向依赖：
+    - 证照临期/年检/投诉激增异常标记每日扫描 → 推送 DASH（A-08 预警聚合）与站内信双向触达；
+    - 档案核验 OCR 预审调用 AICORE（K-01）；
+    - 扣分申诉复用 TICKET D-03 机制（本服务不建第二套申诉）。
+  endpoints:
+    - method: POST
+      path: /cred/score/events
+      tags: [score]
+      summary: 评分事件上报（服务端间，EMP/TRADE/TICKET/AICORE → CRED）
+      description: |
+        其他服务上报评分事件（SSOT §3 交叉职责矩阵：EMP 劳务互评、TRADE 交易互评、TICKET 投诉扣分、
+        AICORE 视觉审核结论），CRED 统一计算/存储信用分（credit_score 唯一权威存储）；
+        禁止跨服务直接写表。服务端间鉴权（内部 Token）+ 幂等。前端永远不调用此接口。
+      requestBody:
+        description: 评分事件（服务端间报文）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subjectId, subjectType, eventType, points, source, bizId]
+              properties:
+                subjectId:
+                  type: string
+                  description: 主体编号
+                subjectType:
+                  $ref: '#/components/schemas/ScoreSubjectType'
+                eventType:
+                  type: string
+                  description: 事件类型（如 COMPLAINT_RESOLVED / TRADE_REVIEW / LABOR_REVIEW / VISION_VERDICT）
+                points:
+                  type: number
+                  description: 分值变动（正负）
+                source:
+                  type: string
+                  description: 来源服务（EMP/TRADE/TICKET/AICORE）
+                bizId:
+                  type: string
+                  description: 来源业务单号（幂等）
+      responses:
+        '200':
+          description: 受理成功（异步计算信用分）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+    - method: POST
+      path: /cred/score/supplier
+      tags: [score]
+      summary: 供应商信用分回写（服务端间，TRACE → CRED）
+      description: |
+        TRACE 按 T-05 公式（资质 30% + 履约 30% + 口碑 30% + 贡献 10%）计算供应商信用分后回写 CRED
+        存储与公示（SSOT C-02 已决策）；放心供应商标识由 TRACE 动态授予/撤销、CRED 存储公示。
+        服务端间鉴权 + 幂等。前端永远不调用此接口。
+      requestBody:
+        description: 供应商信用分回写（服务端间报文）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [supplierId, score, dims]
+              properties:
+                supplierId:
+                  type: string
+                  description: 供应商编号
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                  description: 信用分
+                dims:
+                  type: array
+                  description: 四维构成（资质/履约/口碑/贡献）
+                  items:
+                    $ref: '#/components/schemas/ScoreDim'
+                trusted:
+                  type: boolean
+                  description: 放心供应商标识（TRACE 动态授予/撤销）
+      responses:
+        '200':
+          description: 受理成功（存储 + 公示更新）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
