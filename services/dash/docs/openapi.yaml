@@ -1,0 +1,741 @@
+openapi: 3.0.3
+info:
+  title: 监管看板服务 DASH · 接口文档
+  version: 1.0.0
+  description: |
+    监管看板服务（DASH）前端接口文档。模块 A4 监管预警与分级监管（A-08）、P-01 平台费率/抽成公开公示
+    （含 F-05 货运费率同口径）、P-07 民生消费券（发券/领取/核销/抵扣）。
+    口径对齐：PDD §5.10 / §6.4.9 / §5.14.8；需求口径 PRD §5.1（P 组）、§5.2（A 组）；边界依据 SSOT §2.10。
+    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 服务端间接口（预警事件上报与双向推送）见文末 x-external-interfaces 附录，前端勿调。
+    - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
+    - 红线：预警只推送线索、不自动执法（C8，人工复核后处置）；R-13 费率口径透明、调整前提前告知（P-01 唯一对外承载）；
+      R-03 公示数据脱敏；R-01 消费券为优惠凭证、结算抵扣，平台不沉淀资金。
+    - 里程碑：【M1】费率公示 + 预警基础（商户端证照临期推送、未成年人场所举报预警）；【M2】双向推送完整版、
+      分级监管、消费券。
+servers:
+  - url: https://api.example.com/api/v1
+    description: 生产（示例域名）
+  - url: http://localhost:8080/api/v1
+    description: 本地开发（Java）
+tags:
+  - name: fees
+    description: 费率/抽成公开公示（P-01/F-05）
+  - name: alert
+    description: 监管预警（A-08）
+  - name: rating
+    description: 分级监管（A-08）
+  - name: coupon
+    description: 民生消费券（P-07）
+
+security:
+  - bearerAuth: []
+
+paths:
+  /dash/fees:
+    get:
+      tags: [fees]
+      summary: 费率/抽成公开公示页（线框 G-04）【M1 · P-01/F-05】
+      description: |
+        平台对外公示（P-01，AC-M1.10）：透明交易撮合服务费率 = 成交额 0.5%~1%（分品类）与货运抽成口径
+        （F-05 同口径）；公示计算方式与调整规则，**调整前提前告知商户**；本页为「费率公开承诺」唯一对外承载；
+        不做竞价广告收费、不做隐性扣费（R-13）。公开接口，免登录（security 覆写）。
+      security: []
+      parameters:
+        - name: category
+          in: query
+          required: false
+          description: 品类筛选
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: 成功，返回费率表与调整规则
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FeeQueryResult'
+  /dash/alerts:
+    get:
+      tags: [alert]
+      summary: 预警列表（监管全量/商户本人）【M1 基础 / M2 完整 · A-08】
+      description: |
+        预警看板列表（A-08，线框 R-01/R-09）：高频投诉/资质临期/异常经营/欠薪/溯源断链等自动预警；
+        M1 基础 = 商户端证照临期推送 + 未成年人场所举报预警，M2 完整版全类型。
+        监管角色可见全量、商户可见本人相关（2002 拦截）；预警只推送线索、不自动执法（C8）。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: type
+          in: query
+          required: false
+          description: 预警类型筛选
+          schema:
+            $ref: '#/components/schemas/AlertType'
+        - name: level
+          in: query
+          required: false
+          description: 预警等级筛选
+          schema:
+            $ref: '#/components/schemas/AlertLevel'
+        - name: status
+          in: query
+          required: false
+          description: 处理状态筛选
+          schema:
+            $ref: '#/components/schemas/AlertStatus'
+      responses:
+        '200':
+          description: 成功，返回预警列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AlertPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /dash/alerts/{alertId}/dispose:
+    post:
+      tags: [alert]
+      summary: 预警处置（人工复核留痕）【M1 基础 · A-08】
+      description: |
+        监管人员对预警人工复核后处置（C8：预警只推送线索、不自动执法/不自动定责）：结论 + 备注留痕；
+        商户更新资质等事件自动销警（系统动作）；已处置重复提交 → 3007；需监管角色（2002）。
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          description: 预警编号
+          schema:
+            type: string
+            example: al_8f7e6d5c4b3a
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertDisposeRequest'
+      responses:
+        '200':
+          description: 成功，返回处置留痕
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AlertDisposeResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，已处置）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /dash/rating:
+    get:
+      tags: [rating]
+      summary: 分级监管列表（低分多查/高分少查）【M2 · A-08 完整】
+      description: |
+        按「画像风险 + 信用」双维度分级监管（A-08 完整版，线框 R-09）：信用分区间筛选，低分多查/高分少查；
+        商铺画像特征由 PROFILE 供给（选择性监管）；预警只推送线索、不自动执法；需监管角色（2002）。
+        M2 交付。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: scoreMin
+          in: query
+          required: false
+          description: 信用分下限筛选
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+        - name: scoreMax
+          in: query
+          required: false
+          description: 信用分上限筛选
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 100
+      responses:
+        '200':
+          description: 成功，返回分级监管列表（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RatingPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /dash/coupon/issue:
+    post:
+      tags: [coupon]
+      summary: 消费券发券（政府授权）【M2 · P-07 占位】
+      description: |
+        政府/平台发券（P-07，惠民）：发券需政府授权（authorizedBy 授权号）；券为优惠凭证、结算抵扣，
+        **平台不沉淀资金**（R-01）；重复发券批次 → 3007；需政府授权操作角色（2002）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CouponIssueRequest'
+      responses:
+        '200':
+          description: 受理成功，返回发券批次
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CouponIssueResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '422':
+          description: 状态不允许（code=3007，批次重复发券）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /dash/coupons/claim:
+    post:
+      tags: [coupon]
+      summary: 消费券领取【M2 · P-07 占位】
+      description: |
+        消费者领取消费券（P-07 流程：发券 → 消费者领取 → 系统生成券码）：已实名可领；批次领完/重复领取 →
+        3007 幂等拦截。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CouponClaimRequest'
+      responses:
+        '200':
+          description: 成功，返回券号与券码
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CouponClaimResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '422':
+          description: 状态不允许（code=3007，已领完/重复领取）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /dash/coupons/mine:
+    get:
+      tags: [coupon]
+      summary: 我的消费券列表（线框 G-11）【M2 · P-07 占位】
+      description: |
+        消费端「我的消费券」（G-11）：券码展示 + 使用记录，按状态（可使用/已用/过期）筛选，分页；
+        仅本人可见（2002 拦截）。M2 占位。
+      parameters:
+        - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
+        - $ref: '../../_common/openapi.yaml#/components/parameters/PageSize'
+        - name: status
+          in: query
+          required: false
+          description: 券状态筛选
+          schema:
+            $ref: '#/components/schemas/CouponStatus'
+      responses:
+        '200':
+          description: 成功，返回我的消费券（分页）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CouponPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+  /dash/coupon/redeem:
+    post:
+      tags: [coupon]
+      summary: 消费券核销（到店扫码，线框 M-36）【M2 · P-07 占位】
+      description: |
+        到店商家扫券码核销（P-07 流程 → 结算抵扣）：核销留痕可审计；重复核销/券过期 → 3007 幂等拦截；
+        券不存在 → 3006；结算抵扣异常 → 对账补差（与 SETTLE 联动）；需商户角色（2002）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CouponRedeemRequest'
+      responses:
+        '200':
+          description: 成功，返回核销结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CouponRedeemResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，重复核销/券过期）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+
+components:
+  schemas:
+    FeeItem:
+      type: object
+      required: [category, rateMin, rateMax, updatedAt]
+      properties:
+        category:
+          type: string
+          description: 品类（交易撮合服务费分品类；货运抽成单列）
+          maxLength: 50
+          example: 农资
+        rateMin:
+          type: number
+          format: float
+          description: 费率下限（成交额比例，0.005~0.01 即 0.5%~1%）
+          example: 0.005
+        rateMax:
+          type: number
+          format: float
+          description: 费率上限
+          example: 0.01
+        description:
+          type: string
+          description: 口径说明（计算方式）
+          maxLength: 500
+          example: 按成交额比例收取，仅撮合服务费，无隐性扣费
+        updatedAt:
+          type: string
+          format: date-time
+          description: 最近更新时间
+          example: '2026-09-01T10:00:00Z'
+    FeeQueryResult:
+      type: object
+      required: [items, rules, updatedAt]
+      properties:
+        items:
+          type: array
+          description: 费率表（分品类）
+          items:
+            $ref: '#/components/schemas/FeeItem'
+        rules:
+          type: string
+          description: 调整规则（调整前提前告知商户）
+          example: 费率调整前提前 30 天公示并告知商户
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    AlertType:
+      type: string
+      description: 预警类型（PDD §5.10.2：资质临期/过期、违规入场高频举报；32 列表：高频投诉/欠薪/溯源断链/异常经营）
+      enum: [CERT_EXPIRING, CERT_EXPIRED, MINOR_ENTRY, HIGH_COMPLAINT, ARREARS, TRACE_BROKEN, ABNORMAL_OPERATION]
+      example: CERT_EXPIRING
+    AlertLevel:
+      type: string
+      description: 预警等级（升级预警为 CRITICAL）
+      enum: [WARNING, CRITICAL]
+      example: WARNING
+    AlertStatus:
+      type: string
+      description: 预警处理状态（人工复核后处置；事件自动销警）
+      enum: [OPEN, DISPOSED]
+      example: OPEN
+    AlertItem:
+      type: object
+      required: [alertId, type, level, status, createdAt]
+      properties:
+        alertId:
+          type: string
+          description: 预警编号
+          example: al_8f7e6d5c4b3a
+        type:
+          $ref: '#/components/schemas/AlertType'
+        level:
+          $ref: '#/components/schemas/AlertLevel'
+        merchantName:
+          type: string
+          description: 关联商户名称（脱敏展示）
+          example: 张*饭馆
+        title:
+          type: string
+          description: 预警标题
+          example: 营业执照将于 7 天后到期
+        detail:
+          type: string
+          description: 预警详情（线索，不自动定责）
+          example: 营业执照有效期至 2026-09-08
+        status:
+          $ref: '#/components/schemas/AlertStatus'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T08:00:00Z'
+        disposedAt:
+          type: string
+          format: date-time
+          description: 处置时间
+          example: '2026-09-02T09:00:00Z'
+    AlertPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/AlertItem'
+    AlertDisposeRequest:
+      type: object
+      required: [conclusion]
+      properties:
+        conclusion:
+          type: string
+          description: 复核结论（如 已责令整改/误报排除）
+          maxLength: 1000
+          example: 已通知商户更新证照
+        note:
+          type: string
+          description: 备注（留痕，可选）
+          maxLength: 500
+          example: 商户承诺 3 日内补传
+    AlertDisposeResult:
+      type: object
+      required: [alertId, status, disposedAt]
+      properties:
+        alertId:
+          type: string
+          example: al_8f7e6d5c4b3a
+        status:
+          type: string
+          enum: [DISPOSED]
+          example: DISPOSED
+        disposedBy:
+          type: string
+          description: 处置人（脱敏展示）
+          example: 王*员
+        disposedAt:
+          type: string
+          format: date-time
+          example: '2026-09-02T09:00:00Z'
+    RatingItem:
+      type: object
+      required: [merchantId, merchantName, creditScore, inspectFrequency]
+      properties:
+        merchantId:
+          type: string
+          example: m_20260825001
+        merchantName:
+          type: string
+          description: 商户名称（脱敏展示）
+          example: 张*饭馆
+        creditScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          example: 78
+        riskLevel:
+          type: string
+          description: 画像风险（PROFILE 商铺画像供给）
+          enum: [HIGH, MEDIUM, LOW]
+          example: MEDIUM
+        inspectFrequency:
+          type: string
+          description: 检查频率建议（低分多查/高分少查，仅建议不自动执法）
+          enum: [FREQUENT, NORMAL, RARE]
+          example: NORMAL
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-01T10:00:00Z'
+    RatingPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/RatingItem'
+    CouponRule:
+      type: object
+      required: [amount, validFrom, validTo, total]
+      properties:
+        amount:
+          type: number
+          minimum: 0.01
+          description: 券面额（元，结算抵扣凭证）
+          example: 10
+        validFrom:
+          type: string
+          format: date
+          description: 有效期起
+          example: '2026-09-01'
+        validTo:
+          type: string
+          format: date
+          description: 有效期止
+          example: '2026-12-31'
+        total:
+          type: integer
+          format: int32
+          minimum: 1
+          description: 发放总量
+          example: 10000
+        merchantScope:
+          type: string
+          description: 适用商户范围（可选，缺省全场）
+          maxLength: 200
+          example: 参与活动的餐饮商户
+    CouponIssueRequest:
+      type: object
+      required: [batchId, rule, authorizedBy]
+      properties:
+        batchId:
+          type: string
+          description: 发券批次号
+          example: cb_20260901
+        rule:
+          $ref: '#/components/schemas/CouponRule'
+        authorizedBy:
+          type: string
+          description: 政府授权号（发券需政府授权）
+          example: SZ2026-001
+    CouponIssueResult:
+      type: object
+      required: [batchId, status]
+      properties:
+        batchId:
+          type: string
+          example: cb_20260901
+        status:
+          type: string
+          enum: [ISSUED]
+          example: ISSUED
+    CouponClaimRequest:
+      type: object
+      required: [batchId]
+      properties:
+        batchId:
+          type: string
+          description: 发券批次号
+          example: cb_20260901
+    CouponClaimResult:
+      type: object
+      required: [couponId, couponCode, amount, validTo]
+      properties:
+        couponId:
+          type: string
+          description: 券号
+          example: cp_8f7e6d5c4b3a
+        couponCode:
+          type: string
+          description: 券码（到店出示，商家扫码核销）
+          example: MZCP-8F7E6D5C
+        amount:
+          type: number
+          example: 10
+        validTo:
+          type: string
+          format: date
+          example: '2026-12-31'
+    CouponStatus:
+      type: string
+      description: 券状态（线框 G-11：可使用/已用/过期）
+      enum: [AVAILABLE, USED, EXPIRED]
+      example: AVAILABLE
+    CouponItem:
+      type: object
+      required: [couponId, couponCode, amount, validTo, status]
+      properties:
+        couponId:
+          type: string
+          example: cp_8f7e6d5c4b3a
+        couponCode:
+          type: string
+          example: MZCP-8F7E6D5C
+        amount:
+          type: number
+          example: 10
+        validFrom:
+          type: string
+          format: date
+          example: '2026-09-01'
+        validTo:
+          type: string
+          format: date
+          example: '2026-12-31'
+        status:
+          $ref: '#/components/schemas/CouponStatus'
+        usedAt:
+          type: string
+          format: date-time
+          description: 核销时间
+          example: '2026-09-10T12:00:00Z'
+    CouponPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/CouponItem'
+    CouponRedeemRequest:
+      type: object
+      required: [couponCode, merchantId]
+      properties:
+        couponCode:
+          type: string
+          description: 券码（消费者出示）
+          example: MZCP-8F7E6D5C
+        merchantId:
+          type: string
+          description: 核销商户编号
+          example: m_20260825001
+    CouponRedeemResult:
+      type: object
+      required: [couponId, status, redeemedAt]
+      properties:
+        couponId:
+          type: string
+          example: cp_8f7e6d5c4b3a
+        status:
+          type: string
+          enum: [USED]
+          example: USED
+        redeemedAt:
+          type: string
+          format: date-time
+          example: '2026-09-10T12:00:00Z'
+        discountAmount:
+          type: number
+          description: 抵扣金额（元）
+          example: 10
+
+x-external-interfaces:
+  description: |
+    服务端间接口（内部调用），前端勿调，不在上方 paths 中。
+    出方向依赖：
+    - 预警通知走 MQ（站内信兜底），商户端提醒与监管端推送双向触达（G-05 消息通知）；
+    - 数据源：CRED（证照有效期）、TICKET（举报数据）、SETTLE（欠薪）、TRACE（溯源断链）、PROFILE（商铺画像分级监管）；
+    - 预警处置结论同步相关服务（如资质异常标注回 CRED）；消费券结算抵扣与 SETTLE 对账补差。
+  endpoints:
+    - method: POST
+      path: /dash/alert/push
+      tags: [alert]
+      summary: 预警事件上报与双向推送（服务端间/内部，PDD §6.4.9 alert/push）
+      description: |
+        各服务预警事件上报（CRED 证照临期、TICKET 举报聚合、SETTLE 欠薪、TRACE 断链等）→ DASH 生成预警
+        并按 targets 推送（监管端看板 + 商户端提醒，MQ + 站内信兜底）；预警只推送线索、不自动执法（C8）。
+        服务端间鉴权（内部 Token）+ 幂等。前端永远不调用此接口。
+      requestBody:
+        description: 预警推送请求（服务端间报文）
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alertId, targets]
+              properties:
+                alertId:
+                  type: string
+                  description: 预警编号
+                targets:
+                  type: array
+                  description: 推送目标（监管端/商户端账号）
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: 受理成功（MQ 异步推送）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
