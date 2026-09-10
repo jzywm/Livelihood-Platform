@@ -49,6 +49,8 @@
 | 2026-09-08 · 会话 1 | 高保真产品原型起步:找好店 S-01 四态原型(方案 A) | `apps/docs/原型/找好店-S01-四态原型.html`(自包含交互原型:正常/加载/空/错误四态切换+重试模拟+说明面板+?state= 初始态,严格引用 UI 规范令牌)+ `apps/docs/原型/四态设计说明.md`(四态定义/触发/示例/文案总表/98 页复用方法)+ `apps/docs/原型/README.md`;验证=无头 Chrome DOM dump 五态断言+node --check+CSS 配对 |
 | 2026-09-08 · 会话 2 | 助手入口调整:右侧常驻侧边按钮 + 右侧抽屉(方案 A) | 原型删底部悬浮球→右缘侧边按钮+右侧抽屉(对话/J-15 快捷卡/麦克风脉冲/Esc/inert);`UI设计规范.md` §4.3/§8、`页面清单与信息架构.md` **v1.4**、`线框图/README.md`+`01` G-10 重画+4 文件 footer 全量替换、`四态设计说明.md` 同步;页数/功能点不变 98/88 |
 | 2026-09-08 · 会话 3 | 13 微服务边界定位检查与优化(方案 B → SSOT + 冲突标注) | `docs/design/微服务边界与职责基准.md`(SSOT v1.0:13 服务总表 + 逐服务边界卡 + 交叉职责矩阵 + 13 条冲突清单 + 排序命名规范);功能点对齐 P-01~L-06;冲突逐条标注 🔶/⚠️(C01 DELIVERY 第14服务/C02 供应商信用分 CRED·TRACE/C04 I4分账/C05 F组物流/C07 payroll表归属/C08 §6.4滞后/C09 README版本滞后/C13 C2vsC-02 编号碰撞) |
+| 2026-09-09 · 会话 1 | ACC 接口文档审查收官(人机验证补档 + R-02 修正) | `services/acc/docs/openapi.yaml` v1.1.0(15 path/16 操作:新增 captcha×2 滑块+图形降级、register 去证件号补 captchaToken、I-06 对齐 realname/nfc、funds/audit+reconcile);PDD v1.4(§6.4.1 + 版本历史);README 同步;`openapi.apifox.json` 重打包;server/ Java 实现按用户指令撤销删除 |
+| 2026-09-09 · 会话 2 | 13 服务接口文档批量交付(每服务 4 方案均选 B 标准闭环) | AICORE 10/ASSIST 8/CIVIC 17/SETTLE 14/CRED 14/EMP 10/TICKET 12/TRACE 11/PROD 10/TRADE 15/DASH 8/PROFILE 9/DELIVERY 22 操作,每服务 3 文件(openapi.yaml+README+apifox.json),**14 服务 176 操作全套定稿**,全部 0 断链/0 外部引用 |
 
 ## 复刻要点
 
@@ -94,6 +96,7 @@
 - 2026-09-08: **无视觉模型的 UI 交付物自检手法**——无头 Chrome(headless=new)+`--dump-dom` 做状态断言:可见性判据用 `class="view on"`/hidden 属性,不能只看文本 Contains(display:none 元素仍序列化);中文文件 PowerShell 读写必须 `-Encoding UTF8`;受限沙箱禁 Chrome 命名管道(退出码 -36863),headless 需一次 `danger-full-access` 升级
 - 2026-09-08: **助手入口调整(方案 A)关键决策**——桌面端改右缘侧边按钮(显眼+客服侧栏心智)、移动端保留底部球(拇指可达),端差异只落「入口形态」、三端对话能力不变;否掉双入口(状态同步+埋点成本高);跨文档同步顺序=先 IA 升版 v1.4 定口径→再下游(UI 规范/线框/原型/说明),线框逐页 footer 用短 token replace_all + 单独修特殊行与 G-10 整节
 - 2026-09-08: **微服务边界 SSOT 三分法**——跨服务职责用「权威归属(唯一写)+ 数据源/事件生产者 + 消费方」判归属,禁跨域直写表(对齐 `32-功能列表` §2.3.1);写边界基准前先锁上游版本(13 份 README 均滞后 PDD v1.1→v1.3,是文档漂移信号);冲突集中标注不改原文。三类典型边界坑 = ① 同一实体多服务声称持有(供应商信用分 CRED 中枢 vs TRACE 公式)② 表归属与执行层错位(`payroll` 归 EMP 域但代付在 SETTLE、`split_record` 归 TRADE 但分账在 SETTLE)③ 整组模块无服务承载(F 组物流货运 5 个功能点无 §2.4 映射行)
+- 2026-09-09: **接口文档批量编写惯例(14 服务全套落地)**——① paths 仅含前端可调接口,服务端间接口(支付回调/内部触发/评分事件)统一放 `x-external-interfaces` 附录;② 公共组件 $ref 引用 `services/_common/openapi.yaml` 零复制内联、错误码只用既有枚举不新增;③ 补充接口必须能指出线框页面/状态机动作/功能点流程依据并在 description 标注来源(「不臆造」可审计);④ M2/M3 占位接口显式标注「里程碑交付前口径以评审为准」;⑤ 每服务先给 4 方案(直译/标准闭环/治理面/聚焦)再执行。**打包脚本三坑**:`.mjs` 触发 ESM 需 `.cjs`;去重集合误把重复 $ref 当循环 → 栈式防循环;数组分支丢弃内联返回值 → `node[i]=` 写回。**OpenAPI 细节**:同一 path 多 method 必须合并同一 path item(重复 key 报 duplicated mapping);`{event: x}` 冒号+空格需引号;`$ref` 参数不可覆写 required;双模式(JSON+SSE)放同一 200 的多个 content。
 
 ## 下一步
 
@@ -117,5 +120,6 @@
 - 竞品记录(2026-09-03)后续:竞品动态更新走「先更 3 份调研过程文件 → 再同步主文档 §3~§5」流程(主文档 §6.2 已声明)
 - DSH 工具链(2026-09-05):可选给 dsh-code-intel 写显式配置(`cordis.patch.yml` 追加 `code-intel` config)或固化「查代码优先 `code_search`/`code_outline`」常驻规则;后续评估 `dsh-context-milvus`(向量语义检索,需 Milvus)/ `dsh-token-optimizer`(增量 diff+缓存)作为增强
 - 功能列表「难点与亮点」章节(2026-09-07 会话 2 交付,`32-功能列表.md` §2):可选把「小白友好版」解释(担保托管=第三方持牌通道、三端合一=角色+RBAC 路由)补进 §2.2.2/§2.4;新章节随设计评审纳入面试材料
-- **微服务边界基准(2026-09-08 会话 3 交付,`docs/design/微服务边界与职责基准.md`)**:接口文档编写前先读本基准 §1~§3 定服务边界;13 条冲突走评审决策——🔶 阻塞项 C01(DELIVERY 是否第 14 服务)/C02(供应商信用分 CRED·TRACE 归属)/C04(I4 分账 SETTLE·TRADE)/C05(F 组物流无服务承载)/C07(payroll/split_record 表归属)需产品/架构拍板后定稿;可选方案 C 回改 PDD §2.4/§5/§6.4 + 13 份 README(版本 v1.1→v1.3、补 §5.14 新增 9 功能点)
+- **微服务边界基准(2026-09-08 会话 3 交付,`docs/design/微服务边界与职责基准.md`)**:接口文档编写前先读本基准 §1~§3 定服务边界;13 条冲突走评审决策——🔶 阻塞项 C01(DELIVERY 是否第 14 服务)/C02(供应商信用分 CRED·TRACE 归属)/C04(I4 分账 SETTLE·TRADE)/C05(F 组物流无服务承载)/C07(payroll/split_record 表归属)需产品/架构拍板后定稿;可选方案 C 回改 PDD §2.4/§5/§6.4 + 13 份 README(版本 v1.1→v1.3、补 §5.14 新增 9 功能点)。**2026-09-09 进展**:🔶 阻塞项已在接口文档落地(DELIVERY 第 14 服务建目录;供应商信用分 TRACE 计算 CRED 存储;I4 分账 TRADE 触发 SETTLE 执行;F 组并入现有服务;payroll 迁 ⑨ 结算域),13 份 README 已升 PDD v1.4
+- **14 服务接口文档(2026-09-09 交付,`services/*/docs/openapi.yaml` + `openapi.apifox.json`)**:① 用户评审占位接口口径(M2/M3 枚举取值/字段)后回改;② 接入 `packages/api-client` 生成 TS 类型(前端契约);③ 可选回写 PDD §6.4 各服务接口清单表(以 openapi.yaml 为准,消除双源漂移,含 DELIVERY 新增);④ git 提交(commit-check 门禁)+ 本机推送(沙箱 HTTPS 受限)
 

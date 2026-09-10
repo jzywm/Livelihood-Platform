@@ -69,5 +69,6 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线 R-01~R-16、§5.11（I 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.1 账户服务、§6.4.1 接口清单、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/acc/docs/openapi.yaml`（OpenAPI 3.0，前端接口 16 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联）
+- ER 图（服务级实体关系）：`services/acc/docs/er.md`（6 实体 Mermaid ER：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)，口径对齐 openapi.yaml v1.1.0）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/acc/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/05-实名认证流程-I1.md`
