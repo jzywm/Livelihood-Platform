@@ -1,6 +1,6 @@
 # 结算服务（SETTLE · Settlement）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.4）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.12）编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.2 / §6.4.2 为准，需求口径以 PRD §5.11（I 组）为准。
 
 ## 1. 服务概述
@@ -72,6 +72,7 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.11（I 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.2 结算服务、§6.4.2 接口清单、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/settle/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 14 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；支付回调/分账触发等服务端间接口见文末 x-external-interfaces 附录）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/settle/docs/er.md`（结算域 7 表；payroll 按月分表（employment_id/account_id+created_at）；P2 独立库第一顺位；§4-C07 归属迁移注明）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/settle/docs/openapi.apifox.json`
 - 数据设计：PDD §4.5 ⑨ 结算域（SETTLE，`payroll`/`split_record`/`settle_flow`）
 - 流程时序：`docs/design/diagrams/06-工资保障代付流程-I3.md`

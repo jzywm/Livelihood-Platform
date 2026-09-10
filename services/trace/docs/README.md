@@ -1,6 +1,6 @@
 # 溯源服务（TRACE · Traceability）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.4）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.12）编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.6 / §6.4.6 为准，需求口径以 PRD §5.3（B 组）与 §5.10（T 组）为准。
 
 ## 1. 服务概述
@@ -69,5 +69,6 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.3（B 组）、§5.10（T 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.6 溯源服务、§6.4.6 接口清单、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/trace/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 11 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；AICORE 直播异常标记回传等服务端间接口见文末 x-external-interfaces 附录）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/trace/docs/er.md`（溯源域 8 表；trace_event 按月分表（batch_id+created_at）、只增不改长期冷备）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/trace/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/08-供应商入驻与溯源流程-T2T3.md`
