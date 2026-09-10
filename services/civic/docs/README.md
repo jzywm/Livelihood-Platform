@@ -68,4 +68,5 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.6（E 组）、§5.8（G 组）、§5.9（H 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.13 民生互动服务、§6.4.10 接口清单、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/civic/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 17 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；出方向依赖见文末 x-external-interfaces 附录）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/civic/docs/er.md`（口径：共享主库 + `civic_` schema 前缀隔离（Java 域既有路线）；互动域 12 表，内容流水类按月分表；对齐 openapi.yaml v1.0.0 与《高并发架构演进设计》v0.3 §2）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/civic/docs/openapi.apifox.json`
