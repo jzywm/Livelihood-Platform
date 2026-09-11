@@ -11,7 +11,7 @@
 
 ## 1. 技术栈与版本
 
-- MUST:PC 端 React 18 + Vite 5 + Electron 33 + TypeScript 5.6;移动端 uni-app(Vue 3,`@dcloudio/*` 锁定 `package.json` 内版本);后端 Java 17 + Spring Boot 3.5 + Maven(先单聚合 `server`,按业务域预留拆分)。
+- MUST:PC 端 React 18 + Vite 5 + Electron 33 + TypeScript 5.6;移动端 uni-app(Vue 3,`@dcloudio/*` 锁定 `package.json` 内版本);后端 Java 17 + Spring Boot 3.5 + Maven(先单聚合 `server`,按业务域预留拆分);**网关层 = 独立微服务 GATEWAY**(`services/gateway`,Java 17 + Spring Cloud Gateway,M1 后期独立部署,平台唯一统一入口)。
 - MUST:包管理器统一 pnpm 9.14(`packageManager` 字段已锁定),禁止混用 npm / yarn;`pnpm-lock.yaml` 必须入库。
 - MUST:依赖版本锁定入库,不随意升级大版本;大版本 / 破坏性升级须走评审(对齐 G2 / G3 门禁)。
 

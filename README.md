@@ -17,10 +17,10 @@
 | [`apps/pc`](apps/pc) | PC 桌面端 | React 18 + Vite 5 + Electron 33 + TypeScript 5.6 | 脚手架 |
 | [`apps/mobile`](apps/mobile) | 移动端 | uni-app(Vue 3),H5 + 微信小程序 | 脚手架 |
 | [`apps/docs`](apps/docs) | 设计规范 | Markdown(设计原则 / 令牌 / 组件 / 响应式 / 工程 / 安全) | 文档 |
-| [`services`](services) | 后端 | Java 17 + Spring Boot 3.5 模块化单体;AI 侧 Python 3.12 + FastAPI | 文档基线(代码待开发) |
+| [`services`](services) | 后端 | Java 17 + Spring Boot 3.5 模块化单体 + 网关微服务 GATEWAY(Spring Cloud Gateway);AI 侧 Python 3.12 + FastAPI | 文档基线(代码待开发) |
 | [`docs`](docs) | 文档 | 需求调研 / 市场分析 / 设计 / SOP / 规范 | 文档 |
 
-> 说明:后端采用「**模块化单体先聚合,按业务域预留拆分**」策略;AI 能力(`aicore` / `assist`)为独立 Python 服务,经统一鉴权内部接口取数、不直连主站数据库。
+> 说明:后端采用「**模块化单体先聚合,按业务域预留拆分**」策略;AI 能力(`aicore` / `assist`)为独立 Python 服务,经统一鉴权内部接口取数、不直连主站数据库;**网关层为独立微服务 `gateway`(GATEWAY,M1 后期独立部署,平台唯一统一入口)**,前端不直连 Python 服务。
 
 ## 目录结构
 
@@ -30,7 +30,7 @@
 │   ├── pc/                #   PC 桌面端(React + Electron)
 │   ├── mobile/            #   移动端(uni-app,H5 / 微信小程序)
 │   └── docs/              #   设计规范文档
-├── services/              # 后端业务域服务(13 个,见下表)
+├── services/              # 后端业务域服务(15 个,见下表)
 ├── docs/                  # 全部文档资产
 │   ├── 需求调研/          #   需求调研与核心成果
 │   ├── 市场分析/          #   市场分析 / 竞品调研
@@ -45,17 +45,19 @@
 └── package.json           # 根脚本(pnpm workspace)
 ```
 
-## 业务域服务(13 个)
+## 业务域服务(15 个)
 
 | 服务 | 中文名 | 定位 | 技术栈 |
 |---|---|---|---|
 | [`acc`](services/acc) | 账户服务 | 实名身份底座 + 纯记账簿 | Java |
-| [`aicore`](services/aicore) | AI 能力中心服务 | AI 网关 + 视觉审核 + OCR + 图像问答 + 风险预测 | Python |
+| [`aicore`](services/aicore) | AI 能力中心服务 | AI 网关底座(模型路由)+ 视觉审核 + OCR + 图像问答 + 风险预测 | Python |
 | [`assist`](services/assist) | 助手服务 | 三端复用智能助手侧边栏(脱敏 → 意图 → 动作) | Python |
 | [`civic`](services/civic) | 民生互动服务 | 群众建议 / 民生项目公开 / 优质小店推广 / 论坛 | Java |
 | [`cred`](services/cred) | 信用档案服务 | 商户 / 人员 / 供应商信用档案与信用分中枢 | Java |
 | [`dash`](services/dash) | 监管看板服务 | 三端看板 / 预警双向推送 / 费率公示 | Java |
+| [`delivery`](services/delivery) | 配送服务 | 本地配送下单 / 订单状态机 / 调度看板 / 运力管理与轨迹存证 | Java |
 | [`emp`](services/emp) | 用工服务 | 用工关系 / 入职年龄核验 / 劳务信用互评 | Java |
+| [`gateway`](services/gateway) | 网关服务 | 平台唯一统一入口:路由 / 鉴权 / 限流 / 灰度 / 超时熔断 / traceId / Envelope(M1 后期独立部署) | Java |
 | [`prod`](services/prod) | 商品服务 | 商品上架审核 / 选品广场 / 透明详情 | Java |
 | [`profile`](services/profile) | 画像服务 | 个人画像 / 画像四权 / 个性化推荐 | Java |
 | [`settle`](services/settle) | 结算服务 | 资金结算唯一执行层(只走第三方持牌通道) | Java |
@@ -63,7 +65,7 @@
 | [`trace`](services/trace) | 溯源服务 | 供应商核验 / 溯源码 / 扫码验真 | Java |
 | [`trade`](services/trade) | 交易服务 | 担保交易 / 货款托管 / 验收退款 / 争议仲裁 | Java |
 
-> 每个业务域当前为**文档基线**(`services/<域>/docs/README.md` 明确功能与质量基线),代码与 `pom.xml` 待 M1 开发落库。
+> 每个业务域当前为**文档基线**(`services/<域>/docs/README.md` 明确功能与质量基线),代码与 `pom.xml` 待 M1 开发落库;网关服务 `gateway` 为接入层基础设施微服务(无业务数据库,职责见其 README)。
 
 ## 快速开始
 
@@ -89,7 +91,7 @@ pnpm build:mobile:mp-weixin    # 移动端微信小程序构建
 
 ### 后端
 
-后端业务域服务当前处于**设计基线 / 文档脚手架**阶段(尚无 `pom.xml` 与 Java 源码),待 M1 起以「模块化单体」落地。开发规范与拆分策略见 [`DEVELOPMENT_CONSTRAINTS.md`](DEVELOPMENT_CONSTRAINTS.md) 与 [`docs/design/高并发架构演进设计.md`](docs/design/高并发架构演进设计.md)。
+后端业务域服务当前处于**设计基线 / 文档脚手架**阶段(尚无 `pom.xml` 与 Java 源码),待 M1 起以「模块化单体」落地;网关层为独立微服务 [`gateway`](services/gateway)(Spring Cloud Gateway,M1 后期独立部署)。开发规范与拆分策略见 [`DEVELOPMENT_CONSTRAINTS.md`](DEVELOPMENT_CONSTRAINTS.md) 与 [`docs/design/高并发架构演进设计.md`](docs/design/高并发架构演进设计.md)。
 
 ## 开发规范与门禁
 
