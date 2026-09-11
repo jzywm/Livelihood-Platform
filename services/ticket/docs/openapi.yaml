@@ -470,7 +470,7 @@ paths:
       summary: 群众热线诉求（自建工单 + 线下流转）【M1 · G-01】
       description: |
         群众提交诉求生成工单（G-01，线框 S-12）：选部门/类别、可附证据 → 平台智能分派对应部门 →
-        限时办结（如 7 天，可配）→ 进度可见 → 办结结果公示（脱敏）。
+        限时办结（7 个工作日，2026-09-11 已定档）→ 进度可见 → 办结结果公示（脱敏）。
         12345 不可接 → 自建工单 + 线下流转（P-04 双轨）；优秀建议/高频诉求可转 CIVIC G-02 建议论坛。
       requestBody:
         required: true
@@ -607,7 +607,7 @@ components:
         deadlineAt:
           type: string
           format: date-time
-          description: 限时处理截止（投诉 48h / 诉求 7 天可配）
+          description: 限时处理截止（投诉 48h / 诉求 7 个工作日，2026-09-11 已定档）
           example: '2026-09-03T10:00:00Z'
         createdAt:
           type: string

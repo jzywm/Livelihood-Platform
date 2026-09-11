@@ -237,6 +237,60 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+  /emp/attendance/makeup/{makeupId}/review:
+    post:
+      tags: [attendance]
+      summary: 雇主确认补卡（通过/驳回）【M1 · C-02】
+      description: |
+        雇主确认补卡申请（C-02 异常处理闭环，2026-09-11 补齐端点）：通过 → APPROVED 生效并计入工时；
+        驳回 → REJECTED（必填驳回原因，职工可重新申请）；仅用工关系雇主本人可操作（2002）；
+        非 PENDING 状态 → 3007。
+      parameters:
+        - name: makeupId
+          in: path
+          required: true
+          description: 补卡申请号
+          schema:
+            type: string
+            example: mk_8f7e6d5c4b3a
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MakeupReviewRequest'
+      responses:
+        '200':
+          description: 成功，返回确认结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MakeupReviewResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非 PENDING）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
   /emp/review:
     post:
       tags: [review]
@@ -606,6 +660,34 @@ components:
           description: 申请状态（待雇主确认）
           enum: [PENDING]
           example: PENDING
+    MakeupStatus:
+      type: string
+      description: 补卡状态机（2026-09-11 补齐）：PENDING 待雇主确认 → APPROVED 通过生效（计入工时）/ REJECTED 驳回（可重新申请）
+      enum: [PENDING, APPROVED, REJECTED]
+      example: APPROVED
+    MakeupReviewRequest:
+      type: object
+      required: [approve]
+      properties:
+        approve:
+          type: boolean
+          description: 确认结论（通过/驳回）
+          example: true
+        reason:
+          type: string
+          description: 驳回原因（驳回时必填）
+          maxLength: 200
+          example: 与排班记录不符
+    MakeupReviewResult:
+      type: object
+      required: [makeupId, status]
+      properties:
+        makeupId:
+          type: string
+          description: 补卡申请号
+          example: mk_8f7e6d5c4b3a
+        status:
+          $ref: '#/components/schemas/MakeupStatus'
     ReviewRole:
       type: string
       description: 互评发起方角色

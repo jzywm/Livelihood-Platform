@@ -1,13 +1,13 @@
 # 账户服务（ACC · Account）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.12）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.3）与《产品设计文档》（PDD v1.0（基线））编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.1 / §6.4.1 为准，需求口径以 PRD §5.11（I 组）为准。
 
 ## 1. 服务概述
 
 - **服务标识**：`acc`（账户服务）
 - **服务定位**：平台的**实名身份底座 + 纯记账簿**，为全平台提供可信身份与资金流水证据。
-- **对应模块**：I1 实名账户 + 钱包记账（I-01 / I-02）；I-06 强实名增强【M2，§5.14】。
+- **对应模块**：I1 实名账户 + 钱包记账（I-01）；I-06 强实名增强【M2，§5.14】。（I-02 劳务信用双向互评属 EMP 用工服务，本服务不承担。）
 - **里程碑**：M1 交付。
 - **实现载体 / 技术栈**：Java 17 + Spring Boot 3.5（模块化单体，属业务域，不随 Agent/AI 侧 Python 化）。
 - **三端分布**：消费端（实名/流水）· 经营端（实名/流水）· 监管端（资金流水审计）。
@@ -43,7 +43,7 @@
 
 ### 3.4 登录人机验证（防机器人）
 
-登录 / 注册页（G-01）人机验证：默认滑块拼图，滑块失败降级图形验证码；校验通过下发一次性凭证 verifyToken，注册接口回填 captchaToken 完成防机器人校验（登录爆破限速）。接口：`GET /acc/captcha`（下发挑战，正确结果仅存服务端）、`POST /acc/captcha/verify`（校验，挑战一次性消费防暴力枚举）。异常处理：答案错误 / 过期 → success=false，前端重取或降级图形验证码。
+登录 / 注册页（页面码 G-01）人机验证：默认滑块拼图，滑块失败降级图形验证码；校验通过下发一次性凭证 verifyToken，注册接口回填 captchaToken 完成防机器人校验（登录爆破限速）。接口：`GET /acc/captcha`（下发挑战，正确结果仅存服务端）、`POST /acc/captcha/verify`（校验，挑战一次性消费防暴力枚举）。异常处理：答案错误 / 过期 → success=false，前端重取或降级图形验证码。
 
 ## 4. 非功能性需求要求
 
@@ -69,6 +69,6 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线 R-01~R-16、§5.11（I 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.1 账户服务、§6.4.1 接口清单、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/acc/docs/openapi.yaml`（OpenAPI 3.0，前端接口 16 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联）
-- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/acc/docs/er.md`（6 实体：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)；口径对齐 openapi.yaml v1.1.0 与《高并发架构演进设计》v0.2 §2）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/acc/docs/er.md`（6 实体：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)；口径对齐 openapi.yaml v1.1.0 与《高并发架构演进设计》v1.0 §2）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/acc/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/05-实名认证流程-I1.md`

@@ -3,7 +3,7 @@
   "info": {
     "title": "商品服务 PROD · 接口文档",
     "version": "1.0.0",
-    "description": "商品服务（PROD）前端接口文档。模块 T1 选品广场（T-02 商品上架审核与批次关联、T-03 跨行业选品广场、\nT-04 商品透明详情页与供应商主页、T-21 采购决策辅助）。\n口径对齐：PDD §5.8 / §6.4.7；需求口径 PRD §5.10（T 组）；边界依据 SSOT §2.8。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 红线：R-08 轻资产原则——只做撮合、不代下单、不代定价、无包赚承诺；R-09 强监管品类仅信息撮合、\n  不替代行政许可；R-13 无竞价广告/隐性扣费、排序非竞价、价格透明。\n- 里程碑：本服务为 M2 交付（设计先行），全部接口为 M2 占位——里程碑交付前口径以评审为准。\n"
+    "description": "商品服务（PROD）前端接口文档。模块 T1 选品广场（T-02 商品上架审核与批次关联、T-03 跨行业选品广场、\nT-04 商品透明详情页与供应商主页、T-21 采购决策辅助）。\n口径对齐：PDD v1.0（基线）§5.8 / §6.4.7；需求口径 PRD v2.3 §5.10（T 组）；边界依据 SSOT v1.6 §2.8。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 红线：R-08 轻资产原则——只做撮合、不代下单、不代定价、无包赚承诺；R-09 强监管品类仅信息撮合、\n  不替代行政许可；无竞价广告/隐性扣费、排序非竞价、价格透明（P-01）。\n- 里程碑：本服务为 M2 交付（设计先行），全部接口为 M2 占位——里程碑交付前口径以评审为准。\n"
   },
   "servers": [
     {
@@ -100,10 +100,9 @@
                     "example": "50kg/袋"
                   },
                   "price": {
-                    "type": "number",
-                    "minimum": 0,
-                    "description": "价格（元；供应商自主定价，平台不代定价，R-08）",
-                    "example": 128
+                    "type": "string",
+                    "description": "价格（元，字符串小数；供应商自主定价，平台不代定价，R-08）",
+                    "example": "128.00"
                   },
                   "unit": {
                     "type": "string",
@@ -162,6 +161,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -260,6 +260,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -336,6 +337,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -412,6 +414,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -488,6 +491,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -598,20 +602,78 @@
             "name": "priceMin",
             "in": "query",
             "required": false,
-            "description": "价格下限（元）",
+            "description": "价格下限（元，字符串小数）",
             "schema": {
-              "type": "number",
-              "minimum": 0
+              "type": "string"
             }
           },
           {
             "name": "priceMax",
             "in": "query",
             "required": false,
-            "description": "价格上限（元）",
+            "description": "价格上限（元，字符串小数）",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": false,
+            "description": "当前经度（距地筛选坐标，与 lat/distanceKm 配合）",
             "schema": {
               "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "lat",
+            "in": "query",
+            "required": false,
+            "description": "当前纬度（距地筛选坐标）",
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "distanceKm",
+            "in": "query",
+            "required": false,
+            "description": "距地筛选半径（km；缺省不筛）",
+            "schema": {
+              "type": "number",
+              "format": "double",
               "minimum": 0
+            }
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "description": "排序维度（CREDIT 信用分 / TRACE 溯源完整度 / PRICE 价格 / PRAISE 好评率；非竞价排序，P-01）",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CREDIT",
+                "TRACE",
+                "PRICE",
+                "PRAISE"
+              ]
+            }
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "required": false,
+            "description": "排序方向",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "default": "DESC"
             }
           },
           {
@@ -664,6 +726,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -763,8 +826,9 @@
                                         "example": "农资"
                                       },
                                       "price": {
-                                        "type": "number",
-                                        "example": 128
+                                        "type": "string",
+                                        "description": "价格（元，字符串小数）",
+                                        "example": "128.00"
                                       },
                                       "unit": {
                                         "type": "string",
@@ -844,6 +908,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -978,6 +1043,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -1077,8 +1143,9 @@
                                         "example": "农资"
                                       },
                                       "price": {
-                                        "type": "number",
-                                        "example": 128
+                                        "type": "string",
+                                        "description": "价格（元，字符串小数）",
+                                        "example": "128.00"
                                       },
                                       "unit": {
                                         "type": "string",
@@ -1151,6 +1218,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1227,6 +1295,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1328,6 +1397,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -1388,8 +1458,9 @@
                                   "example": "农资"
                                 },
                                 "price": {
-                                  "type": "number",
-                                  "example": 128
+                                  "type": "string",
+                                  "description": "价格（元，字符串小数）",
+                                  "example": "128.00"
                                 },
                                 "unit": {
                                   "type": "string",
@@ -1496,6 +1567,7 @@
                                   "format": "float",
                                   "minimum": 0,
                                   "maximum": 1,
+                                  "description": "好评率（0~1，praise_rate；CRED 档案聚合，与 AssistCandidate.fulfillmentRate 履约率区分）",
                                   "example": 0.96
                                 },
                                 "redblackStatus": {
@@ -1561,6 +1633,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1637,6 +1710,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1738,6 +1812,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -1840,6 +1915,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1916,6 +1992,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1992,6 +2069,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2068,6 +2146,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2169,6 +2248,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -2245,6 +2325,7 @@
                                   "format": "float",
                                   "minimum": 0,
                                   "maximum": 1,
+                                  "description": "好评率（0~1，praise_rate；CRED 档案聚合，与 AssistCandidate.fulfillmentRate 履约率区分）",
                                   "example": 0.96
                                 },
                                 "redblackStatus": {
@@ -2288,6 +2369,36 @@
                                 }
                               }
                             },
+                            "qualifications": {
+                              "type": "array",
+                              "description": "供应商资质证照聚合（T-01 核验通过的资质，含有效期，供选商决策依据）",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "description": "资质类型（营业执照/经营许可/生产许可/登记批号/检验报告等）",
+                                    "example": "经营许可证"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "description": "资质名称（脱敏展示）",
+                                    "example": "农药经营许可证"
+                                  },
+                                  "no": {
+                                    "type": "string",
+                                    "description": "证照编号（脱敏展示）",
+                                    "example": "冀农经许****21"
+                                  },
+                                  "validTo": {
+                                    "type": "string",
+                                    "format": "date",
+                                    "description": "有效期至",
+                                    "example": "2027-03-31"
+                                  }
+                                }
+                              }
+                            },
                             "items": {
                               "type": "array",
                               "description": "在售商品列表",
@@ -2315,8 +2426,9 @@
                                     "example": "农资"
                                   },
                                   "price": {
-                                    "type": "number",
-                                    "example": 128
+                                    "type": "string",
+                                    "description": "价格（元，字符串小数）",
+                                    "example": "128.00"
                                   },
                                   "unit": {
                                     "type": "string",
@@ -2394,6 +2506,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2470,6 +2583,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2551,6 +2665,21 @@
                     "description": "预算",
                     "maxLength": 100,
                     "example": "3000 元以内"
+                  },
+                  "trustOnly": {
+                    "type": "boolean",
+                    "description": "只看放心供应商（T-06 动态标识）",
+                    "example": false
+                  },
+                  "lng": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "当前经度（距地对比用，可选）"
+                  },
+                  "lat": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "当前纬度（距地对比用，可选）"
                   }
                 }
               }
@@ -2596,6 +2725,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -2663,6 +2793,29 @@
                                     "maximum": 100,
                                     "example": 92
                                   },
+                                  "creditDims": {
+                                    "type": "array",
+                                    "description": "信用分构成（T-05 四维 30/30/30/10，CRED 数据源，横向对比依据）",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "example": "资质合规"
+                                        },
+                                        "weight": {
+                                          "type": "number",
+                                          "format": "float",
+                                          "example": 0.3
+                                        },
+                                        "score": {
+                                          "type": "number",
+                                          "format": "float",
+                                          "example": 95
+                                        }
+                                      }
+                                    }
+                                  },
                                   "trusted": {
                                     "type": "boolean",
                                     "description": "放心供应商标识",
@@ -2670,12 +2823,33 @@
                                   },
                                   "priceRange": {
                                     "type": "string",
-                                    "description": "价格区间（供应商自主定价，不代定价）",
+                                    "description": "价格区间与计价单位（供应商自主定价，不代定价）",
                                     "example": "¥128~135/袋"
                                   },
                                   "traceComplete": {
                                     "type": "boolean",
+                                    "description": "溯源完整度（全链无缺环 = true）",
                                     "example": true
+                                  },
+                                  "detectionReport": {
+                                    "type": "array",
+                                    "description": "检测报告（批次检测，名称 + 有效期）",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "description": "报告名称",
+                                          "example": "小麦种子质量检测报告"
+                                        },
+                                        "validTo": {
+                                          "type": "string",
+                                          "format": "date",
+                                          "description": "报告有效期至",
+                                          "example": "2026-12-31"
+                                        }
+                                      }
+                                    }
                                   },
                                   "fulfillmentRate": {
                                     "type": "number",
@@ -2684,6 +2858,12 @@
                                     "maximum": 1,
                                     "description": "履约率（0-1）",
                                     "example": 0.98
+                                  },
+                                  "distanceKm": {
+                                    "type": "number",
+                                    "format": "double",
+                                    "description": "距采购方距离（km，需请求携带 lng/lat 时返回）",
+                                    "example": 12.5
                                   },
                                   "itemIds": {
                                     "type": "array",
@@ -2750,6 +2930,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2826,6 +3007,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2945,6 +3127,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3034,6 +3217,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3110,6 +3294,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3186,6 +3371,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3262,6 +3448,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3391,6 +3578,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3552,6 +3740,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3684,6 +3873,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3773,6 +3963,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3849,6 +4040,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3925,6 +4117,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -4017,10 +4210,9 @@
             "example": "50kg/袋"
           },
           "price": {
-            "type": "number",
-            "minimum": 0,
-            "description": "价格（元；供应商自主定价，平台不代定价，R-08）",
-            "example": 128
+            "type": "string",
+            "description": "价格（元，字符串小数；供应商自主定价，平台不代定价，R-08）",
+            "example": "128.00"
           },
           "unit": {
             "type": "string",
@@ -4095,8 +4287,9 @@
             "example": "农资"
           },
           "price": {
-            "type": "number",
-            "example": 128
+            "type": "string",
+            "description": "价格（元，字符串小数）",
+            "example": "128.00"
           },
           "unit": {
             "type": "string",
@@ -4187,8 +4380,9 @@
                       "example": "农资"
                     },
                     "price": {
-                      "type": "number",
-                      "example": 128
+                      "type": "string",
+                      "description": "价格（元，字符串小数）",
+                      "example": "128.00"
                     },
                     "unit": {
                       "type": "string",
@@ -4242,8 +4436,9 @@
             "example": "农资"
           },
           "price": {
-            "type": "number",
-            "example": 128
+            "type": "string",
+            "description": "价格（元，字符串小数）",
+            "example": "128.00"
           },
           "unit": {
             "type": "string",
@@ -4341,8 +4536,9 @@
                       "example": "农资"
                     },
                     "price": {
-                      "type": "number",
-                      "example": 128
+                      "type": "string",
+                      "description": "价格（元，字符串小数）",
+                      "example": "128.00"
                     },
                     "unit": {
                       "type": "string",
@@ -4402,8 +4598,9 @@
             "example": "农资"
           },
           "price": {
-            "type": "number",
-            "example": 128
+            "type": "string",
+            "description": "价格（元，字符串小数）",
+            "example": "128.00"
           },
           "unit": {
             "type": "string",
@@ -4510,6 +4707,7 @@
             "format": "float",
             "minimum": 0,
             "maximum": 1,
+            "description": "好评率（0~1，praise_rate；CRED 档案聚合，与 AssistCandidate.fulfillmentRate 履约率区分）",
             "example": 0.96
           },
           "redblackStatus": {
@@ -4557,8 +4755,9 @@
                 "example": "农资"
               },
               "price": {
-                "type": "number",
-                "example": 128
+                "type": "string",
+                "description": "价格（元，字符串小数）",
+                "example": "128.00"
               },
               "unit": {
                 "type": "string",
@@ -4665,6 +4864,7 @@
                 "format": "float",
                 "minimum": 0,
                 "maximum": 1,
+                "description": "好评率（0~1，praise_rate；CRED 档案聚合，与 AssistCandidate.fulfillmentRate 履约率区分）",
                 "example": 0.96
               },
               "redblackStatus": {
@@ -4756,6 +4956,7 @@
                 "format": "float",
                 "minimum": 0,
                 "maximum": 1,
+                "description": "好评率（0~1，praise_rate；CRED 档案聚合，与 AssistCandidate.fulfillmentRate 履约率区分）",
                 "example": 0.96
               },
               "redblackStatus": {
@@ -4799,6 +5000,36 @@
               }
             }
           },
+          "qualifications": {
+            "type": "array",
+            "description": "供应商资质证照聚合（T-01 核验通过的资质，含有效期，供选商决策依据）",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "资质类型（营业执照/经营许可/生产许可/登记批号/检验报告等）",
+                  "example": "经营许可证"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "资质名称（脱敏展示）",
+                  "example": "农药经营许可证"
+                },
+                "no": {
+                  "type": "string",
+                  "description": "证照编号（脱敏展示）",
+                  "example": "冀农经许****21"
+                },
+                "validTo": {
+                  "type": "string",
+                  "format": "date",
+                  "description": "有效期至",
+                  "example": "2027-03-31"
+                }
+              }
+            }
+          },
           "items": {
             "type": "array",
             "description": "在售商品列表",
@@ -4826,8 +5057,9 @@
                   "example": "农资"
                 },
                 "price": {
-                  "type": "number",
-                  "example": 128
+                  "type": "string",
+                  "description": "价格（元，字符串小数）",
+                  "example": "128.00"
                 },
                 "unit": {
                   "type": "string",
@@ -4889,6 +5121,21 @@
             "description": "预算",
             "maxLength": 100,
             "example": "3000 元以内"
+          },
+          "trustOnly": {
+            "type": "boolean",
+            "description": "只看放心供应商（T-06 动态标识）",
+            "example": false
+          },
+          "lng": {
+            "type": "number",
+            "format": "double",
+            "description": "当前经度（距地对比用，可选）"
+          },
+          "lat": {
+            "type": "number",
+            "format": "double",
+            "description": "当前纬度（距地对比用，可选）"
           }
         }
       },
@@ -4916,6 +5163,29 @@
             "maximum": 100,
             "example": 92
           },
+          "creditDims": {
+            "type": "array",
+            "description": "信用分构成（T-05 四维 30/30/30/10，CRED 数据源，横向对比依据）",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "资质合规"
+                },
+                "weight": {
+                  "type": "number",
+                  "format": "float",
+                  "example": 0.3
+                },
+                "score": {
+                  "type": "number",
+                  "format": "float",
+                  "example": 95
+                }
+              }
+            }
+          },
           "trusted": {
             "type": "boolean",
             "description": "放心供应商标识",
@@ -4923,12 +5193,33 @@
           },
           "priceRange": {
             "type": "string",
-            "description": "价格区间（供应商自主定价，不代定价）",
+            "description": "价格区间与计价单位（供应商自主定价，不代定价）",
             "example": "¥128~135/袋"
           },
           "traceComplete": {
             "type": "boolean",
+            "description": "溯源完整度（全链无缺环 = true）",
             "example": true
+          },
+          "detectionReport": {
+            "type": "array",
+            "description": "检测报告（批次检测，名称 + 有效期）",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "报告名称",
+                  "example": "小麦种子质量检测报告"
+                },
+                "validTo": {
+                  "type": "string",
+                  "format": "date",
+                  "description": "报告有效期至",
+                  "example": "2026-12-31"
+                }
+              }
+            }
           },
           "fulfillmentRate": {
             "type": "number",
@@ -4937,6 +5228,12 @@
             "maximum": 1,
             "description": "履约率（0-1）",
             "example": 0.98
+          },
+          "distanceKm": {
+            "type": "number",
+            "format": "double",
+            "description": "距采购方距离（km，需请求携带 lng/lat 时返回）",
+            "example": 12.5
           },
           "itemIds": {
             "type": "array",
@@ -4981,6 +5278,29 @@
                   "maximum": 100,
                   "example": 92
                 },
+                "creditDims": {
+                  "type": "array",
+                  "description": "信用分构成（T-05 四维 30/30/30/10，CRED 数据源，横向对比依据）",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "example": "资质合规"
+                      },
+                      "weight": {
+                        "type": "number",
+                        "format": "float",
+                        "example": 0.3
+                      },
+                      "score": {
+                        "type": "number",
+                        "format": "float",
+                        "example": 95
+                      }
+                    }
+                  }
+                },
                 "trusted": {
                   "type": "boolean",
                   "description": "放心供应商标识",
@@ -4988,12 +5308,33 @@
                 },
                 "priceRange": {
                   "type": "string",
-                  "description": "价格区间（供应商自主定价，不代定价）",
+                  "description": "价格区间与计价单位（供应商自主定价，不代定价）",
                   "example": "¥128~135/袋"
                 },
                 "traceComplete": {
                   "type": "boolean",
+                  "description": "溯源完整度（全链无缺环 = true）",
                   "example": true
+                },
+                "detectionReport": {
+                  "type": "array",
+                  "description": "检测报告（批次检测，名称 + 有效期）",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "报告名称",
+                        "example": "小麦种子质量检测报告"
+                      },
+                      "validTo": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "报告有效期至",
+                        "example": "2026-12-31"
+                      }
+                    }
+                  }
                 },
                 "fulfillmentRate": {
                   "type": "number",
@@ -5002,6 +5343,12 @@
                   "maximum": 1,
                   "description": "履约率（0-1）",
                   "example": 0.98
+                },
+                "distanceKm": {
+                  "type": "number",
+                  "format": "double",
+                  "description": "距采购方距离（km，需请求携带 lng/lat 时返回）",
+                  "example": 12.5
                 },
                 "itemIds": {
                   "type": "array",

@@ -1,18 +1,24 @@
 openapi: 3.0.3
 info:
   title: 配送服务 DELIVERY · 接口文档
-  version: 1.0.0
+  version: 1.1.0
   description: |
     配送服务（DELIVERY）前端接口文档。模块 L 组：L-01 配送下单与地址定位选点、L-02 订单状态机与全程跟踪、
-    L-03 商家接单与备货出餐、L-04 运营调度看板、L-05 运力管理、L-06 位置轨迹存证与异常预警。
-    口径对齐：PDD §5.15（本地配送服务，页面结构 8 页）；需求口径 PRD §5.14（L 组，L-01~L-06）；
-    边界依据 SSOT §2.14。**PDD §6.4 无 DELIVERY 接口草案（SSOT C-01），本文件按 8 页线框逐页映射设计。**
+    L-03 商家接单与备货出餐、L-04 运营调度看板、L-05 运力管理、L-06 位置轨迹存证与异常预警、
+    L-07 车型与大件货物兼容、L-08 骑手端与实时位置共享（2026-09-11 新增，走规格书 §10 变更登记）。
+    口径对齐：PDD v1.0（基线）§5.15（本地配送服务，页面结构 11 页——消费端 3 / 经营端 1 / 运营端 4 / 骑手端 3）；
+    需求口径 PRD v2.3 §5.14（L 组，L-01~L-08）；边界依据 SSOT v1.6 §2.14。**PDD §6.4 无 DELIVERY 接口草案（SSOT C-01），
+    本文件按 11 页线框逐页映射设计。**
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
-    - 服务端间接口（骑手轨迹上报）见文末 x-external-interfaces 附录，前端勿调。
+    - 服务端间接口（支付确认回调等）见文末 x-external-interfaces 附录，前端勿调。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
     - 红线：复用 SETTLE 结算与 P-02 存证，**不重复建结算/存证体系**；不做北斗硬件对接（位置/轨迹复用手机 GPS，同 F-02）；
-      R-03 位置/轨迹分级授权（本人可见→授权可见→脱敏公示）、敏感个人信息加密存储（R-07）。
-    - 里程碑：本服务为 M2 交付、**骑手端 App 后置**（骑手侧动作暂由运营端人工调度 + 运力档案承载）；
+      R-03 位置/轨迹分级授权（本人可见→授权可见→脱敏公示）、敏感个人信息加密存储（R-07）；
+      骑手实时位置**配送中订单买家可见、送达即切断**。
+    - 骑手端（D-01~D-03，`/rider`）为**移动优先页面**（uni-app H5/小程序），页面简洁原则：
+      一屏一个主操作、底部单一主按钮、大字大间距；导航经**地图开放平台**按车型唤起
+      （电动车=骑行、汽车=驾车），H5 内嵌地图兜底，地图 Key 由前端环境变量管理、不经服务端落库。
+    - 里程碑：本服务为 M2 交付（**骑手端 M2 交付、设计先行**，2026-09-11 由「骑手端后置」调整）；
       全部接口为 M2 占位——里程碑交付前口径以评审为准。
 servers:
   - url: https://api.example.com/api/v1
@@ -24,6 +30,8 @@ tags:
     description: 配送下单与订单跟踪（L-01/L-02，消费端）
   - name: merchant
     description: 商家接单与备货出餐（L-03，经营端）
+  - name: rider
+    description: 骑手端任务/接单/状态上报/位置心跳/车辆档案（L-07/L-08，骑手端 /rider）
   - name: ops
     description: 运营调度与运力管理（L-04/L-05/L-06，运营端 /ops）
 
@@ -171,7 +179,7 @@ paths:
       summary: 骑手位置与轨迹存证查询（线框 S-31 地图）【M2 · L-02/L-06 占位】
       description: |
         配送全程位置轨迹查询（S-31 地图 + L-06）：轨迹点时间戳 + 哈希存证（复用 P-02，只增不改）、
-        分段加载（README §4.2 轨迹抽稀 + 分段加载降低带宽）；按 R-03 分级授权（本人可见→授权可见→脱敏）；
+        分段加载（README §4.2 轨迹抽稀 + 分段加载降低带宽，抽稀 10m / 每段 200 点★，2026-09-11 定档）；按 R-03 分级授权（本人可见→授权可见→脱敏）；
         轨迹可出证供纠纷仲裁（复用 TICKET D-02/T-15 机制，本服务不建出证体系）。M2 占位。
       parameters:
         - name: orderId
@@ -199,6 +207,53 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/orders/{orderId}/rider-location:
+    get:
+      tags: [order]
+      summary: 骑手实时位置（买家可见，配送中授权、送达即切断）【M2 · L-02/L-08 占位】
+      description: |
+        买家在 S-31 详情页查看骑手实时位置（L-08）：仅「配送中」状态可见（R-03 授权可见级——
+        下单买家本人可见、送达即切断、轨迹回放走 GET /delivery/orders/{orderId}/track）；
+        推送走 SSE（5s 短轮询兜底★，2026-09-11 定档），数据源为骑手端 POST /delivery/rider/location 心跳（Redis，30s~60s★）；
+        非本人订单/非配送中 → 2002/3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，返回骑手当前位置与更新时间（配送中授权可见）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderRealtimeLocation'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非配送中状态不可见实时位置）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
   /delivery/orders/{orderId}/urge:
     post:
       tags: [order]
@@ -515,6 +570,272 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+  /delivery/rider/tasks:
+    get:
+      tags: [rider]
+      summary: 骑手任务列表（待接 + 进行中，线框 D-01）【M2 · L-02/L-08 占位】
+      description: |
+        骑手端工作台（D-01）：待接任务（READY 待取货，含车型/货件要求）与进行中任务（DELIVERING）；
+        简洁呈现——进行中任务置顶单卡、待接列表仅关键字段（取货点/配送点/预计送达/车型要求）；
+        仅骑手本人可见（2002）。派单按车型匹配（L-07）：任务仅推送给车辆类型满足要求的骑手。M2 占位。
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: 任务范围（PENDING 待接 / ACTIVE 进行中，缺省全量）
+          schema:
+            type: string
+            enum: [PENDING, ACTIVE]
+      responses:
+        '200':
+          description: 成功，返回任务列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderTaskPage'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+  /delivery/rider/tasks/{orderId}/accept:
+    post:
+      tags: [rider]
+      summary: 骑手接单（车型/载重匹配校验）【M2 · L-02/L-07 占位】
+      description: |
+        骑手接单（D-01 操作区）：**车型匹配校验**——骑手车辆类型/载重不满足运单 `vehicleRequired`/货件规格
+        （如大件货需 CAR）→ 3007「车型不匹配」并提示；并发接单幂等/乐观锁拦截（3007「已改派，请刷新」）；
+        接单后状态 READY → DELIVERING；仅骑手本人（2002）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，订单进入配送中
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderAcceptResult'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许/车型不匹配/并发冲突（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 车型不匹配，请确认车辆类型与载重
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/rider/orders/{orderId}:
+    get:
+      tags: [rider]
+      summary: 骑手任务详情（取货点/配送点坐标 + 导航参数，线框 D-02）【M2 · L-02/L-07/L-08 占位】
+      description: |
+        任务详情（D-02）：取货点（商铺坐标/地址）与配送点（收货坐标/地址）+ 货件规格 + 车型要求 +
+        导航参数（坐标 + 车型对应导航模式：电动车=骑行、汽车=驾车，前端拼地图开放平台 URI 唤起第三方导航，
+        H5 内嵌地图兜底）；「导航到商铺（取货）」「导航到配送地点（送货）」双按钮；
+        仅当事骑手/运营可见（2002）。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      responses:
+        '200':
+          description: 成功，返回任务详情与导航参数
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderOrderDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /delivery/rider/orders/{orderId}/status:
+    post:
+      tags: [rider]
+      summary: 骑手取货/送达一键上报（线框 D-02）【M2 · L-02/L-08 占位】
+      description: |
+        骑手状态上报（D-02 底部单一主按钮）：PICKUP 已取货（到店打卡，校验骑手位于商铺附近）/
+        DELIVERED 已送达（校验骑手位于配送点附近，GPS 围栏）；位置校验失败 → 3007「请到达指定地点后再操作」；
+        仅当事骑手（2002）；非允许状态 → 3007。M2 占位。
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: 配送单号
+          schema:
+            type: string
+            example: D-2026090801
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderOrderStatusRequest'
+      responses:
+        '200':
+          description: 成功，返回最新状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderOrderStatusResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许/位置校验失败（code=3007）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 请到达指定地点后再操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/rider/location:
+    post:
+      tags: [rider]
+      summary: 骑手位置心跳上报（实时位置 + 轨迹存证，D-02 后台自动）【M2 · L-06/L-08 占位】
+      description: |
+        骑手端后台位置心跳（L-06/L-08，配送中自动上报，30s~60s★，er.md §5.7）：写入 Redis `rider:loc`
+        实时位置（供买家 GET /delivery/orders/{orderId}/rider-location 与运营调度 O-03 查看）；
+        轨迹点由服务端按时间戳 + 哈希写入存证链（P-02，只增不改，抽稀 Douglas-Peucker）；
+        仅当事骑手（2002）；心跳频率阈值超限 → 429 限流。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderLocationReport'
+      responses:
+        '200':
+          description: 受理成功（实时位置已更新，轨迹异步入存证链）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderLocationAck'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '429':
+          description: 心跳超频（限流，按账号）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 4290
+                message: 上报过于频繁，请稍后再试
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+  /delivery/rider/profile:
+    get:
+      tags: [rider]
+      summary: 骑手本人档案（车辆类型/车牌/载重/资质，线框 D-03）【M2 · L-05/L-07 占位】
+      description: |
+        骑手本人档案（D-03）：车辆类型（电动车 E_BIKE / 汽车 CAR）、车牌、最大载重/容积、健康证、
+        履约率速览；本人可见自己完整信息（2002，他人仅脱敏）。M2 占位。
+      responses:
+        '200':
+          description: 成功，返回骑手本人档案
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderProfileDetail'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+    put:
+      tags: [rider]
+      summary: 骑手更新车辆信息（切换车型/车牌/载重）【M2 · L-05/L-07 占位】
+      description: |
+        骑手更新车辆信息（D-03）：切换车型（E_BIKE/CAR）、维护车牌与最大载重/容积；
+        **车型切换影响派单匹配**（L-07）——更新后按新车型参与任务分发；车牌/证件敏感字段密文存储（R-07）；
+        仅本人可改（2002）。M2 占位。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderProfileUpdateRequest'
+      responses:
+        '200':
+          description: 成功，返回更新后档案
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RiderProfileDetail'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
   /delivery/ops/overview:
     get:
       tags: [ops]
@@ -573,9 +894,9 @@ paths:
   /delivery/ops/orders/{orderId}/assign:
     post:
       tags: [ops]
-      summary: 派单（智能建议 + 人工确认）【M2 · L-04 占位】
+      summary: 派单（人工派单，按车型/距离/负载筛选辅助）【M2 · L-04 占位】
       description: |
-        运营派单（O-02/O-03）：智能派单建议（AI 辅助，R-05）+ 人工确认后执行；
+        运营派单（O-02/O-03）：**人工派单**——按车型/距离/负载简单筛选辅助人工选择（配送非即时、不引入派单算法，2026-09-11 定档）；
         同一骑手并发派单 → 幂等/乐观锁拦截（3007，提示「已改派，请刷新」）；留痕审计；
         需运营角色（2002）。M2 占位。
       parameters:
@@ -766,7 +1087,7 @@ paths:
       tags: [ops]
       summary: 运力管理 · 骑手列表（线框 O-04）【M2 · L-05 占位】
       description: |
-        骑手/配送员档案列表（O-04）：实名/健康证/履约率/在线状态，分页；骑手端 App 后置，
+        骑手/配送员档案列表（O-04）：实名/健康证/履约率/在线状态，分页；骑手端（D-01~D-03）M2 交付、设计先行，
         本页为运营端运力档案；需运营角色（2002）。M2 占位。
       parameters:
         - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
@@ -933,6 +1254,8 @@ components:
                 type: integer
                 format: int32
                 minimum: 1
+        cargo:
+          $ref: '#/components/schemas/CargoSpec'
     QuoteResult:
       type: object
       required: [deliverable]
@@ -954,6 +1277,8 @@ components:
           format: int32
           description: 预计送达（分钟）
           example: 35
+        vehicleRequired:
+          $ref: '#/components/schemas/VehicleType'
     DeliveryOrderStatus:
       type: string
       description: |
@@ -1010,6 +1335,8 @@ components:
                 type: integer
                 format: int32
                 minimum: 1
+        cargo:
+          $ref: '#/components/schemas/CargoSpec'
         remark:
           type: string
           description: 备注（可选）
@@ -1575,6 +1902,279 @@ components:
           description: 在线骑手实时位置（R-03 分级授权、最小化展示）
           items:
             $ref: '#/components/schemas/RiderLocation'
+    VehicleType:
+      type: string
+      description: |
+        骑手车辆类型（L-07，2026-09-11 新增）：E_BIKE 电动车（两轮，常规小件）/
+        CAR 汽车（四轮，可运输大型货物）；派单按运单 vehicleRequired 匹配。
+      enum: [E_BIKE, CAR]
+      example: E_BIKE
+    CargoType:
+      type: string
+      description: 货件类型（L-07）：NORMAL 常规 / OVERSIZED 大件（需 CAR 车型）
+      enum: [NORMAL, OVERSIZED]
+      example: NORMAL
+    CargoSpec:
+      type: object
+      description: 货件规格（L-07，下单时填写；OVERSIZED 时 weightKg/volumeM3 必填）
+      required: [cargoType]
+      properties:
+        cargoType:
+          $ref: '#/components/schemas/CargoType'
+        weightKg:
+          type: number
+          format: double
+          description: 重量（kg，大件必填）
+          example: 120
+        volumeM3:
+          type: number
+          format: double
+          description: 体积（m³，大件必填）
+          example: 1.5
+    NavTarget:
+      type: object
+      description: 导航目标点（地图开放平台导航参数：坐标 + 名称；前端按车型拼导航 URI）
+      required: [name, lng, lat]
+      properties:
+        name:
+          type: string
+          description: 地点名称（商铺名/收货地址）
+          example: XX面馆
+        lng:
+          type: number
+          format: double
+          example: 114.511
+        lat:
+          type: number
+          format: double
+          example: 38.042
+        detail:
+          type: string
+          description: 地址详情（脱敏存储 R-07）
+          example: 裕华区 XX 路 88 号
+    RiderTaskItem:
+      type: object
+      required: [orderId, status, pickup, dropoff, vehicleRequired, createdAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+        pickup:
+          $ref: '#/components/schemas/NavTarget'
+        dropoff:
+          $ref: '#/components/schemas/NavTarget'
+        cargo:
+          $ref: '#/components/schemas/CargoSpec'
+        vehicleRequired:
+          $ref: '#/components/schemas/VehicleType'
+        estimatedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:45:00Z'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:10:00Z'
+    RiderTaskPage:
+      allOf:
+        - $ref: '../../_common/openapi.yaml#/components/schemas/PageResult'
+        - type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiderTaskItem'
+    RiderAcceptResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          type: string
+          enum: [DELIVERING]
+          example: DELIVERING
+    RiderOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/RiderTaskItem'
+        - type: object
+          properties:
+            receiverName:
+              type: string
+              description: 收货人姓名（脱敏展示）
+              example: 李*
+            receiverPhone:
+              type: string
+              description: 收货人电话（脱敏，联系买家用）
+              example: '138****5678'
+            items:
+              type: array
+              description: 商品清单（取货核对）
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  qty:
+                    type: integer
+                    format: int32
+            navMode:
+              type: string
+              description: 导航模式（按骑手车型映射：E_BIKE→BIKE 骑行 / CAR→DRIVE 驾车；前端拼地图开放平台 URI）
+              enum: [BIKE, DRIVE]
+              example: DRIVE
+    RiderStatusAction:
+      type: string
+      description: 骑手状态上报动作（PICKUP 已取货 / DELIVERED 已送达）
+      enum: [PICKUP, DELIVERED]
+      example: PICKUP
+    RiderOrderStatusRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/RiderStatusAction'
+    RiderOrderStatusResult:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        status:
+          $ref: '#/components/schemas/DeliveryOrderStatus'
+    RiderLocationReport:
+      type: object
+      required: [orderId, lng, lat]
+      properties:
+        orderId:
+          type: string
+          description: 当前配送单
+          example: D-2026090801
+        lng:
+          type: number
+          format: double
+          example: 114.511
+        lat:
+          type: number
+          format: double
+          example: 38.042
+        at:
+          type: string
+          format: date-time
+          description: 定位时间戳（缺省服务端时间）
+          example: '2026-09-08T12:30:00Z'
+    RiderLocationAck:
+      type: object
+      required: [orderId, acceptedAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        acceptedAt:
+          type: string
+          format: date-time
+          example: '2026-09-08T12:30:00Z'
+    RiderProfileDetail:
+      type: object
+      required: [riderId, name, vehicleType, healthCertStatus]
+      properties:
+        riderId:
+          type: string
+          example: r_20260901001
+        name:
+          type: string
+          description: 骑手姓名（本人可见完整，他人脱敏）
+          example: 王*傅
+        vehicleType:
+          $ref: '#/components/schemas/VehicleType'
+        vehicleNo:
+          type: string
+          description: 车牌号（密文存储，输出脱敏如 冀A·***88）
+          example: 冀A·***88
+        maxLoadKg:
+          type: number
+          format: double
+          description: 最大载重（kg）
+          example: 500
+        maxVolumeM3:
+          type: number
+          format: double
+          description: 最大容积（m³）
+          example: 3
+        healthCertStatus:
+          type: string
+          enum: [VALID, EXPIRING, INVALID]
+          example: VALID
+        healthCertValidTo:
+          type: string
+          format: date
+          example: '2027-01-31'
+        backgroundCheck:
+          type: string
+          enum: [PASSED, PENDING, REJECTED]
+          example: PASSED
+        completionRate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 接单履约率（收入速览/信用）
+          example: 0.98
+        enabled:
+          type: boolean
+          description: 启用状态（停用后不可派单）
+          example: true
+    RiderProfileUpdateRequest:
+      type: object
+      required: [vehicleType]
+      properties:
+        vehicleType:
+          $ref: '#/components/schemas/VehicleType'
+        vehicleNo:
+          type: string
+          description: 车牌号（密文存储）
+          maxLength: 20
+          example: 冀A12345
+        maxLoadKg:
+          type: number
+          format: double
+          description: 最大载重（kg）
+          example: 500
+        maxVolumeM3:
+          type: number
+          format: double
+          description: 最大容积（m³）
+          example: 3
+    RiderRealtimeLocation:
+      type: object
+      required: [orderId, lng, lat, updatedAt]
+      properties:
+        orderId:
+          type: string
+          example: D-2026090801
+        riderName:
+          type: string
+          description: 骑手姓名（脱敏展示）
+          example: 王*傅
+        vehicleType:
+          $ref: '#/components/schemas/VehicleType'
+        lng:
+          type: number
+          format: double
+          example: 114.511
+        lat:
+          type: number
+          format: double
+          example: 38.042
+        updatedAt:
+          type: string
+          format: date-time
+          description: 位置更新时间
+          example: '2026-09-08T12:30:00Z'
 
 x-external-interfaces:
   description: |
@@ -1583,41 +2183,7 @@ x-external-interfaces:
     - 结算/退款复用 SETTLE（I-04 分账反向），轨迹存证复用 P-02，**本服务不重复建结算/存证体系**；
     - 骑手信用档案复用 CRED（A-06/F-03 思路）、拒单/履约事件上报 CRED 评分；
     - 超时/偏航/异常停留预警上报 DASH（A-08 聚合）；轨迹出证与纠纷仲裁复用 TICKET（D-02/T-15）；
-    - 位置/轨迹手机 GPS 前端直连（不做北斗硬件对接，同 F-02）。
-  endpoints:
-    - method: POST
-      path: /delivery/track
-      tags: [order]
-      summary: 骑手位置轨迹上报（前端直连 GPS，服务端间承载）
-      description: |
-        配送全程 GPS 点按时间戳 + 哈希写入存证链（L-06，复用 P-02）：骑手端 App 后置期间，
-        由骑手侧临时载体（轻量页面/链接）前端直连上报；本接口供该载体调用，不在常规前端页面路由中。
-        轨迹抽稀 + 分段存储；位置按 R-03 分级授权。前端业务页面永远不调用此接口。
-      requestBody:
-        description: 轨迹点上报（时间戳 + 哈希存证）
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [orderId, lng, lat, at]
-              properties:
-                orderId:
-                  type: string
-                  description: 配送单号
-                lng:
-                  type: number
-                  format: double
-                lat:
-                  type: number
-                  format: double
-                at:
-                  type: string
-                  format: date-time
-                  description: 定位时间戳
-      responses:
-        '200':
-          description: 受理成功（存证写入，只增不改）
-          content:
-            application/json:
-              schema:
-                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+    - 位置/轨迹手机 GPS 前端直连（不做北斗硬件对接，同 F-02）——骑手端上线后位置心跳由骑手端
+      POST /delivery/rider/location 上报（前端可调接口），轨迹存证写入由 DELIVERY 服务端完成，
+      不再保留服务端间轨迹上报端点。
+  endpoints: []

@@ -10,7 +10,7 @@ info:
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
     - 边界：G-01 热线诉求工单、G-03 部门限时办结归属 TICKET 工单服务，不在本服务。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
-    - 红线：R-13 小店榜非竞价、不收费；R-03 匿名建议脱敏、公示数据脱敏；内容治理敏感词 + 人工复核；
+    - 红线：小店榜非竞价、不收费（E-02 已确认口径）；R-03 匿名建议脱敏、公示数据脱敏；内容治理敏感词 + 人工复核；
       与画像边界——不收集无关信息、不用于画像训练。
 servers:
   - url: https://api.example.com/api/v1
@@ -196,7 +196,90 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+  /civic/suggestions/{suggestionId}/dispatch:
+    post:
+      tags: [suggestion]
+      summary: 平台审核通过后分派部门【M2 · G-02】
+      description: |
+        平台对审核通过的建议分派责任部门（G-02 流程：提交 → 平台审核 → 分派部门 → 限时答复 → 采纳公示；
+        2026-09-11 补齐端点）。需平台运营/监管角色（2002）；非 PENDING_REVIEW 状态 → 3007；分派留痕可审计。
+      parameters:
+        - name: suggestionId
+          in: path
+          required: true
+          description: 建议号
+          schema:
+            type: string
+            example: sug_8f7e6d5c4b3a
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuggestionDispatchRequest'
+      responses:
+        '200':
+          description: 成功，返回分派结果（进入 ASSIGNED 待答复）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SuggestionDispatchResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非 PENDING_REVIEW）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
   /civic/projects:
+    post:
+      tags: [project]
+      summary: 民生项目发布【M3 · H-01 占位】
+      description: |
+        政府/监管部门发布民生项目（H-01：计划/资金/工期/责任部门）并公开；项目进度经
+        PUT /civic/projects/{projectId}/progress 实时同步；需监管/运营角色（2002）。M3 占位（2026-09-11 补）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectPublishRequest'
+      responses:
+        '200':
+          description: 成功，项目发布进入公开列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProjectSubmitResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
     get:
       tags: [project]
       summary: 民生项目列表【M3 · H-01 占位】
@@ -261,6 +344,46 @@ paths:
                         $ref: '#/components/schemas/ProjectDetail'
         '401':
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+  /civic/projects/{projectId}/progress:
+    put:
+      tags: [project]
+      summary: 民生项目进度同步【M3 · H-01 占位】
+      description: |
+        责任部门同步项目进度（H-01：图文/视频/数据），群众实时查看；需责任部门/监管角色（2002）。M3 占位（2026-09-11 补）。
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          description: 项目编号
+          schema:
+            type: string
+            example: prj_20260115001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectProgressRequest'
+      responses:
+        '200':
+          description: 成功，进度节点已同步
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProjectProgressResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
   /civic/projects/{projectId}/comment:
@@ -398,7 +521,7 @@ paths:
       summary: 行业圈层论坛发帖【M3 · E-01 占位】
       description: |
         按行业/地域分层论坛发帖（E-01）：内容治理敏感词 + 人工复核，防谣言；
-        违规内容（含未成年人不当内容）拦截 → 3010；发帖内容不用于画像训练。M3 占位。
+        违规内容（敏感词）拦截 → 3011；未成年人不当内容 → 3010；发帖内容不用于画像训练。M3 占位。
       requestBody:
         required: true
         content:
@@ -422,13 +545,13 @@ paths:
         '401':
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '422':
-          description: 内容违规/未成年人内容限制（code=3010，敏感词 + 人工复核拦截）
+          description: 内容违规/未成年人内容限制（code=3011 敏感词 + 人工复核拦截 / code=3010 未成年人不当内容）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
               example:
-                code: 3010
+                code: 3011
                 message: 内容违规，已拦截
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
@@ -506,7 +629,7 @@ paths:
       tags: [forum]
       summary: 回帖【M3 · E-01 占位】
       description: |
-        回复帖子（E-01）：内容治理敏感词 + 人工复核；违规拦截 → 3010。M3 占位。
+        回复帖子（E-01）：内容治理敏感词 + 人工复核；违规拦截 → 3011（未成年人不当内容 3010）。M3 占位。
       parameters:
         - name: postId
           in: path
@@ -540,13 +663,13 @@ paths:
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
         '422':
-          description: 内容违规/未成年人内容限制（code=3010）
+          description: 内容违规/未成年人内容限制（code=3011 / code=3010）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
               example:
-                code: 3010
+                code: 3011
                 message: 内容违规，已拦截
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
@@ -556,7 +679,7 @@ paths:
       tags: [shop]
       summary: 优质小店免费推广榜（信用加权，非竞价）【M3 · E-02 占位】
       description: |
-        优质小店免费上榜（E-02）：群众点评 + 信用加权推荐，**非竞价、不收费**（R-13）；
+        优质小店免费上榜（E-02）：群众点评 + 信用加权推荐，**非竞价、不收费**（E-02 已确认口径）；
         防刷拦截（R-15）；上榜 = 信用换流量，形成「信用 → 流量 → 守法」正循环。M3 占位。
       parameters:
         - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
@@ -634,7 +757,7 @@ paths:
       description: |
         商户发布图文/短视频动态（E-04：上新/优惠/营业状态/实拍）。流程：编辑动态 → 内容审核
         （敏感词 + 人工复核）→ 审核通过展示在店铺主页/首页动态流。
-        merchantId 必须为本人商户（水平越权校验，2002）；违规内容拦截 → 3010；
+        merchantId 必须为本人商户（水平越权校验，2002）；违规内容拦截 → 3011；
         非竞价排序（时间/信用），不做付费置顶；恶意刷动态 → 防刷拦截（429）。
       requestBody:
         required: true
@@ -661,13 +784,13 @@ paths:
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '422':
-          description: 内容违规/未成年人内容限制（code=3010，敏感词 + 人工复核拦截）
+          description: 内容违规/未成年人内容限制（code=3011 敏感词 + 人工复核拦截 / code=3010 未成年人不当内容）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
               example:
-                code: 3010
+                code: 3011
                 message: 内容违规，已拦截
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
@@ -857,6 +980,35 @@ components:
           type: string
           format: date-time
           example: '2026-01-22T09:00:00Z'
+    SuggestionDispatchRequest:
+      type: object
+      required: [department]
+      properties:
+        department:
+          type: string
+          description: 分派责任部门（答复部门）
+          maxLength: 50
+          example: 市场监管局
+        note:
+          type: string
+          description: 分派备注（可选，留痕）
+          maxLength: 500
+          example: 涉及集贸市场公平秤，转市监局办理
+    SuggestionDispatchResult:
+      type: object
+      required: [suggestionId, status, department]
+      properties:
+        suggestionId:
+          type: string
+          example: sug_8f7e6d5c4b3a
+        status:
+          type: string
+          description: 分派后状态（ASSIGNED 待部门答复）
+          enum: [ASSIGNED]
+          example: ASSIGNED
+        department:
+          type: string
+          example: 市场监管局
     ProjectStatus:
       type: string
       description: 民生项目状态
@@ -944,6 +1096,74 @@ components:
               description: 进度同步记录（图文/视频/数据）
               items:
                 $ref: '#/components/schemas/ProgressNote'
+    ProjectPublishRequest:
+      type: object
+      required: [name, dept, budget]
+      properties:
+        name:
+          type: string
+          description: 项目名称
+          maxLength: 100
+          example: 裕华区口袋公园二期
+        dept:
+          type: string
+          description: 责任部门
+          maxLength: 50
+          example: 区住建局
+        budget:
+          type: string
+          description: 预算（万元，字符串小数）
+          example: '1200.00'
+        periodFrom:
+          type: string
+          format: date
+          description: 工期起
+          example: '2026-04-01'
+        periodTo:
+          type: string
+          format: date
+          description: 工期止
+          example: '2026-12-31'
+        plan:
+          type: string
+          description: 建设计划说明
+          maxLength: 2000
+          example: 分三期建设：场地平整 → 绿化景观 → 设施安装
+    ProjectSubmitResult:
+      type: object
+      required: [projectId, status]
+      properties:
+        projectId:
+          type: string
+          description: 项目编号
+          example: prj_20260115001
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+    ProjectProgressRequest:
+      type: object
+      required: [progress]
+      properties:
+        progress:
+          type: string
+          description: 进度说明（图文/视频/数据，敏感词 + 人工复核）
+          maxLength: 2000
+          example: 一期场地平整已完成 80%，预计下月进入绿化阶段
+        mediaKeys:
+          type: array
+          description: 图文/视频附件（OSS 对象键）
+          items:
+            type: string
+    ProjectProgressResult:
+      type: object
+      required: [projectId, updatedAt]
+      properties:
+        projectId:
+          type: string
+          example: prj_20260115001
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-05-15T10:00:00Z'
     ProjectCommentRequest:
       type: object
       required: [content]

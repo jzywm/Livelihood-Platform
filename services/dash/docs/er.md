@@ -1,8 +1,8 @@
 # 监管看板服务（DASH）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.10 / §6.4.9 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.10 / §3 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/dash/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.10 / §6.4.9 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.10 / §3 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/dash/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：⑦ 预警/看板域（`alert`，边界基准 §4.5）；另含费率公示（P-01/F-05）、分级监管（A-08 完整版）、民生消费券（P-07）——§4.5 未单列，随本文档落位。
 > 存储形态：共享主库 + `dash_` schema 前缀隔离（Java 域既有路线）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
@@ -38,7 +38,7 @@ erDiagram
     FEE_PUBLISH {
         int version PK "费率公示快照版本,单调递增"
         json items "分品类费率条目FeeItem[]:{category,rateMin,rateMax,description}"
-        varchar rules "调整规则,调整前提前告知R-13"
+        varchar rules "调整规则,调整前提前告知(P-01)"
         datetime published_at "公示时间"
         datetime updated_at "最近更新时间"
         varchar updated_by "调整操作人,脱敏"
@@ -117,7 +117,7 @@ erDiagram
 ## 3. 关键设计约定
 
 - **C8 预警只推送线索、不自动执法**：`alert` 为线索记录，处置必须监管人员人工复核（`conclusion` 留痕）；AICORE 风险预测/视觉审核结论仅作预警输入，不自动定责、不自动处罚；商户更新资质等事件自动销警（系统动作，`disposed_by` 记 SYSTEM）。
-- **R-13 费率口径透明**：`fee_publish` 是「平台费率/抽成公开承诺」唯一对外承载（P-01，AC-M1.10），货运抽成 F-05 同口径；不做竞价广告、不隐性扣费；**调整前提前告知商户**（调整走新版本快照，历史版本留痕可回溯）。
+- **费率口径透明（P-01）**：`fee_publish` 是「平台费率/抽成公开承诺」唯一对外承载（P-01，AC-M1.10），货运抽成 F-05 同口径；不做竞价广告、不隐性扣费；**调整前提前告知商户**（调整走新版本快照，历史版本留痕可回溯）。
 - **R-03 公示数据脱敏**：`merchant_name`（如 张\*饭馆）、`disposed_by`（如 王\*员）、`updated_by` 一律脱敏展示；预警详情不含 L1/L2 明文。
 - **R-01 消费券不沉淀资金**：消费券为优惠凭证、结算抵扣（`amount` 为面额，非资金）；核销抵扣异常 → 与 SETTLE 对账补差；`coupon_redeem` 只增不改留痕。
 - **边界基准 §3 定稿**：监管预警 DASH 只聚合推送、**不产生业务数据**——信用分唯一权威在 CRED、画像风险特征在 PROFILE（商铺画像 = 特征集合，不另立第二套评分）、证照有效期在 CRED，均只读引用 + 事件上报，不直写他域表。
@@ -146,7 +146,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节做「平台策略 → DASH 预警/看板域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节做「平台策略 → DASH 预警/看板域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -204,6 +204,7 @@ erDiagram
 > 表结构/分表规则变更按「扩展 → 迁移 → 收缩」执行，禁止破坏性 DDL 直上生产（对齐高并发 §2.6）：① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。`coupon` 达阈值再分时同样走该路径（含券码全局唯一索引的迁移方案，见 §5.7）。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
@@ -218,14 +219,14 @@ erDiagram
 
 ## 6. 数据字典
 
-> 通用约定：MySQL 8.0，引擎 InnoDB，字符集 utf8mb4；时间 `datetime(3)` 毫秒精度、UTC 存储、输出 Asia/Shanghai；金额 `decimal(18,2)` 存储（券面额/抵扣金额，openapi 为 number，与通用「字符串小数」约定差异见 §5.7 评审）；费率/评分用 decimal（rate 比例 0~1、credit_score 0~100）；数组/内嵌对象用 JSON 列；**枚举值与 openapi.yaml `components.schemas` 一一对应**；带 ★ 的值为建议初值、待标定（§5.7）。
+> 通用约定：MySQL 8.0，引擎 InnoDB，字符集 utf8mb4；时间 `datetime(3)` 毫秒精度、UTC 存储、输出 Asia/Shanghai；金额 `decimal(18,2)` 存储（券面额/抵扣金额），**API 输出字符串小数（openapi 已同步为 string，2026-09-11 终审回改）**；费率/评分用 decimal（rate 比例 0~1、credit_score 0~100）；数组/内嵌对象用 JSON 列；**枚举值与 openapi.yaml `components.schemas` 一一对应**；带 ★ 的值为建议初值、待标定（§5.7）。
 
 ### 6.1 alert（监管预警，按月分表 alert_YYYYMM）
 
 | 字段 | 类型 | 空 | 键 | 默认 | 说明 |
 |---|---|---|---|---|---|
 | alert_id | bigint UNSIGNED | NO | PK | — | 预警编号，雪花 ID；API 输出 `al_` 前缀字符串 |
-| type | enum('CERT_EXPIRING','CERT_EXPIRED','MINOR_ENTRY','HIGH_COMPLAINT','ARREARS','TRACE_BROKEN','ABNORMAL_OPERATION') | NO | — | — | 预警类型（PDD §5.10.2） |
+| type | enum('CERT_EXPIRING','CERT_EXPIRED','MINOR_ENTRY','HIGH_COMPLAINT','ARREARS','TRACE_BROKEN','ABNORMAL_OPERATION','KITCHEN_WASTE') | NO | — | — | 预警类型（PDD §5.10.2；KITCHEN_WASTE 餐厨去向不明，T-17 联动） |
 | level | enum('WARNING','CRITICAL') | NO | — | WARNING | 预警等级（升级预警为 CRITICAL） |
 | subject_type | varchar(32) | NO | — | — | 关联对象类型★（MERCHANT/SUPPLIER/BATCH/VENUE，设计引入） |
 | subject_id | varchar(64) | NO | — | — | 关联对象 ID（只读引用、非外键），**分表键**（与 created_at 组合） |
@@ -246,7 +247,7 @@ erDiagram
 |---|---|---|---|---|---|
 | version | int UNSIGNED | NO | PK | — | 公示快照版本（应用层 max+1，历史版本留痕可回溯） |
 | items | JSON | NO | — | — | 分品类费率条目数组；元素 FeeItem = {category, rateMin(0.005~0.01), rateMax, description} |
-| rules | varchar(500) | NO | — | — | 调整规则（调整前提前告知商户，R-13） |
+| rules | varchar(500) | NO | — | — | 调整规则（调整前提前告知商户，P-01） |
 | published_at | datetime(3) | YES | — | NULL | 公示时间 |
 | updated_at | datetime(3) | NO | — | CURRENT_TIMESTAMP(3) | 最近更新时间（openapi updatedAt） |
 | updated_by | varchar(64) | YES | — | NULL | 调整操作人（脱敏展示） |
@@ -334,7 +335,7 @@ erDiagram
 - **用途**：平台费率/抽成公开公示（P-01，AC-M1.10；F-05 货运同口径）——分品类费率（0.5%~1%）+ 调整规则，是「费率公开承诺」唯一对外承载；读多写少，版本化快照 + 定时刷新。
 - **主键（策略）**：`version` int 业务版本号（应用层 max+1），历史版本留痕可回溯；不参与雪花域。
 - **索引**：PRIMARY KEY(`version`)；无需附加索引（仅按版本取最新）。
-- **约束**：调整前提前告知商户（R-13，新版本发布前公示）；不做竞价广告/隐性扣费；历史版本不物理删除（留痕）。
+- **约束**：调整前提前告知商户（P-01，新版本发布前公示）；不做竞价广告/隐性扣费；历史版本不物理删除（留痕）。
 - **安全**：`updated_by` 脱敏；公示数据脱敏（R-03）。
 - **生命周期**：版本留痕不归档（公示可回溯）；快照缓存 Redis + 定时刷新（§5.5）。
 - **接口映射**：GET /dash/fees（公开接口，免登录，security 覆写，返回 FeeQueryResult）。
@@ -389,4 +390,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/dash/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.10/§6.4.9、《微服务边界与职责基准》v1.2 §2.10/§3 同步维护。*
+*文档结束 · 与 `services/dash/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.10/§6.4.9、《微服务边界与职责基准》v1.6 §2.10/§3 同步维护。*

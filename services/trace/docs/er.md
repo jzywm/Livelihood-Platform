@@ -1,11 +1,11 @@
 # 溯源服务（TRACE）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.6 / §5.14.3 / §6.4.6 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.6 / §3 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/trace/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.6 / §5.14.3 / §6.4.6 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.6 / §3 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/trace/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：⑤ 溯源域（`supplier`、`batch`、`trace_event`、`inspection`）；另含本服务扩展实体 `supplier_credit`（信用分计算快照）、`anomaly`（溯源异常预警）、`live_room` / `live_anomaly`（店铺直播 B-04）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
-> 版本：v1.0 · 2026-09-10（首版：七章齐全；共享主库 + `trace_` schema 前缀隔离；`trace_event` 按月分表 `batch_id + created_at`、只增不改长期冷备；供应商信用分 TRACE 计算、CRED 权威存储，经接口回写）。
+> 版本：v1.1 · 2026-09-11（v1.0 首版 2026-09-10：七章齐全；**终审回改**——供应商黑榜阈值统一 ≤40、SCAN_COUNTER 取消 expire_at（TTL 不设）、T-17/T-18 M3 预留口径入 README；共享主库 + `trace_` schema 前缀隔离；`trace_event` 按月分表 `batch_id + created_at`、只增不改长期冷备；供应商信用分 TRACE 计算、CRED 权威存储，经接口回写）。
 
 ## 1. ER 图（Mermaid）
 
@@ -113,8 +113,7 @@ erDiagram
 
     SCAN_COUNTER {
         varchar key "trace:scan:{code},Redis INCR"
-        int count "扫码次数,留痕/防伪旁证"
-        datetime expire_at "异步回写batch.scan_count后仍可续计"
+        int count "扫码次数,留痕/防伪旁证,TTL不设(长期累计)"
     }
 
     SUPPLIER ||--|| SUPPLIER_CREDIT : "信用分计算快照,1:1"
@@ -155,7 +154,7 @@ erDiagram
 - **信用分权威单一来源（§4-C02 已决策）**：TRACE = 公式计算方 + 数据源，`supplier_credit` 仅存**计算快照**；信用分与红黑榜**权威存储与公示在 CRED**（`credit_score`/`redblack`），经接口回写（`POST /cred/score/supplier`）；放心供应商标识（≥85 且无质量投诉）由 TRACE 动态授予/撤销、CRED 存储公示。TRACE **不直接写** CRED 表（只上报评分事件）。
 - **加密与脱敏**：`license_no`（统一社会信用代码）等 L1 高敏感字段 AES-256-GCM 加密存储；`name`/`merchant_name`/`supplier_name`/`operator` 脱敏展示（如 张\*饭馆、王\*员）；证照/图片/画面帧仅存 OSS 对象键，不落媒体原文。
 - **幂等**：环节上报按 `uk_batch_type(batch_id, event_type)` 幂等去重（重复上报返回原 `eventId`）；直播开播走 `Idempotency-Key`；服务端间 `/trace/live/callback`（AICORE → TRACE）内部 Token + 幂等 + 限流。
-- **状态机**：入驻核验 `PENDING → APPROVED / REJECTED`（REJECTED 可补传重审）；溯源链路 ①批号→②检测→③温控→④终端，任一环节缺失 = 断链显式标注（`REGISTERED`/`MISSING` 为响应派生枚举，非存储列）；直播 `LIVE → ENDED`；`live_anomaly` 复核流 `PENDING → CONFIRMED / REJECTED`（C8 人工确认、不自动处罚，内部状态非 openapi 枚举）；供应商榜单（正常 ⇄ 警告 60~40 ⇄ 黑榜 <40）由信用分派生、权威在 CRED `redblack`，非本服务表列。
+- **状态机**：入驻核验 `PENDING → APPROVED / REJECTED`（REJECTED 可补传重审）；溯源链路 ①批号→②检测→③温控→④终端，任一环节缺失 = 断链显式标注（`REGISTERED`/`MISSING` 为响应派生枚举，非存储列）；直播 `LIVE → ENDED`；`live_anomaly` 复核流 `PENDING → CONFIRMED / REJECTED`（C8 人工确认、不自动处罚，内部状态非 openapi 枚举）；供应商榜单（≥85 放心供应商 ⇄ 警告 ≤85 ⇄ 黑榜 ≤40，2026-09-11 定档阈值）由信用分派生、权威在 CRED `redblack`，非本服务表列。
 - **越权（IDOR）**：供应商列表/批次列表/环节上报仅本人供应商可见（水平越权 2002 拦截）；异常预警列表需监管角色（2002 拦截）；扫码验真无需登录（`security: []` 覆写，公开读）。
 - **分表**：`trace_event` 按月分表，分片键 `batch_id + created_at`；只增不改、长期冷备；主数据（supplier/batch 等）不分片（详见 §5）。
 - **分库定位**：P1 模块化单体期全平台共享主库 + `trace_` schema 前缀隔离；P2 交易/结算独立库后 TRACE 仍留共享主库（详见 §5.1）。
@@ -179,7 +178,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节只做「平台策略 → TRACE 溯源域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节只做「平台策略 → TRACE 溯源域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -203,7 +202,7 @@ erDiagram
 | `live_anomaly` | 不分片 | — | `live_anomaly` | 复核留痕 ≥6 个月 | M2 |
 
 > **分片阈值**（平台级建议初值，压测/数据增长标定）：单表 >2000 万行 或 >20GB 触发再分；`trace_event` 按月分表天然可控，存证数据到点即冷备，避免单表膨胀到亿级。
-> **口径说明**：`trace_event` 的归档策略按《高并发架构演进设计》v0.3 §2.2 原样采用——**「溯源存证只增不改，长期冷备」**（区别于钱包流水的「>12 月热转冷 OSS」，溯源存证为可出证证据链，长期保留）。
+> **口径说明**：`trace_event` 的归档策略按《高并发架构演进设计》v1.0 §2.2 原样采用——**「溯源存证只增不改，长期冷备」**（区别于钱包流水的「>12 月热转冷 OSS」，溯源存证为可出证证据链，长期保留）。
 
 ### 5.3 分表路由规则（trace_event）
 
@@ -244,6 +243,7 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
@@ -402,7 +402,7 @@ erDiagram
 - **用途**：供应商信用分 T-05 公式（资质 30% + 履约 30% + 口碑 30% + 贡献 10%）**计算方自有数据**——四维构成 + 扣分明细快照；权威存储与公示回写 CRED（§4-C02）。
 - **主键（策略）**：`supplier_id`（1:1 物理外键 → supplier.supplier_id）。
 - **索引**：PRIMARY KEY(`supplier_id`)；KEY `idx_updated_at`(`updated_at`)——信用分刷新/放心标识授予扫描。
-- **约束**：放心供应商标识（≥85 且无质量投诉）TRACE 动态授予/撤销 → CRED 存储公示；信用分 ≤40 黑榜降权/禁新单（权威在 CRED `redblack`）；防刷拦截（R-15）；扣分申诉复用 TICKET D-03（本服务不建第二套申诉）。
+- **约束**：放心供应商标识（≥85 且无质量投诉）TRACE 动态授予/撤销 → CRED 存储公示；信用分 ≤40 黑榜降权/禁新单、**存量订单须预付全款担保（T-06，2026-09-11 定档阈值）**（权威在 CRED `redblack`）；防刷拦截（R-15）；扣分申诉复用 TICKET D-03（本服务不建第二套申诉）。
 - **安全**：`dims_json`/`deductions_json` 不含 L1 明文（脱敏/聚合值）；TRACE 不直接写 CRED 表（只上报评分事件）。
 - **生命周期**：快照覆盖 + 审计留痕；评分事件与 CRED 每日对账兜底。
 - **接口映射**：GET /trace/suppliers/{supplierId}（四维构成 + 扣分明细）、GET /trace/suppliers（信用分/放心筛选）；出方向 POST /cred/score/supplier（回写 CRED）。
@@ -469,4 +469,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/trace/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.6/§5.14.3/§6.4.6、《微服务边界与职责基准》v1.2 §2.6 同步维护。*
+*文档结束 · 与 `services/trace/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.6/§5.14.3/§6.4.6、《微服务边界与职责基准》v1.6 §2.6 同步维护。*

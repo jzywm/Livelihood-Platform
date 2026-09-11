@@ -1,26 +1,31 @@
 # 配送服务（DELIVERY）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.15 / §8.3.1；§6.4 无 DELIVERY 接口草案，见《微服务边界与职责基准》§4-C01/SSOT C-01，接口以 openapi.yaml 为准）、
-> `docs/design/微服务边界与职责基准.md` v1.2（§2.14 / §3 / §4.5）、`docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/delivery/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.15 / §8.3.1；§6.4 无 DELIVERY 接口草案，见《微服务边界与职责基准》§4-C01/SSOT C-01，接口以 openapi.yaml 为准）、
+> `docs/design/微服务边界与职责基准.md` v1.6（§2.14 / §3 / §4.5）、`docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/delivery/docs/openapi.yaml` v1.1.0（**唯一可手改源**）。
 > 数据域归属：**配送域**（§4.5 未单列，本文档随 M2 补充定义）——5 张表落共享主库 + `delivery_` schema 前缀隔离（Java 域既有路线），另 1 个 Redis 结构（骑手实时位置，不入库）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
-> 版本：v1.0 · 2026-09-10（首版：七章齐全；M2 设计先行——配送域 5 表，轨迹/订单/事件流水类按月分表，主数据不分片）。
+> 版本：v1.1 · 2026-09-11（骑手端设计落地 + 车型/大件兼容 L-07 + 实时位置共享 L-08——delivery_order 增商铺取货点/货件规格/车型要求，rider_profile 增车辆类型/车牌/载重容积，rider_location 增车型；接口映射对齐 openapi v1.1.0）。
 
 ## 1. ER 图（Mermaid）
 
 ```mermaid
 erDiagram
-    %% DELIVERY 配送域 ER 图 · 本地配送 L-01~L-06（下单定位/状态机跟踪/商家接单备货/运营调度/运力管理/轨迹存证）
+    %% DELIVERY 配送域 ER 图 · 本地配送 L-01~L-08（下单定位/状态机跟踪/商家接单备货/运营调度/运力管理/轨迹存证/车型大件兼容/骑手端与实时位置共享）
     %% 存储：共享主库 + delivery_ schema 前缀隔离；只增流水类按月分表(delivery_order/delivery_order_event/delivery_track_YYYYMM)
     %% 位置/轨迹按 R-03 分级授权(本人可见→授权可见→脱敏公示)、敏感字段密文(R-07)；轨迹只增不改+哈希存证(复用P-02)
     %% 结算复用 SETTLE、骑手信用复用 CRED、预警上报 DASH、出证复用 TICKET、账号/商品只读引用——逻辑关联、非外键
+    %% L-07 车型与大件兼容：车辆类型 E_BIKE(电动车)/CAR(汽车)、货件规格(常规/大件)、派单按车型匹配
+    %% L-08 骑手端与实时位置共享：骑手端位置心跳(POST /delivery/rider/location)写 Redis + 轨迹异步入存证链；配送中买家可见、送达即切断(R-03 授权可见级)
 
     DELIVERY_ORDER {
         varchar order_id PK "配送单号D-前缀,号段连续可读如D-2026090801"
         bigint consumer_id "下单消费者acc_前缀,只读引用,本人可见越权2002"
         varchar merchant_id "商户编号m_前缀,只读引用,本商户可见越权2002"
         varchar merchant_name "商家名称快照,脱敏展示"
+        decimal merchant_pickup_lng "商铺取货点经度,L-08导航到商铺"
+        decimal merchant_pickup_lat "商铺取货点纬度"
+        varchar merchant_pickup_detail "商铺取货地址详情,脱敏存储"
         decimal address_lng "收货经度,R-03位置最小化/分级授权"
         decimal address_lat "收货纬度"
         varchar address_detail "收货地址详情,脱敏存储R-07"
@@ -29,6 +34,10 @@ erDiagram
         json items "商品清单[{itemId,qty}]"
         decimal total_amount "订单总额(含配送费),字符串小数防浮点"
         decimal delivery_fee "配送费,字符串小数"
+        enum cargo_type "货件类型:NORMAL常规/OVERSIZED大件(L-07)"
+        decimal cargo_weight_kg "货件重量kg,大件必填"
+        decimal cargo_volume_m3 "货件体积m3,大件必填"
+        enum vehicle_required "车型要求:E_BIKE/CAR,大件= CAR(L-07派单匹配)"
         varchar remark "消费者备注"
         enum status "状态机:PENDING_PAYMENT/PENDING_ACCEPT/PREPARING/READY/DELIVERING/DELIVERED/COMPLETED/CANCELLED/ABNORMAL"
         varchar rider_id "骑手编号r_前缀,派单后回填"
@@ -39,10 +48,10 @@ erDiagram
     DELIVERY_ORDER_EVENT {
         bigint event_id PK "雪花ID,infra-idgen"
         varchar order_id "所属配送单,随单同月分表"
-        enum action "处置动作:STATUS_CHANGE/ACCEPT/REJECT/PROGRESS/TRANSFER/ASSIGN/REASSIGN/CANCEL/URGE/CONFIRM"
+        enum action "处置动作:STATUS_CHANGE/ACCEPT/REJECT/PROGRESS/TRANSFER/ASSIGN/REASSIGN/CANCEL/URGE/CONFIRM/RIDER_ACCEPT/RIDER_PICKUP/RIDER_DELIVER"
         enum from_status "变更前状态,初始/催单为空"
         enum to_status "变更后状态,时间轴status"
-        enum operator_type "操作方:CONSUMER/MERCHANT/OPS/SYSTEM"
+        enum operator_type "操作方:CONSUMER/MERCHANT/RIDER/OPS/SYSTEM"
         varchar operator_id "操作人编号,审计留痕"
         varchar reason "原因留痕:拒单/取消/改派(计信用A-07)"
         datetime occurred_at "事件发生时间,时间轴at"
@@ -65,6 +74,10 @@ erDiagram
         varchar id_no "证件号,密文AES-256-GCM"
         varchar mobile "手机号,密文,输出脱敏"
         boolean realname_status "实名核验状态"
+        enum vehicle_type "车辆类型:E_BIKE电动车/CAR汽车(L-07)"
+        varchar vehicle_no "车牌号,密文,输出脱敏冀A·***88(CAR必填)"
+        decimal max_load_kg "最大载重kg(CAR大件能力)"
+        decimal max_volume_m3 "最大容积m3"
         enum health_cert_status "健康证:VALID/EXPIRING/INVALID"
         date health_cert_valid_to "健康证有效期至"
         enum background_check "背景核验:PASSED/PENDING/REJECTED,复用A-06/F-03思路"
@@ -93,48 +106,52 @@ erDiagram
         decimal lng "实时经度"
         decimal lat "实时纬度"
         enum online_status "在线状态:ONLINE/DELIVERING/OFFLINE"
+        enum vehicle_type "车辆类型:E_BIKE/CAR(调度看板车型筛选)"
         varchar current_order_id "当前配送单,配送中时有值"
     }
 
     DELIVERY_ORDER ||--o{ DELIVERY_ORDER_EVENT : "状态流转/处置留痕,只增不改"
     DELIVERY_ORDER ||--o{ DELIVERY_TRACK : "轨迹存证,只增不改"
-    RIDER_PROFILE ||--o{ DELIVERY_ORDER : "派单承接,骑手档案"
+    RIDER_PROFILE ||--o{ DELIVERY_ORDER : "派单承接/骑手接单,车型匹配(L-07)"
     DELIVERY_ORDER ||--o{ DELIVERY_ALERT : "异常预警,逻辑关联"
 
-    %% RIDER_LOCATION 存 Redis(在线状态/实时位置,心跳刷新),不入 MySQL;经 rider_id 与 rider_profile 逻辑关联
+    %% RIDER_LOCATION 存 Redis(在线状态/实时位置/车型,骑手端心跳刷新),不入 MySQL;经 rider_id 与 rider_profile 逻辑关联
     %% 外部逻辑关联(经内部接口/事件,非外键):consumer_id→ACC(账号实名,只读引用);merchant_id→TRADE/CRED(只读引用);
     %% 骑手信用/拒单履约事件→CRED(A-06/F-03,上报评分);结算/退款→SETTLE(I-04分账反向,支付确认回调驱动状态机);
     %% 超时/偏航/异常停留预警→DASH(A-08聚合);轨迹出证/纠纷仲裁→TICKET(D-02/T-15,复用不建第二套);
-    %% 位置/轨迹数据源=手机GPS前端直连(F-02,不做北斗硬件对接);商品清单items→PROD只读取数
+    %% 位置/轨迹数据源=骑手端手机GPS心跳(POST /delivery/rider/location,前端直连,不做北斗硬件对接);商品清单items→PROD只读取数;
+    %% 导航经地图开放平台(高德)按车型唤起(E_BIKE=骑行/CAR=驾车),H5内嵌地图兜底——坐标由本服务提供、Key由前端环境变量管理
 ```
 
 ## 2. 实体清单
 
 | 实体（表名） | 存储介质 | 说明 |
 |---|---|---|
-| `delivery_order` | 共享主库（delivery_ schema），**按月分表** | 配送单主表：下单/地址/金额/商家/骑手 + 状态机当前态（L-01/L-02） |
-| `delivery_order_event` | 共享主库，**随单同月分表** | 订单状态流转 + 处置留痕（接单/拒单/备货/出餐/派单/改派/取消/催单/确认），承载状态时间轴 + L-04 治理审计 |
-| `delivery_track` | 共享主库，**按月分表** | 配送全程位置轨迹存证：只增不改 + SHA-256 哈希链（L-06，复用 P-02） |
-| `rider_profile` | 共享主库 | 骑手/配送员档案：实名/健康证/背景核验/信用（履约率/超时率/投诉）/启用状态（L-05） |
+| `delivery_order` | 共享主库（delivery_ schema），**按月分表** | 配送单主表：下单/地址/金额/商家/骑手 + 状态机当前态（L-01/L-02）；**商铺取货点坐标 + 货件规格 + 车型要求**（L-07/L-08 导航与派单匹配） |
+| `delivery_order_event` | 共享主库，**随单同月分表** | 订单状态流转 + 处置留痕（接单/拒单/备货/出餐/派单/改派/取消/催单/确认 + **骑手接单/取货/送达**），承载状态时间轴 + L-04 治理审计 |
+| `delivery_track` | 共享主库，**按月分表** | 配送全程位置轨迹存证：只增不改 + SHA-256 哈希链（L-06，复用 P-02；数据源 = 骑手端位置心跳，服务端异步入链） |
+| `rider_profile` | 共享主库 | 骑手/配送员档案：实名/健康证/背景核验/信用（履约率/超时率/投诉）/启用状态（L-05）+ **车辆类型/车牌/载重容积（L-07 车型兼容）** |
 | `delivery_alert` | 共享主库 | 配送异常预警（超时/偏航/异常停留），推送线索人工处置（L-06 → A-08） |
-| `rider_location` | Redis（内存态，不入库） | 在线骑手实时位置 + 在线状态（调度看板地图 O-03，心跳刷新） |
+| `rider_location` | Redis（内存态，不入库） | 在线骑手实时位置 + 在线状态 + **车型**（买家实时位置 S-31 与调度看板地图 O-03，骑手端心跳刷新） |
 
 > 结算/退款复用 SETTLE、骑手信用复用 CRED、预警聚合上报 DASH、轨迹出证复用 TICKET、账号/商品只读引用 ACC/TRADE/PROD——本服务不重复建结算/存证体系。
 
 ## 3. 关键设计约定
 
-- **R-03 位置/轨迹分级授权**：位置/轨迹按「本人可见 → 授权可见 → 脱敏公示」三级——消费者本人可见全程轨迹（`GET /delivery/orders/{orderId}/track`）；仲裁/监管经授权可见；调度看板地图热力仅脱敏聚合、最小化展示（`GET /delivery/ops/riders/locations`）。
-- **R-07 敏感个人信息加密存储**：收货人电话、骑手证件号/手机号等 L1 敏感字段 AES-256-GCM 加密存储、脱敏输出（如 138\*\*\*\*5678、王\*傅、李\*）；收货地址详情脱敏存储。
-- **P-02 存证只增不改（复用不重建）**：`delivery_track` 时间戳 + SHA-256 哈希链（前链 hash + 行数据 + 时间戳），只增不改（应用层禁 UPDATE/DELETE，库层回收写权限）；轨迹出证复用 TICKET（D-02/T-15），**不建第二套存证/出证体系**。
+- **R-03 位置/轨迹分级授权**：位置/轨迹按「本人可见 → 授权可见 → 脱敏公示」三级——消费者本人可见全程轨迹（`GET /delivery/orders/{orderId}/track`）；**骑手实时位置仅「配送中」对下单买家授权可见（`GET /delivery/orders/{orderId}/rider-location`，SSE + 5s 短轮询兜底★，送达即切断）**；仲裁/监管经授权可见；调度看板地图热力仅脱敏聚合、最小化展示（`GET /delivery/ops/riders/locations`）。
+- **R-07 敏感个人信息加密存储**：收货人电话、骑手证件号/手机号/**车牌号**等 L1 敏感字段 AES-256-GCM 加密存储、脱敏输出（如 138\*\*\*\*5678、王\*傅、冀A·\*\*\*88）；收货地址/商铺取货地址详情脱敏存储。
+- **P-02 存证只增不改（复用不重建）**：`delivery_track` 时间戳 + SHA-256 哈希链（前链 hash + 行数据 + 时间戳），只增不改（应用层禁 UPDATE/DELETE，库层回收写权限）；**轨迹点由 DELIVERY 服务端在骑手端位置心跳（POST /delivery/rider/location）时异步写入存证链**（抽稀 Douglas-Peucker，10m / 每段 200 点★）；轨迹出证复用 TICKET（D-02/T-15），**不建第二套存证/出证体系**。
 - **复用 SETTLE 结算（不重复建）**：配送费/退款复用 SETTLE（I-04 分账反向）；订单状态机 `PENDING_PAYMENT → PENDING_ACCEPT` 由 SETTLE 支付确认回调驱动，本服务无金额沉淀/余额字段（配送费为快照字段，非账务）。
-- **R-05 AI 辅助只标记不决策**：智能派单建议（AI 辅助）仅建议、人工确认后执行；异常预警只推送线索、人工处置（C8），不自动定责。
-- **越权（IDOR）**：订单仅当事人可见——消费者本人（`consumer_id`）/本商户（`merchant_id`）/平台运营角色（`/ops`），越权报 2002；骑手档案仅运营角色可见（2002）。
-- **状态机**：配送订单 9 态（§5.15.5/PRD §6.10）`PENDING_PAYMENT → PENDING_ACCEPT → PREPARING → READY → DELIVERING → DELIVERED → COMPLETED`，分支 `CANCELLED`、`ABNORMAL`；非允许状态操作报 3007。
-- **幂等与并发**：下单/派单/改派走 `Idempotency-Key`；同一骑手并发派单幂等/乐观锁拦截（3007「已改派，请刷新」）；接单/拒单/备货/出餐二次确认。
-- **处置留痕审计**：接单/拒单/备货/出餐/派单/改派/取消/催单全部落 `delivery_order_event` 留痕可审计（L-04 治理口径）；拒单原因留痕计入信用（A-07，事件上报 CRED）；审计日志 ≥6 个月（WORM/哈希链）。
+- **派单方式（2026-09-11 定档）**：**人工派单**——配送多为非即时需求，**不引入派单算法**；运营端按车型/距离/负载简单筛选辅助人工选择（R-05 AI 只标记不决策原则保留于 AI 视觉/预警场景，不适用于派单）；异常预警只推送线索、人工处置（C8），不自动定责。
+- **L-07 车型与大件兼容（2026-09-11 新增）**：车辆类型 `E_BIKE`（电动车，常规小件）/`CAR`（汽车，可运大件）；运单携带货件规格（`cargo_type` NORMAL/OVERSIZED + 重量/体积）与 `vehicle_required` 车型要求（OVERSIZED 必为 CAR）；**派单/骑手接单按车型匹配**——骑手接单时校验 `vehicle_type`/`max_load_kg`/`max_volume_m3` 是否满足运单要求，不满足 → 3007「车型不匹配」；骑手可切换车型（`PUT /delivery/rider/profile`），更新后按新车型参与任务分发。
+- **L-08 导航与位置共享（2026-09-11 新增）**：运单快照商铺取货点（`merchant_pickup_*`）与配送点（`address_*`）坐标，骑手端按车型唤起地图开放平台导航（E_BIKE=骑行 / CAR=驾车，H5 内嵌地图兜底）；地图 Key 由前端环境变量管理、不经本服务落库；取货/送达上报做 **GPS 围栏校验**（骑手须位于取货/送达点附近），不满足 → 3007「请到达指定地点后再操作」。
+- **越权（IDOR）**：订单仅当事人可见——消费者本人（`consumer_id`）/本商户（`merchant_id`）/当事骑手（`rider_id`）/平台运营角色（`/ops`），越权报 2002；骑手档案本人可见完整、他人仅脱敏，运营角色可见（2002）。
+- **状态机**：配送订单 9 态（§5.15.5/PRD §6.10）`PENDING_PAYMENT → PENDING_ACCEPT → PREPARING → READY → DELIVERING → DELIVERED → COMPLETED`，分支 `CANCELLED`、`ABNORMAL`；骑手接单 `READY → DELIVERING`、取货/送达为 DELIVERING 内动作；非允许状态操作报 3007。
+- **幂等与并发**：下单/派单/改派/骑手接单走 `Idempotency-Key`；同一骑手并发接单/派单幂等/乐观锁拦截（3007「已改派，请刷新」）；接单/拒单/备货/出餐/取货/送达二次确认。
+- **处置留痕审计**：接单/拒单/备货/出餐/派单/改派/取消/催单/**骑手接单/取货/送达**全部落 `delivery_order_event` 留痕可审计（L-04 治理口径，operator_type 增 RIDER）；拒单原因留痕计入信用（A-07，事件上报 CRED）；审计日志 ≥6 个月（WORM/哈希链）。
 - **分布式 ID**：写库 Java 域雪花 ID（`infra-idgen`）+ 可读业务号（号段 `id_allocator`：`order_id` D- 前缀、`rider_id` r- 前缀）；workerId Redis INCR + 租约；**时钟回拨三档预案**（L1 ≤5s 退避 → L2 自动切号段兜底 → L3 拒绝发号，Prometheus 指标 + Alertmanager 分级告警，见高并发 §2.3.1~§2.3.4）适用。
 - **分表**：`delivery_order`/`delivery_order_event`/`delivery_track` 按月分表（§5.2）；`rider_profile` 主数据不分片；路由以业务字段 `created_at` 为准，不依赖 ID 内嵌时间戳。
-- **实时推送**：订单状态/位置实时推送走 SSE（短轮询兜底）；轨迹抽稀（Douglas-Peucker）+ 分段加载（README §4.2），降低带宽；骑手实时位置/在线状态走 Redis 心跳，不入 MySQL。
+- **实时推送**：订单状态/位置实时推送走 SSE（5s 短轮询兜底★）；轨迹抽稀（Douglas-Peucker，10m / 每段 200 点★）+ 分段加载（README §4.2），降低带宽；骑手实时位置/在线状态/车型走 Redis 心跳（TTL 30s~60s★），不入 MySQL。
 
 ## 4. 关系说明
 
@@ -142,7 +159,7 @@ erDiagram
 |---|---|---|
 | DELIVERY_ORDER — DELIVERY_ORDER_EVENT | 1 : N | 状态流转/处置留痕，只增不改（承载时间轴 + 治理审计） |
 | DELIVERY_ORDER — DELIVERY_TRACK | 1 : N | 轨迹存证，只增不改 + 哈希链（L-06） |
-| RIDER_PROFILE — DELIVERY_ORDER | 1 : N | 派单承接（骑手档案，骑手端后置由运营端人工调度） |
+| RIDER_PROFILE — DELIVERY_ORDER | 1 : N | 派单承接/骑手接单（车型匹配 L-07；骑手端 M2 交付、设计先行） |
 | DELIVERY_ORDER — DELIVERY_ALERT | 1 : N | 异常预警（逻辑关联，非外键） |
 | RIDER_LOCATION | 独立 | Redis 实体，经 `rider_id` 与 `rider_profile` 逻辑关联 |
 | → ACC / TRADE / CRED / SETTLE / DASH / TICKET / PROD / GPS | 逻辑关联 | 账号实名、商品/订单、骑手信用、结算退款、预警聚合、轨迹出证、商品清单、位置数据源（只读引用/事件上报，非外键） |
@@ -151,7 +168,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节做「平台策略 → DELIVERY 配送域」的落地映射。§2.2 分表方案表未单列 DELIVERY，本域按平台口径（只增流水类按月分表、主数据不分片）补充定义。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节做「平台策略 → DELIVERY 配送域」的落地映射。§2.2 分表方案表未单列 DELIVERY，本域按平台口径（只增流水类按月分表、主数据不分片）补充定义。
 
 ### 5.1 分库与隔离
 
@@ -210,17 +227,18 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
 | 分片阈值 | 单表 >2000 万行 / >20GB | 评审 + 数据增长标定 |
 | 回拨容忍窗口 W / 号段步长 | W=5s、step=1000 | 评审 + 压测标定（TBD-10） |
 | 热表保留月数 | 12 个月 | 评审 |
-| 配送范围/配送费规则（L-01 报价） | 配送半径/基础配送费/加价规则 | 评审（运营定价口径） |
-| 接单/备货超时 SLA（deadlineAt 倒计时） | 接单 X 分钟 / 备货 Y 分钟 | 评审 + 运行标定 |
-| 轨迹抽稀阈值（Douglas-Peucker）+ 分段加载大小 | 距离阈值 + 每段点数 | 评审 + 压测标定 |
+| 配送范围/配送费规则（L-01 报价） | ✅ 已定（2026-09-11）：3km 内 6 元起步 + 大件按重量/体积加价★；超范围 deliverable=false 显式提示 | 已定档，★压测/运营标定 |
+| 接单/备货超时 SLA（deadlineAt 倒计时） | ✅ 已定（2026-09-11）：接单 2min / 备货 15min 超时自动处理/预警 | 已定档，★运行标定 |
+| 轨迹抽稀阈值（Douglas-Peucker）+ 分段加载大小 | ✅ 已定（2026-09-11）：抽稀 10m / 每段 200 点 | 已定档，★压测标定 |
 | 骑手位置心跳频率（Redis TTL） | 30s~60s | 评审 + 压测标定 |
-| 智能派单算法权重（AI 辅助 R-05） | 距离/负载/履约率权重 | 评审（AICORE 协作） |
+| 派单辅助筛选规则（人工派单） | 按车型/距离/负载排序展示，人工选择（不引入算法） | ✅ 已定（2026-09-11） |
 | DELIVERY 独立成库触发阈值 | 订单流水单表逼近 2000 万行 | 数据增长标定 |
 
 ---
@@ -238,6 +256,9 @@ erDiagram
 | consumer_id | bigint UNSIGNED | NO | — | — | 下单消费者账号（ACC `acc_` 前缀，只读引用）；本人订单列表 + 越权 2002 校验 |
 | merchant_id | varchar(32) | NO | — | — | 商户编号（`m_` 前缀，TRADE/CRED 域，只读引用）；商户列表 + 越权 2002 校验 |
 | merchant_name | varchar(64) | YES | — | NULL | 商家名称快照（脱敏展示） |
+| merchant_pickup_lng | decimal(10,6) | NO | — | — | 商铺取货点经度（下单时快照，L-08 骑手「导航到商铺」） |
+| merchant_pickup_lat | decimal(10,6) | NO | — | — | 商铺取货点纬度 |
+| merchant_pickup_detail | varchar(200) | YES | — | NULL | 商铺取货地址详情（脱敏存储 R-07） |
 | address_lng | decimal(10,6) | NO | — | — | 收货经度（R-03 位置最小化/分级授权，脱敏输出） |
 | address_lat | decimal(10,6) | NO | — | — | 收货纬度 |
 | address_detail | varchar(200) | NO | — | — | 收货地址详情（脱敏存储 R-07） |
@@ -246,6 +267,10 @@ erDiagram
 | items | JSON | NO | — | — | 商品清单 `[{itemId, qty}]`（下单）；详情回显 `[{name, qty}]` 关联 PROD 只读取数 |
 | total_amount | decimal(18,2) | NO | — | — | 订单总额（含配送费），API 输出 string |
 | delivery_fee | decimal(18,2) | NO | — | — | 配送费（快照，非账务；结算复用 SETTLE），API 输出 string |
+| cargo_type | enum('NORMAL','OVERSIZED') | NO | — | NORMAL | 货件类型（L-07）：常规/大件；OVERSIZED 时 weight/volume 必填、vehicle_required=CAR |
+| cargo_weight_kg | decimal(10,2) | YES | — | NULL | 货件重量 kg（大件必填，车型/载重匹配） |
+| cargo_volume_m3 | decimal(10,2) | YES | — | NULL | 货件体积 m³（大件必填） |
+| vehicle_required | enum('E_BIKE','CAR') | NO | — | E_BIKE | 车型要求（L-07）：常规=E_BIKE、大件=CAR；派单/骑手接单按此匹配 |
 | remark | varchar(200) | YES | — | NULL | 消费者备注 |
 | status | enum('PENDING_PAYMENT','PENDING_ACCEPT','PREPARING','READY','DELIVERING','DELIVERED','COMPLETED','CANCELLED','ABNORMAL') | NO | — | PENDING_PAYMENT | 配送订单状态机（当前态，同 openapi DeliveryOrderStatus） |
 | rider_id | varchar(32) | YES | — | NULL | 骑手编号（`r_` 前缀），派单后回填；配送中后可查 |
@@ -258,10 +283,10 @@ erDiagram
 |---|---|---|---|---|---|
 | event_id | bigint UNSIGNED | NO | PK | — | 雪花 ID（`infra-idgen`），内部留痕 |
 | order_id | varchar(32) | NO | — | — | 所属配送单，**随单同月分表** |
-| action | enum('STATUS_CHANGE','ACCEPT','REJECT','PROGRESS','TRANSFER','ASSIGN','REASSIGN','CANCEL','URGE','CONFIRM') | NO | — | — | 处置动作（映射 openapi 路径；STATUS_CHANGE 为系统状态流转，★待评审） |
+| action | enum('STATUS_CHANGE','ACCEPT','REJECT','PROGRESS','TRANSFER','ASSIGN','REASSIGN','CANCEL','URGE','CONFIRM','RIDER_ACCEPT','RIDER_PICKUP','RIDER_DELIVER') | NO | — | — | 处置动作（映射 openapi 路径；STATUS_CHANGE 为系统状态流转，★待评审；RIDER_* 为骑手端动作，L-08） |
 | from_status | enum('PENDING_PAYMENT','PENDING_ACCEPT','PREPARING','READY','DELIVERING','DELIVERED','COMPLETED','CANCELLED','ABNORMAL') | YES | — | NULL | 变更前状态（初始/催单无状态变更时为空） |
 | to_status | enum('PENDING_PAYMENT','PENDING_ACCEPT','PREPARING','READY','DELIVERING','DELIVERED','COMPLETED','CANCELLED','ABNORMAL') | YES | — | NULL | 变更后状态（时间轴 `status`） |
-| operator_type | enum('CONSUMER','MERCHANT','OPS','SYSTEM') | NO | — | SYSTEM | 操作方（消费者/商户/运营/系统自动，★待评审） |
+| operator_type | enum('CONSUMER','MERCHANT','RIDER','OPS','SYSTEM') | NO | — | SYSTEM | 操作方（消费者/商户/骑手/运营/系统自动，★待评审；RIDER 为骑手端动作，L-08） |
 | operator_id | varchar(64) | YES | — | NULL | 操作人编号（account/merchant/ops，审计留痕，脱敏） |
 | reason | varchar(500) | YES | — | NULL | 原因留痕：拒单/取消/改派（拒单计入信用 A-07） |
 | occurred_at | datetime(3) | NO | — | — | 事件发生时间（时间轴 `at`） |
@@ -275,7 +300,7 @@ erDiagram
 | order_id | varchar(32) | NO | — | — | 所属配送单，**随单同月分表** |
 | lng | decimal(10,6) | NO | — | — | 轨迹经度 |
 | lat | decimal(10,6) | NO | — | — | 轨迹纬度 |
-| at | datetime(3) | NO | — | — | 定位时间戳（GPS 直连上报，x-external POST /delivery/track） |
+| at | datetime(3) | NO | — | — | 定位时间戳（骑手端位置心跳 POST /delivery/rider/location 上报，服务端异步入存证链；原 x-external POST /delivery/track 已下线） |
 | hash | varchar(128) | NO | — | — | 存证哈希：SHA-256(前链 hash + 行数据 + 时间戳)，哈希链只增不改（P-02） |
 | created_at | datetime(3) | NO | — | CURRENT_TIMESTAMP(3) | 写入时间，**分表键** |
 
@@ -288,6 +313,10 @@ erDiagram
 | id_no | varchar(255) | NO | — | — | 证件号，**密文**（复用 A-06/F-03 思路） |
 | mobile | varchar(20) | NO | — | — | 手机号，**密文**；输出脱敏 |
 | realname_status | tinyint(1) | NO | — | 0 | 实名核验状态（boolean） |
+| vehicle_type | enum('E_BIKE','CAR') | NO | — | E_BIKE | 车辆类型（L-07）：E_BIKE 电动车 / CAR 汽车（可运大件）；派单/接单匹配键 |
+| vehicle_no | varchar(20) | YES | — | NULL | 车牌号（CAR 必填），**密文**；输出脱敏如 冀A·\*\*\*88 |
+| max_load_kg | decimal(10,2) | YES | — | NULL | 最大载重 kg（CAR 大件能力，接单校验） |
+| max_volume_m3 | decimal(10,2) | YES | — | NULL | 最大容积 m³ |
 | health_cert_status | enum('VALID','EXPIRING','INVALID') | NO | — | — | 健康证状态（同 openapi） |
 | health_cert_valid_to | date | YES | — | NULL | 健康证有效期至 |
 | background_check | enum('PASSED','PENDING','REJECTED') | NO | — | PENDING | 背景核验状态（同 openapi，复用 A-06/F-03 思路） |
@@ -319,8 +348,9 @@ erDiagram
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | key | `rider:loc:{rider_id}` | 骑手编号 `r_` 前缀 |
-| lng / lat | string(double) | 实时经纬度（前端 GPS 直连心跳上报） |
+| lng / lat | string(double) | 实时经纬度（骑手端 GPS 心跳上报 POST /delivery/rider/location） |
 | online_status | string | ONLINE 在线 / DELIVERING 配送中 / OFFLINE 离线 |
+| vehicle_type | string | 车辆类型 E_BIKE / CAR（调度看板车型筛选 + 买家端展示） |
 | current_order_id | string | 当前配送单（配送中时有值） |
 | TTL / 消费 | — | 短 TTL（30s~60s★，§5.7），心跳续期；离线自动过期 |
 
@@ -330,13 +360,13 @@ erDiagram
 
 ### 7.1 delivery_order（配送单，按月分表）
 
-- **用途**：本地配送下单主表——地址定位选点/配送范围校验/配送费快照/商家/骑手/状态机当前态（L-01/L-02/L-03），订单列表/详情/商家接单/运营调度的统一载体。
+- **用途**：本地配送下单主表——地址定位选点/配送范围校验/配送费快照/商家/骑手/状态机当前态（L-01/L-02/L-03），**商铺取货点坐标 + 货件规格 + 车型要求（L-07/L-08 导航与派单匹配）**，订单列表/详情/商家接单/骑手任务/运营调度的统一载体。
 - **主键**：`order_id` varchar 业务号（号段 `id_allocator`，`D-` 前缀，连续可读，如 D-2026090801）。
-- **索引**：PRIMARY KEY(`order_id`)；KEY `idx_consumer_created`(`consumer_id`, `created_at`)——本人订单分页 + **分片键剪枝**；KEY `idx_merchant_created`(`merchant_id`, `created_at`)——商户订单列表下推（时间分片内，非跨片）；KEY `idx_status_created`(`status`, `created_at`)——运营/商户状态筛选。
-- **约束**：配送订单 9 态状态机（§5.15.5）；非允许状态操作报 3007；派单冲突幂等/乐观锁（3007「已改派，请刷新」）；`consumer_id`/`merchant_id` 越权校验（2002）；结算/退款复用 SETTLE，本服务无金额沉淀。
-- **安全**：`receiver_phone` 密文、`receiver_name`/`address_detail`/`merchant_name` 脱敏存储；位置按 R-03 分级授权、最小化（R-07）。
+- **索引**：PRIMARY KEY(`order_id`)；KEY `idx_consumer_created`(`consumer_id`, `created_at`)——本人订单分页 + **分片键剪枝**；KEY `idx_merchant_created`(`merchant_id`, `created_at`)——商户订单列表下推（时间分片内，非跨片）；KEY `idx_status_created`(`status`, `created_at`)——运营/商户状态筛选；KEY `idx_rider_created`(`rider_id`, `created_at`)——骑手任务列表下推（L-08）。
+- **约束**：配送订单 9 态状态机（§5.15.5）；非允许状态操作报 3007；派单/接单冲突幂等/乐观锁（3007「已改派，请刷新」）；**车型匹配**（`vehicle_required` vs 骑手 `vehicle_type`/载重，不满足 3007「车型不匹配」，L-07）；`consumer_id`/`merchant_id`/`rider_id` 越权校验（2002）；结算/退款复用 SETTLE，本服务无金额沉淀。
+- **安全**：`receiver_phone` 密文、`receiver_name`/`address_detail`/`merchant_name`/`merchant_pickup_detail` 脱敏存储；位置按 R-03 分级授权、最小化（R-07）。
 - **生命周期**：>12 月热转冷 OSS，保留热表 12 个月（随单闭案归档，不物理删除）。
-- **接口映射**：POST /delivery/quote（报价，校验范围）、POST /delivery/orders（下单）、GET /delivery/orders（本人列表）、GET /delivery/orders/{orderId}（详情 + 时间轴）、GET /delivery/orders/merchant（商户列表）、GET /delivery/ops/orders（运营全量）。
+- **接口映射**：POST /delivery/quote（报价，校验范围）、POST /delivery/orders（下单）、GET /delivery/orders（本人列表）、GET /delivery/orders/{orderId}（详情 + 时间轴）、GET /delivery/orders/merchant（商户列表）、GET /delivery/ops/orders（运营全量）、GET /delivery/rider/tasks（骑手任务）、GET /delivery/rider/orders/{orderId}（骑手任务详情 + 导航）。
 
 ### 7.2 delivery_order_event（订单状态流转 + 处置留痕，随单同月分表）
 
@@ -346,7 +376,7 @@ erDiagram
 - **约束**：**只增不改**（应用层禁 UPDATE/DELETE，库层回收写权限）；`to_status` 为时间轴 `status`；`reason` 承载拒单/取消/改派原因留痕；拒单事件上报 CRED 计信用（A-07）。
 - **安全**：`operator_id` 审计留痕脱敏；处置留痕审计 ≥6 个月（WORM/哈希链）。
 - **生命周期**：随 `delivery_order` 归档（>12 月热转冷 OSS），审计留痕 ≥6 个月。
-- **接口映射**：POST /delivery/orders/{orderId}/accept、reject、progress、transfer、urge、confirm；POST /delivery/ops/orders/{orderId}/assign、reassign、cancel；GET /delivery/orders/{orderId}（时间轴 timeline）。
+- **接口映射**：POST /delivery/orders/{orderId}/accept、reject、progress、transfer、urge、confirm；POST /delivery/ops/orders/{orderId}/assign、reassign、cancel；POST /delivery/rider/tasks/{orderId}/accept（骑手接单）、POST /delivery/rider/orders/{orderId}/status（骑手取货/送达）；GET /delivery/orders/{orderId}（时间轴 timeline）。
 
 ### 7.3 delivery_track（位置轨迹存证，按月分表）
 
@@ -356,17 +386,17 @@ erDiagram
 - **约束**：**只增不改 + 哈希链**（`hash` = SHA-256(前链 hash + 行数据 + 时间戳)）；轨迹抽稀（Douglas-Peucker）+ 分段加载；R-03 分级授权（本人可见→授权可见→脱敏）。
 - **安全**：轨迹仅本人/授权方可见（2002/403 拦截）；哈希链可出证（复用 TICKET D-02/T-15，不建第二套）。
 - **生命周期**：>12 月热转冷 OSS（Parquet/压缩），**哈希链跨归档连续**；审计/出证按需回捞。
-- **接口映射**：POST /delivery/track（x-external，骑手轨迹上报，前端勿调）、GET /delivery/orders/{orderId}/track（轨迹查询 + 存证哈希）。
+- **接口映射**：POST /delivery/rider/location（骑手位置心跳，服务端异步入存证链）、GET /delivery/orders/{orderId}/track（轨迹查询 + 存证哈希）。
 
 ### 7.4 rider_profile（骑手档案，不分片）
 
-- **用途**：骑手/配送员运力档案——实名、健康证、背景核验、信用档案（履约率/超时率/投诉）、启用状态（L-05），供运营派单与运力管理；骑手端 App 后置，本表由运营端承载。
+- **用途**：骑手/配送员运力档案——实名、健康证、背景核验、信用档案（履约率/超时率/投诉）、启用状态（L-05），**车辆类型/车牌/载重容积（L-07 车型兼容）**；供运营派单与运力管理 + **骑手端本人档案（D-03，可切换车型/维护车辆信息）**。
 - **主键**：`rider_id` varchar 业务号（号段 `id_allocator`，`r_` 前缀，如 r_20260901001）。
-- **索引**：PRIMARY KEY(`rider_id`)；KEY `idx_enabled`(`enabled`)——可派单骑手筛选；KEY `idx_health_status`(`health_cert_status`, `created_at`)——健康证临期扫描。
-- **约束**：停用/启用二次确认 + 留痕（`disabled_at`/`disable_reason` 软关闭）；停用后不可派单（`enabled=false`）；在线状态为运行时态、存 Redis，不入本表。
-- **安全**：`name`/`id_no`/`mobile` 密文（L1 敏感）；输出脱敏（王\*傅）；背景核验/健康证复用 A-06/F-03 思路。
+- **索引**：PRIMARY KEY(`rider_id`)；KEY `idx_enabled`(`enabled`)——可派单骑手筛选；KEY `idx_health_status`(`health_cert_status`, `created_at`)——健康证临期扫描；KEY `idx_vehicle`(`vehicle_type`, `enabled`)——按车型筛选可派单骑手（L-07 派单匹配）。
+- **约束**：停用/启用二次确认 + 留痕（`disabled_at`/`disable_reason` 软关闭）；停用后不可派单（`enabled=false`）；**车型切换影响派单匹配**（更新后按新车型参与任务分发）；在线状态为运行时态、存 Redis，不入本表。
+- **安全**：`name`/`id_no`/`mobile`/`vehicle_no` 密文（L1 敏感）；输出脱敏（王\*傅、冀A·\*\*\*88）；背景核验/健康证复用 A-06/F-03 思路。
 - **生命周期**：不归档、不物理删除（停用=软关闭）；审计留痕 ≥6 个月。
-- **接口映射**：GET /delivery/ops/riders（列表）、GET /delivery/ops/riders/{riderId}（档案详情）、POST /delivery/ops/riders/{riderId}/status（停用/启用）。
+- **接口映射**：GET /delivery/ops/riders（列表）、GET /delivery/ops/riders/{riderId}（档案详情）、POST /delivery/ops/riders/{riderId}/status（停用/启用）、GET /delivery/rider/profile（骑手本人档案）、PUT /delivery/rider/profile（更新车型/车辆信息）。
 
 ### 7.5 delivery_alert（配送异常预警，不分片）
 
@@ -380,11 +410,11 @@ erDiagram
 
 ### 7.6 rider_location（骑手实时位置，Redis）
 
-- **用途**：调度看板地图（O-03）在线骑手实时位置 + 在线状态，订单热力 + 骑手位置一屏可见（L-04）。
-- **结构**：Redis String/Hash `rider:loc:{rider_id}`（§6.6）；前端 GPS 直连心跳上报（F-02，不做北斗硬件对接）。
-- **约束**：位置按 R-03 分级授权、最小化展示；仅运营角色可见（2002）；离线自动过期。
+- **用途**：**骑手端位置心跳（POST /delivery/rider/location）写入的实时位置 + 在线状态 + 车型**——买家实时位置（S-31，`GET /delivery/orders/{orderId}/rider-location`，配送中授权可见、送达即切断）与调度看板地图（O-03，订单热力 + 骑手位置一屏可见，L-04）。
+- **结构**：Redis String/Hash `rider:loc:{rider_id}`（§6.6）；骑手端 GPS 心跳上报（F-02，不做北斗硬件对接）；轨迹存证由服务端异步入 `delivery_track` 哈希链。
+- **约束**：位置按 R-03 分级授权——买家仅「配送中」可见（R-03 授权可见级）；调度看板仅运营角色可见（2002）；离线自动过期。
 - **生命周期**：TTL 30s~60s★（§5.7）心跳续期；不入 MySQL。
-- **接口映射**：GET /delivery/ops/riders/locations（调度看板地图实时位置）。
+- **接口映射**：POST /delivery/rider/location（骑手端心跳上报）、GET /delivery/orders/{orderId}/rider-location（买家实时位置）、GET /delivery/ops/riders/locations（调度看板地图实时位置）。
 
 ### 7.7 出方向依赖（跨服务，逻辑关联）
 
@@ -396,4 +426,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/delivery/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.15/§8.3.1、《微服务边界与职责基准》v1.2 §2.14 同步维护。*
+*文档结束 · 与 `services/delivery/docs/openapi.yaml`（唯一可手改源，v1.1.0）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.15/§8.3.1、《微服务边界与职责基准》v1.6 §2.14 同步维护。*

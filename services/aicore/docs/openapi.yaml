@@ -130,10 +130,10 @@ paths:
       description: |
         监管端上传原材料/证照/抽检图像（1~9 张，OSS 对象键），系统脱敏（去人脸/车牌）后送云视觉分析
         （签数据合规协议：不用于训练、数据不出域），产出疑似问题标记 + 置信度分级
-        （高 ≥0.9 / 中 0.7~0.9 / 低 <0.7，建议初值、上线前评审）。
+        （高 ≥0.9 / 中 0.7~0.9 / 低 <0.7，2026-09-11 已定档初值，工作台运营期可调）。
         异步任务化：受理返回 taskId，轮询 GET /aicore/tasks/{taskId} 拿 VisionReviewResult（含 reviewId）；
         AI 分析完成后记录进入工作台（GET /aicore/vision/reviews），由人工复核（POST …/verdict）。
-        AI 只输出疑似标记不决策（C8）；图像留存：复核完成归档 180 天、失败/忽略样本 30 天。
+        AI 只输出疑似标记不决策（C8）；图像留存（2026-09-11 已定档）：**原图 180 天、脱敏缩略图 30 天**（违规证据原图 180 天 / 正常样本脱敏缩略 30 天，合规确认后执行）。
       requestBody:
         required: true
         content:
@@ -379,7 +379,7 @@ paths:
   /aicore/kitchen/anomalies:
     get:
       tags: [kitchen]
-      summary: 后厨直播异常标记列表【M2 · K-05】
+      summary: 后厨直播异常标记列表【M2/M3 · K-05】
       description: |
         监管端查看后厨直播画面级异常标记（未穿工装/卫生问题/明火离人等），需商户已授权接入（B-04）。
         帧识别任务由服务端间接口提交（见 x-external-interfaces 附录），标记进复核流后复用
@@ -695,7 +695,7 @@ components:
           example: b_20260801001
     ConfidenceLevel:
       type: string
-      description: 置信度分级（建议初值：高 ≥0.9 / 中 0.7~0.9 / 低 <0.7，上线前评审，阈值可调）
+      description: 置信度分级（2026-09-11 已定档初值：高 ≥0.9 / 中 0.7~0.9 / 低 <0.7；工作台运营期可调）
       enum: [HIGH, MEDIUM, LOW]
       example: HIGH
     VisionReviewStatus:
@@ -1073,6 +1073,8 @@ x-external-interfaces:
     服务端间接口（内部调用），前端勿调，不在上方 paths 中。
     出方向（AICORE → 其他服务）：复核结论 CONFIRM 后异步回写 CRED（A-02 档案与信用分）、
     K-05 标记进复核流（复用本服务 verdict 接口）、风险预警事件上报 DASH（A-08 聚合）；
+    **证照 OCR 预审结果（POST /aicore/ocr 返回 taskId）由 CRED 侧经内部接口拉取/轮询（CRED→AICORE 入方向），
+    AICORE 不主动回写——建档人工核验以 OCR 预审为参考（K-01 → A-01 闭环）；**
     云视觉/OCR 通道经 KMS 密钥、签数据合规协议（不用于训练、数据不出域）。
   endpoints:
     - method: POST

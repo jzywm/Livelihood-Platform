@@ -3,7 +3,8 @@ info:
   title: 账户服务 ACC · 接口文档
   version: 1.1.0
   description: |
-    账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（含 I-06 强实名增强、G-01 人机验证）。
+    账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（= 功能点 I-01；含 I-06 强实名增强、
+    登录页人机验证——页面码 G-01，与 TICKET 功能点 G-01 群众热线无关）。
     口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
     - 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。
@@ -17,7 +18,7 @@ tags:
   - name: realname
     description: 实名认证（I-01 / I-06）
   - name: captcha
-    description: 人机验证（滑块/图形验证码，G-01 防机器人）
+    description: 人机验证（滑块/图形验证码，登录页 G-01 防机器人）
   - name: wallet
     description: 钱包记账与流水（I-01）
   - name: binding
@@ -36,7 +37,7 @@ paths:
       tags: [captcha]
       summary: 获取人机验证（默认滑块，可降级图形）
       description: |
-        G-01 登录/注册页防机器人校验。默认下发滑块拼图（SLIDER），滑块失败后可请求 IMAGE 降级为图形验证码。
+        登录/注册页（页面码 G-01）防机器人校验。默认下发滑块拼图（SLIDER），滑块失败后可请求 IMAGE 降级为图形验证码。
         返回 captchaId 与（可选）图片；正确结果只存服务端（Redis，内存态兜底），前端拿不到答案。
         接口做频率限制（登录爆破限速，防刷）。
       security: []
@@ -102,8 +103,8 @@ paths:
         消费端/经营端一键实名登录入口。流程：一键实名 → 授权协议 → 回传实名信息 → 返回账户。
         幂等：重复 open_id 幂等返回原账户。第三方实名不可用（R-02）→ 4001，前端明示「流程暂停」，
         不接受人工证件核验降级。
-        注意：PDD §6.4.1 的 register 请求含 idName/idCard，但与红线 R-02「实名仅微信/支付宝回传、
-        平台不收集证件照片」冲突，故证件号不在本请求入参，改为经 /acc/realname/callback 由第三方回传。
+        注册请求**不含证件号**（R-02：实名仅微信/支付宝回传、平台不收集证件照片），
+        证件号经 /acc/realname/callback 由第三方回传。
         captchaToken 为 POST /acc/captcha/verify 下发的一次性凭证（可选，防机器人）。
       security: []
       requestBody:
@@ -446,7 +447,7 @@ paths:
       tags: [funds]
       summary: 监管端资金流水审计（全量 + 对账视图）
       description: |
-        监管端（R-11）资金流水审计。可见角色：监管。全量流水 + 第三方通道交易号 + 存证哈希，
+        监管端资金流水审计。可见角色：监管。全量流水 + 第三方通道交易号 + 存证哈希，
         支持日期/对账状态筛选。管理端二次鉴权。
       parameters:
         - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
@@ -488,7 +489,7 @@ paths:
     post:
       tags: [funds]
       summary: 触发资金对账
-      description: 监管端（R-11）触发对账，核对平台记账流水与第三方通道流水，不一致 → 3009。
+      description: 监管端触发对账，核对平台记账流水与第三方通道流水，不一致 → 3009。
       parameters:
         - $ref: '../../_common/openapi.yaml#/components/parameters/IdempotencyKey'
       requestBody:
@@ -893,7 +894,7 @@ components:
           example: 不再使用
 
 x-external-interfaces:
-  description: 服务端间接口（外部回调/内部），前端勿调，不在上方 paths 中。
+  description: 服务端间接口（外部回调/内部，**仅内网**），前端勿调，不在上方 paths 中。
   endpoints:
     - method: POST
       path: /acc/realname/callback

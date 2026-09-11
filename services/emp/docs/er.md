@@ -1,11 +1,11 @@
 # 用工服务（EMP）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.4 / §5.14.4 / §6.4.4 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.4 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/emp/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
-> 数据域归属：③ 用工域（`employment` / `attendance` / `payroll` / `labor_review`）。⚠️ `payroll` 表归本域但代付执行在 SETTLE（§4-C07 归属错位，如实注明）——已按 §4-C07 决策迁入 ⑨ 结算域 SETTLE，本文档**不设计 `payroll` 表**；`job`（E-03 招工求职）为 M2 补充表（§4.5 未单列，随 M2 补充）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.4 / §5.14.4 / §6.4.4 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.4 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/emp/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 数据域归属：③ 用工域（`employment` / `attendance` / `labor_review`；`payroll` 已按 §4-C07 迁入 ⑨ 结算域 SETTLE，本服务**不设计该表**）；`job`（E-03 招工求职）为 M2 补充表（§4.5 未单列，随 M2 补充）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
-> 版本：v1.0 · 2026-09-10（首版：七章齐全；共享主库 + `emp_` schema 前缀隔离，`attendance` 打卡流水按月分表，`employment`/`attendance_makeup`/`labor_review`/`job` 不分片，`labor_credit` 为 Redis 计算快照不入库；`payroll` 已迁 ⑨ 结算域 SETTLE）。
+> 版本：v1.0 · 2026-09-10（首版：七章齐全；共享主库 + `emp_` schema 前缀隔离，`attendance` 打卡流水按月分表，`employment`/`attendance_makeup`/`labor_review`/`job` 不分片，`labor_credit` 为 Redis 计算快照不入库；`payroll` 已迁 ⑨ 结算域 SETTLE；§5.7 于 2026-09-11 评审定档）。
 
 ## 1. ER 图（Mermaid）
 
@@ -137,7 +137,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节只做「平台策略 → EMP 用工域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节只做「平台策略 → EMP 用工域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -194,6 +194,7 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
@@ -254,7 +255,7 @@ erDiagram
 | date | date | NO | — | — | 补卡日期 |
 | type | enum('IN','OUT') | NO | — | — | 补卡类型（复用 AttendanceType） |
 | reason | varchar(200) | NO | — | — | 补卡原因（留痕） |
-| status | enum('PENDING','APPROVED','REJECTED') | NO | — | PENDING | 补卡状态机：PENDING 待雇主确认（openapi 暴露）→ APPROVED/REJECTED（雇主确认后生效，内部状态，openapi 未暴露、待补全，§5.7） |
+| status | enum('PENDING','APPROVED','REJECTED') | NO | — | PENDING | 补卡状态机：PENDING 待雇主确认 → APPROVED 通过生效（计入工时）/ REJECTED 驳回可重申请（openapi `MakeupStatus` 三态 + POST /emp/attendance/makeup/{makeupId}/review，2026-09-11 补齐） |
 | created_at | datetime(3) | NO | — | CURRENT_TIMESTAMP(3) | 申请时间 |
 | confirmed_at | datetime(3) | YES | — | NULL | 雇主确认时间（APPROVED/REJECTED 时） |
 
@@ -375,4 +376,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/emp/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.x/§6.4.x、《微服务边界与职责基准》v1.2 §2.x 同步维护。*
+*文档结束 · 与 `services/emp/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.x/§6.4.x、《微服务边界与职责基准》v1.6 §2.x 同步维护。*

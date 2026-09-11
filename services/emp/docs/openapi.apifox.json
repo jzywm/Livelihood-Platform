@@ -121,6 +121,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -226,6 +227,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -302,6 +304,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -378,6 +381,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -509,6 +513,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -688,6 +693,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -764,6 +770,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -883,6 +890,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -995,6 +1003,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1071,6 +1080,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1147,6 +1157,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1223,6 +1234,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1299,6 +1311,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1434,6 +1447,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -1582,6 +1596,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1658,6 +1673,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1734,6 +1750,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -1867,6 +1884,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -1965,6 +1983,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2041,6 +2060,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2117,6 +2137,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2193,6 +2214,544 @@
                         3008,
                         3009,
                         3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3007,
+                  "message": "状态不允许该操作",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/emp/attendance/makeup/{makeupId}/review": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "雇主确认补卡（通过/驳回）【M1 · C-02】",
+        "description": "雇主确认补卡申请（C-02 异常处理闭环，2026-09-11 补齐端点）：通过 → APPROVED 生效并计入工时；\n驳回 → REJECTED（必填驳回原因，职工可重新申请）；仅用工关系雇主本人可操作（2002）；\n非 PENDING 状态 → 3007。\n",
+        "parameters": [
+          {
+            "name": "makeupId",
+            "in": "path",
+            "required": true,
+            "description": "补卡申请号",
+            "schema": {
+              "type": "string",
+              "example": "mk_8f7e6d5c4b3a"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "approve"
+                ],
+                "properties": {
+                  "approve": {
+                    "type": "boolean",
+                    "description": "确认结论（通过/驳回）",
+                    "example": true
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "驳回原因（驳回时必填）",
+                    "maxLength": 200,
+                    "example": "与排班记录不符"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回确认结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            3011,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "makeupId",
+                            "status"
+                          ],
+                          "properties": {
+                            "makeupId": {
+                              "type": "string",
+                              "description": "补卡申请号",
+                              "example": "mk_8f7e6d5c4b3a"
+                            },
+                            "status": {
+                              "type": "string",
+                              "description": "补卡状态机（2026-09-11 补齐）：PENDING 待雇主确认 → APPROVED 通过生效（计入工时）/ REJECTED 驳回（可重新申请）",
+                              "enum": [
+                                "PENDING",
+                                "APPROVED",
+                                "REJECTED"
+                              ],
+                              "example": "APPROVED"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误（code=1xxx）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 1001,
+                  "message": "参数缺失",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在（code=3006）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 3006,
+                  "message": "对象不存在",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "状态不允许（code=3007，非 PENDING）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2334,6 +2893,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -2423,6 +2983,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2499,6 +3060,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2575,6 +3137,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2651,6 +3214,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2727,6 +3291,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -2858,6 +3423,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3040,6 +3606,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3141,6 +3708,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3289,6 +3857,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3365,6 +3934,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3454,6 +4024,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3602,6 +4173,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -3738,6 +4310,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,
@@ -3910,6 +4483,7 @@
                         3008,
                         3009,
                         3010,
+                        3011,
                         4001,
                         4002,
                         4003,
@@ -4409,6 +4983,59 @@
               "PENDING"
             ],
             "example": "PENDING"
+          }
+        }
+      },
+      "MakeupStatus": {
+        "type": "string",
+        "description": "补卡状态机（2026-09-11 补齐）：PENDING 待雇主确认 → APPROVED 通过生效（计入工时）/ REJECTED 驳回（可重新申请）",
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "REJECTED"
+        ],
+        "example": "APPROVED"
+      },
+      "MakeupReviewRequest": {
+        "type": "object",
+        "required": [
+          "approve"
+        ],
+        "properties": {
+          "approve": {
+            "type": "boolean",
+            "description": "确认结论（通过/驳回）",
+            "example": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "驳回原因（驳回时必填）",
+            "maxLength": 200,
+            "example": "与排班记录不符"
+          }
+        }
+      },
+      "MakeupReviewResult": {
+        "type": "object",
+        "required": [
+          "makeupId",
+          "status"
+        ],
+        "properties": {
+          "makeupId": {
+            "type": "string",
+            "description": "补卡申请号",
+            "example": "mk_8f7e6d5c4b3a"
+          },
+          "status": {
+            "type": "string",
+            "description": "补卡状态机（2026-09-11 补齐）：PENDING 待雇主确认 → APPROVED 通过生效（计入工时）/ REJECTED 驳回（可重新申请）",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "example": "APPROVED"
           }
         }
       },
@@ -4981,6 +5608,7 @@
                             3008,
                             3009,
                             3010,
+                            3011,
                             4001,
                             4002,
                             4003,

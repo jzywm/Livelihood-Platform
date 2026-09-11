@@ -46,7 +46,7 @@ paths:
         兜底（J-05）：意图无法识别 → FAQ 关键词 → 人工入口（G-01 热线/工单），不纯 AI 硬答。
         双模式：stream=false（缺省）返回 JSON（Apifox 可调试）；stream=true 返回 SSE（text/event-stream）
         事件帧 {event: token|action|done|error, data}，done 帧 data 为完整 ChatReply。
-        异常：LLM 失败/超时 → 4003 回退 FAQ 规则库 + 人工入口；按账号/频次限流（J-12）→ 429。
+        异常：LLM 失败/超时 → 4003 回退 FAQ 规则库 + 人工入口；按账号强限 10 次/分（J-12，2026-09-11 定档，AI 链路口径）→ 429。
       requestBody:
         required: true
         content:
@@ -168,8 +168,8 @@ paths:
       tags: [recommend]
       summary: 对话内商品推荐（透明理由，非竞价）【M1 · J-03】
       description: |
-        对话内商品/服务推荐（J-03）。候选 = 在售 + 供应商信用分 ≥ 阈值（建议 ≥80，上线前评审）
-        + 溯源完整；排序 = 信用 40% + 溯源完整度 30% + 价格 20% + 好评率 10%（建议初值，上线前评审）；
+        对话内商品/服务推荐（J-03）。候选 = 在售 + 供应商信用分 ≥ 80（2026-09-11 已定档）
+        + 溯源完整；排序 = 信用 40% + 溯源完整度 30% + 价格 20% + 好评率 10%（2026-09-11 已定档）；
         推荐理由模板化透明输出（candidates[].reasons）；trustedOnly=true 只看放心供应商。
         边界：非竞价（无付费置顶/虚假销量）；价格不因画像差异化（不杀熟，J-07 授权画像权重仅叠加排序）；
         强监管品类只推荐、不替代行政许可；候选不足 → insufficient=true 如实提示，不硬凑。
@@ -533,7 +533,7 @@ components:
           format: float
           minimum: 0
           maximum: 100
-          description: 供应商信用分（≥ 建议阈值 80，上线前评审）
+          description: 供应商信用分（候选阈值 ≥80，2026-09-11 已定档）
           example: 92
         traceComplete:
           type: boolean

@@ -1,8 +1,8 @@
 # 工单服务（TICKET）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.5 / §6.4.5 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.5 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/ticket/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.5 / §6.4.5 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.5 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/ticket/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：④ 工单域（`ticket`、`ticket_flow`、`ticket_evidence`）——共享主库 + `ticket_` schema 前缀隔离（Java 域既有路线）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
 > 版本：v1.0 · 2026-09-10（首版：七章齐全；工单域 3 表，ticket/ticket_flow 按月分表（merchant_id + created_at，>18 月归档），申诉 D-03 复用统一工单内核）。
@@ -42,7 +42,7 @@ erDiagram
         enum from_status "迁移前状态:SUBMITTED/PROCESSING/RESOLVED/ESCALATED/CLOSED"
         enum to_status "迁移后状态,映射TimelineEvent.status"
         varchar operator "操作方:消费者/商户/监管,脱敏"
-        varchar comment "事件说明,时间轴全程进度可见"
+        varchar comment "事件说明/办结回复≤2000,时间轴全程进度可见"
         datetime created_at "事件时间,分表键"
     }
 
@@ -74,7 +74,7 @@ erDiagram
 | `ticket` | 共享主库（ticket_ schema），**按月分表** | 统一工单内核：投诉直达（D-02，含「未成年人违规进入」举报）/ 群众热线诉求（G-01）/ 恶意差评申诉（D-03【M2】）主数据 |
 | `ticket_flow` | 共享主库，**按月分表** | 工单流转/处理时间轴（TimelineEvent），只增不改、全程进度可见 |
 | `ticket_evidence` | 共享主库（不分片） | 投诉证据包出证（P-02）：时间戳 + SHA-256 哈希存证、只增不改、可出证 |
-| 超时升级/催办队列 | MQ + 定时 JOB | 48h/7 天限时超时自动升级市监、催办；分布式锁（Redis SETNX）防重复扫描，**不入库** |
+| 超时升级/催办队列 | MQ + 定时 JOB | 48h/7 个工作日限时超时自动升级市监、催办；分布式锁（Redis SETNX）防重复扫描，**不入库** |
 | 证据文件（evidenceKeys 所指） | OSS（仅存对象键） | 证据附件服务端签名直传，不占应用带宽，本服务不存媒体原文 |
 
 > 权威数据（商户 `merchant_id`→CRED、账号 `applicant_id`→ACC）经内部接口只读引用，不复制权威数据；附件一律 OSS 直传、仅存对象键。
@@ -87,7 +87,7 @@ erDiagram
 - **P-04 政务双轨**：12345 不可接 → 自建工单 + 线下流转（红线）；优秀建议/高频诉求转 CIVIC G-02 建议论坛。
 - **C8 职业索赔识别（AI 辅助 + 人工确认）**：恶意差评申诉与职业索赔识别结果仅辅助、人工确认后处置（改判/驳回），不自动处置。
 - **未成年人保护（跨 6 服务 C11 一环）**：举报类别含「未成年人违规进入」（`MINOR_ENTRY`），举报数据上报 DASH A-08 违规入场高频举报聚合（人工复核）。
-- **限时办结**：投诉 48h / 诉求 7 天（可配）记 `deadline_at`；超时自动升级/催办走定时 JOB + MQ（Redisson/SETNX 分布式锁防重复扫描，PDD §8.3.1）。
+- **限时办结**：投诉 48h / 诉求 7 个工作日（2026-09-11 已定档）记 `deadline_at`；超时自动升级/催办走定时 JOB + MQ（Redisson/SETNX 分布式锁防重复扫描，PDD §8.3.1）。
 - **幂等**：工单提交接口级 `Idempotency-Key` 防重复；`uk_ticket_no` 唯一 + 状态机拦截（重复办结/重复申诉 → 3007）。
 - **状态机**：`SUBMITTED → PROCESSING → RESOLVED / ESCALATED → CLOSED`（超时自动升级市监；办结后评价置 `evaluated_at`，不新增状态枚举）；申诉 `PENDING` 待复核（复核后改判/驳回待标定 §5.7）。
 - **越权（IDOR）**：工单详情/处理/评价/出证仅当事双方或监管可见（2002）；`applicant_id`（提交人）+ `merchant_id`（被投诉商户）双维度水平越权校验。
@@ -111,7 +111,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节做「平台策略 → TICKET 工单域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节做「平台策略 → TICKET 工单域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -140,7 +140,7 @@ erDiagram
   - **商户待处理**（GET /ticket/tickets/pending）：携带 `merchant_id` 下推 + 状态筛选——分片键剪枝主路径。
   - **监管端全量/分派**（GET /ticket/tickets/audit）：按状态/部门筛选，无法按单一 `merchant_id` 剪枝，按 `created_at` 月份 + 索引下推、走异步/从库。
   - **我的投诉列表**（GET /ticket/tickets/mine）：按 `applicant_id` 查询，无法按 `merchant_id` 剪枝，按 `created_at` 月份 + `idx_applicant_created` 下推、走异步/从库。
-  - **工单详情时间轴**（GET /ticket/tickets/{ticketId}）：`ticket` + `ticket_flow` 同月（工单 48h/7 天生命周期通常单月内），跨月按 `ticket_id + 日期范围` 下推、异步/从库。
+  - **工单详情时间轴**（GET /ticket/tickets/{ticketId}）：`ticket` + `ticket_flow` 同月（工单 48h/7 个工作日生命周期通常单月内），跨月按 `ticket_id + 日期范围` 下推、异步/从库。
 - **跨月查询**：禁 SQL UNION 全表扫描；聚合（投诉率/信用联动统计）走异步/从库；**禁止跨分片 JOIN / 聚合 / 事务**。
 - **HOTLINE 无商户边界**：诉求工单无 `merchant_id`（空），按月分表路由以 `created_at` 月份为准；分片键 `merchant_id` 仅在 COMPLAINT/APPEAL 生效（M2 分库时 HOTLINE 分片键待标定，§5.7）。
 
@@ -169,13 +169,14 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
 | 分片阈值 | 单表 >2000 万行 / >20GB | 评审 + 数据增长标定 |
 | 工单归档月数 | 18 个月（高并发 §2.2 已定） | 已定，运行标定复核 |
 | 回拨容忍窗口 W / 号段步长 | W=5s、step=1000 | 评审 + 压测标定（TBD-10） |
-| 投诉处理时限 / 诉求办结时限 | 48h / 7 天（可配） | 评审 + 运营标定 |
+| 投诉处理时限 / 诉求办结时限 | ✅ 已定（2026-09-11）：投诉 48h / 诉求 7 个工作日（工作日历计算） | 已定档，★运营标定 |
 | 申诉复核后状态（改判/驳回）枚举 | 待 openapi 补充（D-03 M2 交付前补齐） | 评审（随 D-03 定稿） |
 | HOTLINE 诉求分库分片键（无 merchant_id） | 候选 `applicant_id` 或 `dept` | 评审（M2 分库前裁决） |
 | 同一溯源码多次投诉预警阈值 | 待定（T-16） | 评审 + 运行标定 |
@@ -205,7 +206,7 @@ erDiagram
 | applicant_id | bigint UNSIGNED | NO | — | — | 提交人账号（投诉人/诉求人/申诉商户，引用 ACC `account_id`；PDD §4.5 `created_by`；水平越权校验） |
 | status | enum('SUBMITTED','PROCESSING','RESOLVED','ESCALATED','CLOSED') | NO | — | SUBMITTED | 工单状态机：已提交→处理中→已解决/已升级市监→已办结（公示，可评价） |
 | appeal_status | enum('PENDING') | YES | — | NULL | 申诉状态（仅 APPEAL）：PENDING 待复核（openapi 唯一暴露值）；复核后「改判/驳回」待标定（§5.7） |
-| deadline_at | datetime(3) | YES | — | NULL | 限时处理截止（投诉 48h / 诉求 7 天可配，PDD §4.5 `deadline`）；超时自动升级 |
+| deadline_at | datetime(3) | YES | — | NULL | 限时处理截止（投诉 48h / 诉求 7 个工作日，2026-09-11 已定档，PDD §4.5 `deadline`）；超时自动升级 |
 | result | varchar(2000) | YES | — | NULL | 办结结论（投诉/诉求，公示脱敏）/ 申诉复核结论（改判/驳回） |
 | rating | tinyint UNSIGNED | YES | — | NULL | 办结评价评分 1~5 星（EvaluateRequest.rating） |
 | comment | varchar(500) | YES | — | NULL | 评价意见 ≤500（EvaluateRequest.comment，可选） |
@@ -224,7 +225,7 @@ erDiagram
 | from_status | enum('SUBMITTED','PROCESSING','RESOLVED','ESCALATED','CLOSED') | NO | — | — | 迁移前状态（PDD §4.5 `from_status`） |
 | to_status | enum('SUBMITTED','PROCESSING','RESOLVED','ESCALATED','CLOSED') | NO | — | — | 迁移后状态（PDD §4.5 `to_status`；映射 openapi `TimelineEvent.status`） |
 | operator | varchar(32) | YES | — | NULL | 操作方（消费者/商户/监管，脱敏展示） |
-| comment | varchar(500) | NO | — | — | 事件说明（PDD §4.5 `comment`；映射 openapi `TimelineEvent.note`，如 提交投诉/商家处理/升级市监/办结） |
+| comment | varchar(2000) | NO | — | — | 事件说明（PDD §4.5 `comment`；映射 openapi `TimelineEvent.note`，如 提交投诉/商家处理/升级市监/办结回复——最长 2000，对齐 openapi `HandleRequest.reply` ≤2000 / `EscalateRequest.reason` ≤1000，2026-09-11 终审加宽自 varchar(500)） |
 | created_at | datetime(3) | NO | — | CURRENT_TIMESTAMP(3) | 事件时间（映射 openapi `TimelineEvent.at`），**分表键** |
 
 ### 6.3 ticket_evidence（证据包出证存证，不分片）
@@ -284,4 +285,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/ticket/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.5/§6.4.5、《微服务边界与职责基准》v1.2 §2.5 同步维护。*
+*文档结束 · 与 `services/ticket/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.5/§6.4.5、《微服务边界与职责基准》v1.6 §2.5 同步维护。*

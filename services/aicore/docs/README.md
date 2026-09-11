@@ -1,6 +1,6 @@
 # AI 能力中心服务（AICORE · AI Core）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.12）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.3）与《产品设计文档》（PDD v1.0（基线））编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.12 / §6.4.13 为准，需求口径以 PRD §5.13（K 组）与 `29-AI能力中心需求.md` 为准。
 
 ## 1. 服务概述
@@ -75,6 +75,6 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.13（K 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§3 技术选型、§5.12 AI 能力中心、§6.4.13 接口清单、§7.9 大模型对话合规、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/aicore/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 10 个；异步任务 + 人工复核闭环；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；服务端间接口见文末 x-external-interfaces 附录）
-- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/aicore/docs/er.md`（口径：独立库 `aicore` 8 表——服务自有库原则（边界基准 v1.2 §2.12），权威数据经事件回写 CRED/DASH；对齐 openapi.yaml v1.0.0 与《高并发架构演进设计》v0.3 §2/§3）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/aicore/docs/er.md`（口径：独立库 `aicore` 8 表——服务自有库原则（边界基准 v1.6 §2.12），权威数据经事件回写 CRED/DASH；对齐 openapi.yaml v1.0.0 与《高并发架构演进设计》v1.0 §2/§3）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/aicore/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/13-AI视觉合规审核流程-K1.md`；需求专项：`docs/需求调研/核心成果/29-AI能力中心需求.md`

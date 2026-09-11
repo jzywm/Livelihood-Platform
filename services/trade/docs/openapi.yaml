@@ -5,8 +5,9 @@ info:
   description: |
     交易服务（TRADE）前端接口文档。模块 T4 担保撮合 + B2C 购买：T-11 担保交易与货款托管、T-12 到货验收与拒收退款、
     T-13 交易互评与信用联动、T-14 履约异常处置与防刷单风控、T-15 争议仲裁与结果公示；
-    D-04 退货/退款【§5.14】、T-23 上门服务【§5.14】、A-09 未成年人交易拦截（下单校验部分）。
-    口径对齐：PDD §5.9 / §6.4.8 / §5.14.5 / §5.14.7；需求口径 PRD §5.10（T 组）；边界依据 SSOT §2.9。
+    D-04 退货/退款【§5.14】、T-23 上门服务【§5.14】、A-09 未成年人交易拦截（下单校验部分）、
+    T-20 消费者选购与扫码验真（B2C 延伸，复用选品/溯源/担保下单链路，【延伸·待确认】，无独立接口）。
+    口径对齐：PDD v1.0（基线）§5.9 / §6.4.8 / §5.14.5 / §5.14.7；需求口径 PRD v2.3 §5.10（T 组）；边界依据 SSOT v1.6 §2.9。
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
     - 服务端间接口（支付回调、SETTLE 分账触发）见文末 x-external-interfaces 附录，前端勿调。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权 / 幂等键）引用 ../../_common/openapi.yaml，勿复制内联。
@@ -507,6 +508,60 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+  /trade/returns/{returnId}/ship-back:
+    post:
+      tags: [return]
+      summary: 买家寄回/上门取确认【M2 · D-04 占位】
+      description: |
+        审核通过后买家寄回或预约上门取，确认货品已退回（D-04 状态机：APPROVED → RETURNED）：
+        退货单进入退款环节（REFUNDING → REFUNDED 由 SETTLE 分账反向驱动、服务端流转）；仅买家本人可操作（2002）；
+        非 APPROVED 状态 → 3007。M2 占位。
+      parameters:
+        - name: returnId
+          in: path
+          required: true
+          description: 退货单号
+          schema:
+            type: string
+            example: R-20260901001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReturnShipBackRequest'
+      responses:
+        '200':
+          description: 成功，退货单进入退款环节
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReturnShipBackResult'
+        '400':
+          $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '422':
+          description: 状态不允许（code=3007，非 APPROVED）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 3007
+                message: 状态不允许该操作
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
   /trade/orders/{orderId}/review:
     post:
       tags: [review]
@@ -943,7 +998,7 @@ components:
           $ref: '#/components/schemas/OrderStatus'
         action:
           type: string
-          description: 后续动作（验收通过 → RELEASE 放款 + 互评；拒收 → REFUND 退款）
+          description: 后续动作（ACCEPTED → RELEASE 全额放款 + 互评；PARTIAL_REJECT → RELEASE 按验收明细**部分放款**、拒收部分 REFUND；FULL_REJECT → REFUND 全额退款）
           enum: [RELEASE, REFUND]
           example: RELEASE
     RefundRequest:
@@ -1079,6 +1134,37 @@ components:
           description: 审核后状态（通过 → 寄回/上门取；驳回 → 关闭）
           enum: [APPROVED, REJECTED]
           example: APPROVED
+    ReturnShipBackRequest:
+      type: object
+      required: [shipBackType]
+      properties:
+        shipBackType:
+          type: string
+          description: 退回方式（EXPRESS 寄回 / PICKUP 上门取）
+          enum: [EXPRESS, PICKUP]
+          example: EXPRESS
+        trackingNo:
+          type: string
+          description: 寄回物流单号（EXPRESS 时必填）
+          maxLength: 50
+          example: 'SF1234567890'
+    ReturnShipBackResult:
+      type: object
+      required: [returnId, status]
+      properties:
+        returnId:
+          type: string
+          example: R-20260901001
+        status:
+          type: string
+          description: 已退回，进入退款环节（REFUNDING → REFUNDED 由 SETTLE 分账反向驱动）
+          enum: [RETURNED]
+          example: RETURNED
+    ReturnStatus:
+      type: string
+      description: 退货状态机（D-04 基线 6 态，2026-09-11 定档）：PENDING_REVIEW 申请待审核 → APPROVED 审核通过（待寄回/上门取）→ RETURNED 已退回（退款中）→ REFUNDED 退款完成；REJECTED 驳回；REFUNDING 退款中（服务端流转，SETTLE 分账反向）
+      enum: [PENDING_REVIEW, APPROVED, RETURNED, REFUNDING, REFUNDED, REJECTED]
+      example: PENDING_REVIEW
     TradeReviewRequest:
       type: object
       required: [rating]

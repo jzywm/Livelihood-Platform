@@ -1,0 +1,63 @@
+@startuml L-本地配送
+' 民生甄选 · 子系统用例图 L3 · L 本地配送（UC-SUB-L-01 ~ L-08）
+' L 组为 IA v1.5/v1.6 新增功能点（L-01~L-06 于 2026-09-08，L-07/L-08 于 2026-09-11 走规格书 §10 变更登记）
+title 民生甄选 · 子系统用例图 · L 本地配送
+left to right direction
+
+skinparam actorStyle awesome
+skinparam rectangle {
+  BackgroundColor #F4F6FB
+  BorderColor #5B7DB1
+}
+skinparam usecase {
+  BackgroundColor #EAF2FB
+  BorderColor #3E6AA8
+}
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #C9B458
+}
+
+actor "消费者" as CONSUMER
+actor "商户" as MERCHANT
+actor "骑手/配送员" as RIDER
+actor "平台运营方" as OPS
+
+rectangle "L 本地配送" {
+  usecase "UC-SUB-L-01 选点下单并校验配送范围" as L01
+  usecase "UC-SUB-L-02 跟踪订单状态与全程进度" as L02
+  usecase "UC-SUB-L-03 接单备货并上报出餐" as L03
+  usecase "UC-SUB-L-04 调度派单并处置异常" as L04
+  usecase "UC-SUB-L-05 核验建档并管理骑手运力" as L05
+  usecase "UC-SUB-L-06 存证位置轨迹并预警异常" as L06
+  usecase "UC-SUB-L-07 兼容车型并承运大件货物" as L07
+  usecase "UC-SUB-L-08 导航配送并共享实时位置" as L08
+}
+
+CONSUMER --> L01
+CONSUMER --> L02
+MERCHANT --> L03
+OPS --> L04
+OPS --> L05
+RIDER --> L05
+RIDER --> L06
+RIDER --> L07
+RIDER --> L08
+CONSUMER --> L08
+OPS --> L06
+OPS --> L07
+
+L02 ..> L08 : <<include>>
+L07 ..> L01 : <<extend>>
+L07 ..> L04 : <<include>>
+
+note bottom of L07
+  车辆类型 E_BIKE 电动车 / CAR 汽车；
+  大件货（货件规格）要求 CAR，派单/接单按车型匹配
+end note
+note bottom of L08
+  骑手端「导航到商铺 / 导航到配送地点」双导航
+  按车型唤起地图开放平台（骑行/驾车）；
+  位置心跳 → 买家配送中可见、送达即切断（R-03）
+end note
+@enduml

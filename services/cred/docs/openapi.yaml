@@ -501,7 +501,7 @@ paths:
       summary: 信用分构成查询【M1 · A-07】
       description: |
         商户/人员/供应商信用分与维度构成（A-07）：分数公示可查、可筛；M1 以基础合规 + 经营行为两维度起步
-        （权重细节【待评审】）；供应商信用分由 TRACE 计算回写（SSOT C-02）。对象不存在 → 3006。
+        （权重已定档 2026-09-11：基础合规 60% + 经营行为 40%）；供应商信用分由 TRACE 计算回写（SSOT C-02）。对象不存在 → 3006。
       parameters:
         - name: subjectId
           in: path
@@ -553,6 +553,7 @@ paths:
       summary: 红黑榜公示（脱敏，线框 S-04）【M1 · A-07】
       description: |
         商户/人员/供应商红黑榜脱敏公示（A-07/S-04）：分类榜单并列展示不设唯一头部，分页；
+        上榜阈值（2026-09-11 定档）：信用分 ≥85 红榜、<60 黑榜，**每日定时刷新**；
         支撑分级监管（低分多查/高分少查）与放心供应商联动；刷分作弊 → 防刷拦截（R-15）。
       parameters:
         - $ref: '../../_common/openapi.yaml#/components/parameters/Page'
@@ -1054,15 +1055,15 @@ components:
       properties:
         name:
           type: string
-          description: 维度名（M1 基础合规 + 经营行为，权重细节待评审）
+          description: 维度名（M1 基础合规 + 经营行为；权重已定档 2026-09-11：基础合规 0.6 / 经营行为 0.4）
           example: 基础合规
         weight:
           type: number
           format: float
           minimum: 0
           maximum: 1
-          description: 权重（0-1）
-          example: 0.5
+          description: 权重（0-1；M1 两维 = 基础合规 0.6 + 经营行为 0.4，2026-09-11 定档）
+          example: 0.6
         score:
           type: number
           format: float

@@ -1,11 +1,11 @@
 # 民生互动服务（CIVIC）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.13 / §6.4.10 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.13 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6、ADR-4/ADR-7）、`services/civic/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.13 / §6.4.10 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.13 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6、ADR-4/ADR-7）、`services/civic/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：**互动域**（§4.5 未单列，本文档随 M2 补充定义）——12 张表落共享主库 + `civic_` schema 前缀隔离（Java 域既有路线）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
-> 版本：v1.0 · 2026-09-10（首版：七章齐全；M2~M3 设计先行——互动域 12 表，内容流水类按月分表，主数据不分片）。
+> 版本：v1.0 · 2026-09-10（首版：七章齐全；M2~M3 设计先行——互动域 12 表，内容流水类按月分表，主数据不分片；§5.7 于 2026-09-11 评审定档）。
 
 ## 1. ER 图（Mermaid）
 
@@ -172,7 +172,7 @@ erDiagram
 
 - **内容治理防谣言**：全部 UGC 内容（建议/意见/帖/回帖/点评/动态）敏感词 + 人工复核，审核留痕落 `content_audit_record`；未成年人内容年龄限制。
 - **R-03 数据分级授权**：匿名建议服务端脱敏（`anonymous=true` 时 `author_id` 仅审计留痕、接口不暴露）；作者昵称/商户名/答复部门脱敏展示（如 张\*饭馆、王\*员）；结果公示脱敏。
-- **R-13 推广合规**：优质小店榜非竞价、不收费；信用加权（信用分输入自 CRED，`credit_score` 唯一权威）+ 防刷拦截（R-15：`uk_daily(merchant_id, reviewer_id, reviewed_date)` 建议初值★）；榜单周期快照可回溯。
+- **推广合规（E-02 已确认口径）**：优质小店榜非竞价、不收费；信用加权（信用分输入自 CRED，`credit_score` 唯一权威）+ 防刷拦截（R-15：`uk_daily(merchant_id, reviewer_id, reviewed_date)` 建议初值★）；榜单周期快照可回溯。
 - **限时答复/回应**：建议限时答复（`SUGGESTION.replied_at`）、项目意见限时回应（`PROJECT_COMMENT_REPLY.replied_at`），超时升级走平台 JOB/MQ；答复/回应/公示事件上报 DASH（A-08 公示联动）。
 - **与画像边界清晰**：不收集无关信息、互动数据不用于画像训练（R-03）。
 - **申诉复用**：恶意点评申诉走 TICKET D-03 既有机制，本服务不建第二套申诉。
@@ -199,7 +199,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 / ADR-4 / ADR-7 为准，本节做「平台策略 → CIVIC 互动域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 / ADR-4 / ADR-7 为准，本节做「平台策略 → CIVIC 互动域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -252,6 +252,7 @@ erDiagram
 > 表结构/分表规则变更按「扩展 → 迁移 → 收缩」执行，禁止破坏性 DDL 直上生产（对齐高并发 §2.6）：双写 → 回灌 → 切读 → 收缩。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
@@ -373,7 +374,7 @@ erDiagram
 | review_rate | decimal(3,2) | NO | — | — | 好评率 0~1 |
 | review_count | int UNSIGNED | NO | — | 0 | 点评数 |
 | tags | JSON | YES | — | NULL | 标签（放心供应商/明厨亮灶等） |
-| rank | int UNSIGNED | NO | — | — | 榜单名次（信用加权 + 防刷，非竞价不收费 R-13） |
+| rank | int UNSIGNED | NO | — | — | 榜单名次（信用加权 + 防刷，非竞价不收费（E-02 已确认口径）） |
 | updated_at | datetime(3) | NO | — | CURRENT_TIMESTAMP(3) | 快照更新时间 |
 
 ### 6.10 shop_review（群众点评，按月分表 shop_review_YYYYMM）
@@ -427,7 +428,7 @@ erDiagram
 - **约束**：状态机 PENDING_REVIEW→ASSIGNED→ADOPTED/PARTIALLY_ADOPTED/REJECTED；**不采纳理由必填**；匿名时 `author_id` 仅审计留痕、接口不暴露（R-03）；答复/采纳公示事件上报 DASH。
 - **安全**：敏感词 + 人工复核；公示内容脱敏；附件仅 OSS 键。
 - **生命周期**：不归档（公示留痕）；审计 ≥6 月。
-- **接口映射**：POST /civic/suggestions、GET /civic/suggestions、GET /civic/suggestions/{suggestionId}、POST /civic/suggestions/{suggestionId}/reply（部门答复）。
+- **接口映射**：POST /civic/suggestion（提交）、GET /civic/suggestion（列表/采纳公示）、GET /civic/suggestions/{suggestionId}（详情）、POST /civic/suggestions/{suggestionId}/dispatch（平台审核通过后分派部门，2026-09-11 补）、POST /civic/suggestions/{suggestionId}/reply（部门答复）。
 
 ### 7.2 civic_project + project_progress（民生项目公开与进度，M3）
 
@@ -437,7 +438,7 @@ erDiagram
 - **约束**：状态机 PLANNED/ONGOING/PAUSED/COMPLETED；进度 0~100；进度同步只增不改（公示留痕）。
 - **安全**：图文/视频仅 OSS 键；公示数据脱敏。
 - **生命周期**：项目完结后归档；公示留痕不删。
-- **接口映射**：GET /civic/projects、GET /civic/projects/{projectId}（含 notes）。
+- **接口映射**：GET /civic/projects（列表）、POST /civic/projects（发布，2026-09-11 补）、GET /civic/projects/{projectId}（详情，含 notes）、PUT /civic/projects/{projectId}/progress（进度同步，2026-09-11 补）。
 
 ### 7.3 project_comment + project_comment_reply（群众意见与限时回应，M3）
 
@@ -447,7 +448,7 @@ erDiagram
 - **约束**：回应限时（超时升级 JOB/MQ）；回应公示脱敏；意见敏感词 + 人工复核。
 - **安全**：证据附件仅 OSS 键；脱敏公示。
 - **生命周期**：随项目归档；公示留痕。
-- **接口映射**：POST /civic/projects/{projectId}/comments、GET /civic/projects/{projectId}/comments、POST /civic/project-comments/{commentId}/reply（建设方回应）。
+- **接口映射**：POST /civic/projects/{projectId}/comment（意见提交）、GET /civic/projects/{projectId}/comments（列表）、POST /civic/projects/{projectId}/comments/{commentId}/reply（建设方回应）。
 
 ### 7.4 forum_post + forum_reply（行业圈层论坛，M3，按月分表）
 
@@ -457,17 +458,17 @@ erDiagram
 - **约束**：审核状态 REVIEWING→PUBLISHED/REJECTED（内容治理留痕 content_audit_record）；圈层标识体系上线前评审；作者昵称脱敏（R-03）。
 - **安全**：敏感词 + 人工复核；图片仅 OSS 键；未成年人内容年龄限制。
 - **生命周期**：>12 月热转冷 OSS；归档查询走快照。
-- **接口映射**：POST /civic/forum/posts、GET /civic/forum/posts、GET /civic/forum/posts/{postId}（含 replies）、POST /civic/forum/posts/{postId}/replies。
+- **接口映射**：POST /civic/forum/post（发帖）、GET /civic/forum/posts（列表）、GET /civic/forum/posts/{postId}（详情，含 replies）、POST /civic/forum/posts/{postId}/reply（回帖）。
 
 ### 7.5 shop_promotion + shop_review（优质小店免费推广，M3）
 
-- **用途**：优质小店免费上榜、群众点评、信用加权推荐（E-02），非竞价、不收费，形成「信用 → 流量 → 守法」正循环（R-13）。
+- **用途**：优质小店免费上榜、群众点评、信用加权推荐（E-02），非竞价、不收费，形成「信用 → 流量 → 守法」正循环（E-02 已确认口径）。
 - **主键（策略）**：榜单联合主键（`batch_no` + `merchant_id`）周期快照可回溯；`review_id` 雪花 ID，API 输出 `srv_` 前缀。
 - **索引**：PRIMARY KEY(`batch_no`, `merchant_id`)；KEY `idx_rank`(`batch_no`, `rank`)——榜单查询；KEY `idx_merchant`(`merchant_id`)；review：KEY `idx_merchant_created`(`merchant_id`, `created_at`)——**分片键剪枝**；UNIQUE KEY `uk_daily`(`merchant_id`, `reviewer_id`, `reviewed_date`)——防刷★（§5.7）。
 - **约束**：信用加权输入 `credit_score` 唯一权威在 CRED（只读引用）；好评率/点评数由点评异步聚合（禁跨分片实时聚合）；防刷拦截（R-15）；恶意点评申诉走 TICKET D-03。
 - **安全**：小店名称脱敏；点评敏感词 + 人工复核。
 - **生命周期**：榜单周期快照留档可回溯；点评 >12 月热转冷 OSS。
-- **接口映射**：GET /civic/shop-recommend（榜单）、POST /civic/shop-reviews（点评）。
+- **接口映射**：GET /civic/shops/recommended（榜单）、POST /civic/shops/{merchantId}/reviews（点评）。
 
 ### 7.6 merchant_post（商户动态，M2，按月分表）
 
@@ -477,7 +478,7 @@ erDiagram
 - **约束**：**必须本人商户**（越权 2002）；审核状态 REVIEWING→PUBLISHED/REJECTED；敏感词 + 人工复核；TEXT 类型 media_keys 可空。
 - **安全**：商户名脱敏展示；媒体仅 OSS 键。
 - **生命周期**：>12 月热转冷 OSS。
-- **接口映射**：POST /civic/merchant-posts（提交）、GET /civic/merchant-posts（动态流列表）。
+- **接口映射**：POST /civic/posts（提交）、GET /civic/posts（动态流列表，merchantId 传参=店铺主页/不传=首页）。
 
 ### 7.7 content_audit_record（内容治理留痕，不分片）
 
@@ -499,4 +500,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/civic/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.10 §5.13/§6.4.10、《微服务边界与职责基准》v1.2 §2.13 同步维护。*
+*文档结束 · 与 `services/civic/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.13/§6.4.10、《微服务边界与职责基准》v1.6 §2.13 同步维护。*

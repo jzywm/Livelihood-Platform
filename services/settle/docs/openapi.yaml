@@ -3,10 +3,10 @@ info:
   title: 结算服务 SETTLE · 接口文档
   version: 1.0.0
   description: |
-    结算服务（SETTLE）前端接口文档。模块 I3 工资保障代付、I4 商品购买结算分账【M2】、I5 零工劳务结算【M2】、
-    F4 货运运费托管结算【M2】、P-02 证据出证（结算侧）。
-    口径对齐：PDD §5.2 / §6.4.2；需求口径 PRD §5.11（I 组）、`32-功能列表.md` I-03/I-04/I-05/F-04；
-    边界依据 SSOT §2.2。里程碑标注：【M1】代付/预警/出证/资金审计；【M2】分账/零工/运费（占位）。
+    结算服务（SETTLE）前端接口文档。模块 I-03 工资保障代付、I-04 商品购买结算分账【M2】、I-05 零工劳务结算【M2】、
+    F-04 货运运费托管结算【M2】、P-02 证据出证（结算侧）、平台结算账户（M0 对接层，不建本地表）。
+    口径对齐：PDD v1.0（基线）§5.2 / §6.4.2；需求口径 PRD v2.3 §5.11（I 组）、`32-功能列表.md` I-03/I-04/I-05/F-04；
+    边界依据 SSOT v1.6 §2.2。里程碑标注：【M1】代付/预警/出证/资金审计；【M2】分账/零工/运费（占位）。
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
     - 服务端间接口（支付通道回调、TRADE 分账触发）见文末 x-external-interfaces 附录，前端勿调。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权 / 幂等键）引用 ../../_common/openapi.yaml，勿复制内联。
@@ -674,10 +674,9 @@ components:
           description: 用工关系编号（平台校验用工/考勤后代付）
           example: emp_20260801001
         amount:
-          type: number
-          minimum: 0.01
-          description: 代付金额（元）
-          example: 3200
+          type: string
+          description: 代付金额（元，字符串小数，两位，防浮点误差）
+          example: '3200.00'
         payeeAccount:
           type: string
           description: 收款账户绑定号（与实名不一致 → 3002 拒绝）
@@ -716,8 +715,9 @@ components:
           description: 工作者姓名（脱敏展示）
           example: 李*华
         amount:
-          type: number
-          example: 3200
+          type: string
+          description: 代付金额（元，字符串小数，两位）
+          example: '3200.00'
         status:
           $ref: '#/components/schemas/PayrollStatus'
         channelOrderNo:
@@ -811,9 +811,9 @@ components:
           description: 工作者姓名（脱敏展示）
           example: 李*华
         amount:
-          type: number
-          description: 应发未发金额（元）
-          example: 3200
+          type: string
+          description: 应发未发金额（元，字符串小数，两位）
+          example: '3200.00'
         dueDate:
           type: string
           format: date
@@ -915,20 +915,19 @@ components:
           description: 卖方商户名称（脱敏展示）
           example: XX食材
         totalAmount:
-          type: number
-          description: 订单总额（元）
-          example: 500
+          type: string
+          description: 订单总额（元，字符串小数，两位）
+          example: '500.00'
         goodsAmount:
-          type: number
-          description: 卖方货款（元）
-          example: 495
+          type: string
+          description: 卖方货款（元，字符串小数，两位）
+          example: '495.00'
         feeAmount:
-          type: number
-          description: 平台服务费（元）
-          example: 5
+          type: string
+          description: 平台服务费（元，字符串小数，两位）
+          example: '5.00'
         feeRate:
           type: number
-          format: float
           description: 服务费率（0.5%~1% 分品类公开，P-01）
           example: 0.01
         status:
@@ -972,9 +971,9 @@ components:
           description: 结算周期止
           example: '2026-01-31'
         amount:
-          type: number
-          minimum: 0.01
-          example: 2400
+          type: string
+          description: 结算金额（元，字符串小数，两位）
+          example: '2400.00'
         payeeAccount:
           type: string
           description: 收款账户绑定号（实名不匹配 → 3002）
@@ -1007,13 +1006,13 @@ components:
           format: date
           example: '2026-01-31'
         dueAmount:
-          type: number
-          description: 应结金额（元）
-          example: 2400
+          type: string
+          description: 应结金额（元，字符串小数，两位）
+          example: '2400.00'
         paidAmount:
-          type: number
-          description: 已结金额（元）
-          example: 0
+          type: string
+          description: 已结金额（元，字符串小数，两位）
+          example: '0.00'
         status:
           type: string
           description: 发放进度
@@ -1054,9 +1053,9 @@ components:
           description: 司机名称（脱敏展示）
           example: 赵*运
         amount:
-          type: number
-          description: 托管运费（元）
-          example: 800
+          type: string
+          description: 托管运费（元，字符串小数，两位）
+          example: '800.00'
         status:
           $ref: '#/components/schemas/EscrowStatus'
         createdAt:
@@ -1120,9 +1119,9 @@ components:
           description: 关联商户名称（脱敏展示）
           example: 张*农资
         amount:
-          type: number
-          description: 金额（元）
-          example: 3200
+          type: string
+          description: 金额（元，字符串小数，两位）
+          example: '3200.00'
         channelOrderNo:
           type: string
           description: 通道交易号

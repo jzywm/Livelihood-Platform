@@ -1,16 +1,16 @@
 # 账户服务（ACC）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.1 / §6.4.1 / §8.3.1）、`docs/design/微服务边界与职责基准.md`（§2.1 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.2（§2.1~§2.6）、`services/acc/docs/openapi.yaml` v1.1.0（**唯一可手改源**）。
-> 数据域归属：① 身份域（`account`、`wallet_flow`）。口径与 openapi.yaml 冲突时以 openapi.yaml 为准。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.1 / §6.4.1 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.1 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/acc/docs/openapi.yaml` v1.1.0（**唯一可手改源**）。
+> 数据域归属：① 身份域（`account`、`realname_record`、`wallet_flow`、`wallet_binding`、`reconcile_task` + `captcha_challenge`(Redis，不入库)）。口径与 openapi.yaml 冲突时以 openapi.yaml 为准。
 > 版本：v1.1 · 2026-09-10（v1.0 ER 图定稿；v1.1 合并分库分表方案 / 数据字典 / 表设计说明书）。
 
 ## 1. ER 图（Mermaid）
 
 ```mermaid
 erDiagram
-    %% ACC 账户服务 ER 图 · 实名身份底座 + 纯记账簿（I-01 / I-06 / G-01）
+    %% ACC 账户服务 ER 图 · 实名身份底座 + 纯记账簿（I-01 / I-06 / 登录页 G-01）
 
     ACCOUNT {
         bigint account_id PK "雪花ID,API输出acc_前缀"
@@ -98,8 +98,8 @@ erDiagram
 | `realname_record` | MySQL | 实名业务单：回传/重试/NFC 增强留痕，承载实名状态机 |
 | `wallet_flow` | MySQL **按月分表** | 纯记账簿流水：只增不改，通道交易号 + 存证哈希链 |
 | `wallet_binding` | MySQL | 收款账户绑定（持牌通道），供 SETTLE 代付/分账收款 |
-| `reconcile_task` | MySQL | 监管端资金对账任务（R-11），平台流水 vs 通道账单 |
-| `captcha_challenge` | Redis（内存态兜底） | 人机验证挑战（G-01），一次性消费，**不入库** |
+| `reconcile_task` | MySQL | 监管端资金对账任务，平台流水 vs 通道账单 |
+| `captcha_challenge` | Redis（内存态兜底） | 人机验证挑战（登录页 G-01，页面码），一次性消费，**不入库** |
 
 ## 3. 关键设计约定
 
@@ -111,8 +111,8 @@ erDiagram
 - **分库定位**：P1 模块化单体期全平台共享主库 + `acc_` schema 前缀隔离；P2 交易/结算独立库后 ACC 仍留共享主库（详见 §5.1）。
 - **幂等**：实名（重复 `open_id`）与绑定（同账号同通道）幂等返回原记录；资金类接口走 `Idempotency-Key`。
 - **状态机**：实名 `UNREALNAMED → REALNAMING → REALNAMED / SUSPENDED`；NFC 增强（I-06）在 `level` 上标记 BASE/ENHANCED，基础回传路径不变。
-- **监管审计（R-11）**：`reconcile_task` 对账不一致报 3009；审计视图 `FundsAuditFlow` = 流水 + `payerId/payeeId/merchantName/reconcileStatus(PENDING/RECONCILED/DIFF)`。
-- **人机验证（G-01）**：`captcha_challenge` 存 Redis、一次性消费、5 分钟有效，`verify_token` 供注册回填 `captchaToken`。
+- **监管审计**：`reconcile_task` 对账不一致报 3009；审计视图 `FundsAuditFlow` = 流水 + `payerId/payeeId/merchantName/reconcileStatus(PENDING/RECONCILED/DIFF)`。
+- **人机验证（登录页 G-01，页面码）**：`captcha_challenge` 存 Redis、一次性消费、5 分钟有效，`verify_token` 供注册回填 `captchaToken`。
 
 ## 4. 关系说明
 
@@ -128,7 +128,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.2 §2.1~§2.6 为准，本节只做「平台策略 → ACC 域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节只做「平台策略 → ACC 域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -183,6 +183,7 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
@@ -325,7 +326,7 @@ erDiagram
 
 ### 7.5 reconcile_task（监管端资金对账任务）
 
-- **用途**：监管端（R-11）触发资金对账，核对平台记账流水与第三方通道账单，不一致报 3009。
+- **用途**：监管端触发资金对账，核对平台记账流水与第三方通道账单，不一致报 3009。
 - **主键**：`reconcile_id` 业务号（`rec_` 前缀）。
 - **索引**：PRIMARY KEY(`reconcile_id`)；KEY `idx_status_created`(`status`, `created_at`)——监管端任务列表。
 - **约束**：接口级 `Idempotency-Key`（重复触发返回原任务）；与 `wallet_flow` 为**逻辑关联**（按日期范围核对，非外键）；对账走异步/从库，不进 OLTP 主库聚合。
@@ -334,7 +335,7 @@ erDiagram
 
 ### 7.6 captcha_challenge（人机验证挑战，Redis）
 
-- **用途**：登录/注册页人机验证（G-01 防机器人）：默认滑块拼图，失败降级图形验证码；登录爆破限速一体化。
+- **用途**：登录/注册页人机验证（页面码 G-01，防机器人）：默认滑块拼图，失败降级图形验证码；登录爆破限速一体化。
 - **结构**：Redis Hash `captcha:{captcha_id}`（§6.6）；内存态兜底（Redis 不可用时进程内缓存短 TTL 兜底）。
 - **约束**：答案仅存服务端；挑战**一次性消费**（verify 后失效）；`verify_token` 5 分钟有效，注册回填 `captchaToken` 后同样一次性消费；接口级限流（429）。
 - **生命周期**：TTL 5 分钟自动过期；不入 MySQL。
@@ -342,4 +343,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/acc/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.2 §2、《产品设计文档》v1.6 §5.1/§6.4.1 同步维护。*
+*文档结束 · 与 `services/acc/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线）§5.1/§6.4.1 同步维护。*

@@ -1,6 +1,6 @@
 # 助手服务（ASSIST · Assistant）
 
-> 微服务说明文档 · 依据《产品需求文档》（PRD v2.0）与《产品设计文档》（PDD v1.12）编写
+> 微服务说明文档 · 依据《产品需求文档》（PRD v2.3）与《产品设计文档》（PDD v1.0（基线））编写
 > 本文档用于明确该微服务的**功能与质量基线**，支持后续扩展开发。功能口径以 PDD §5.7 / §6.4.12 为准，需求口径以 PRD §5.12（J 组，J-01~J-13）与 `27-智能助手Agent需求.md` 为准。
 
 ## 1. 服务概述
@@ -77,6 +77,6 @@
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线、§5.12（J 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§3 技术选型、§5.7 助手服务、§6.4.12 接口清单、§7.4 大模型对话合规、§8 非功能设计
 - 接口文档（**唯一可手改源**）：`services/assist/docs/openapi.yaml`（OpenAPI 3.0.3，前端接口 8 个；chat 双模式 SSE/JSON；公共组件引用 `services/_common/openapi.yaml`，勿复制内联；出方向依赖见文末 x-external-interfaces 附录）
-- 数据库设计说明书（ER + 存储落位 + 数据字典 + 结构设计）：`services/assist/docs/er.md`（口径：不落业务库（边界基准 v1.2 §2.7）；会话 30min TTL、脱敏日志 ≤30 天、不沉淀原文；对齐 openapi.yaml v1.0.0 与《高并发架构演进设计》v0.3 §2/§3）
+- 数据库设计说明书（ER + 存储落位 + 数据字典 + 结构设计）：`services/assist/docs/er.md`（口径：不落业务库（边界基准 v1.6 §2.7）；会话 30min TTL、脱敏日志 ≤30 天、不沉淀原文；对齐 openapi.yaml v1.0.0 与《高并发架构演进设计》v1.0 §2/§3）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/assist/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/09-智能助手对话流程-J.md`；需求专项：`docs/需求调研/核心成果/27-智能助手Agent需求.md`

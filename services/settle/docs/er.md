@@ -1,10 +1,10 @@
 # 结算服务（SETTLE）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.2 / §6.4.2 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.2 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/settle/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.2 / §6.4.2 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.2 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/settle/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：⑨ 结算域（SETTLE）——`payroll` / `split_record` / `settle_flow`（+ 预警/出证/零工/运费为执行侧派生实体，见 §2）。
-> 　⚠️ 归属错位：`payroll` 原归 ③ 用工域（EMP）、`split_record` 原归 ⑧ 交易域（TRADE），二者执行均在 SETTLE；已经《微服务边界与职责基准》§4-C07 决策（2026-09-08）迁入 ⑨ 结算域、PDD §4.5 已同步；本文档按**执行方 SETTLE** 设计（列为待评审项，见 §5.7）。
+> 　⚠️ 归属错位（已解决）：`payroll` 原归 ③ 用工域（EMP）、`split_record` 原归 ⑧ 交易域（TRADE），二者执行均在 SETTLE；已经《微服务边界与职责基准》§4-C07 决策（2026-09-08）迁入 ⑨ 结算域、PDD §4.5 已同步；本文档按**执行方 SETTLE** 设计（**§4-C07 已定档，2026-09-11 终审确认**）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
 > 版本：v1.0 · 2026-09-10（首版：七章齐全；代付/预警/出证/分账/零工/运费/结算流水七实体，`payroll`/`settle_flow`/`split_record` 按月分表（`payroll` 分片键 `employment_id`/`account_id` + `created_at`，M1 起，原样采用高并发 §2.2），主数据不分片；P1 共享主库 `settle_` schema 前缀隔离、P2 独立库（交易/结算拆分第一顺位，M2 优先拆独立部署））。
 
@@ -22,6 +22,7 @@ erDiagram
         varchar employment_id "用工关系编号emp_,分表键①"
         bigint account_id "老板账户(发起人),分表键② employment_id/account_id"
         bigint employee_id "工作者账户(收款人)"
+        varchar idem_key UK "幂等键Idempotency-Key,uk_idem(account_id,idem_key)NULL豁免"
         varchar employer_name "老板/商户名,脱敏如张*农资"
         varchar employee_name "工作者姓名,脱敏如李*华"
         decimal amount "代付金额,API输出字符串小数"
@@ -30,6 +31,7 @@ erDiagram
         varchar channel_order_no UK "通道交易号,到账回填,证据链"
         varchar hash "存证哈希SHA-256,R-04只增不改"
         json attendance "考勤校验摘要{month,hours,checked}"
+        varchar remark "备注,可选"
         datetime created_at "发起时间,分表键"
         datetime paid_at "到账时间"
         datetime confirmed_at "收款确认时间"
@@ -61,7 +63,7 @@ erDiagram
 
     SPLIT_RECORD {
         bigint split_id PK "雪花ID,API输出spl_前缀"
-        varchar order_id "交易订单号TRADE,分表键"
+        varchar order_id "交易订单号TRADE,分表键,uk_order 1:1承担幂等"
         varchar merchant_id "卖方商户,内部对账字段"
         varchar merchant_name "卖方商户名,脱敏"
         decimal total_amount "订单总额"
@@ -79,6 +81,7 @@ erDiagram
         varchar employment_id "零工用工记录编号,分表键"
         bigint employer_id "老板账户(发起人)"
         bigint employee_id "零工账户(收款人)"
+        varchar idem_key UK "幂等键Idempotency-Key,uk_idem(employer_id,idem_key)NULL豁免"
         enum period_type "DAILY日结/WEEKLY周结/MONTHLY月结"
         date period_start "结算周期起"
         date period_end "结算周期止"
@@ -97,6 +100,7 @@ erDiagram
         varchar shipper_id "货主账户,内部字段"
         varchar shipper_name "货主名称,脱敏如王*材"
         varchar driver_id "司机账户,内部字段"
+        varchar idem_key UK "幂等键Idempotency-Key,uk_idem(shipper_id,idem_key)NULL豁免"
         varchar driver_name "司机名称,脱敏如赵*运"
         decimal amount "托管运费"
         enum status "FROZEN冻结托管/RELEASED已放款/DISPUTED纠纷仲裁"
@@ -152,7 +156,7 @@ erDiagram
 
 - **R-01 只记账不碰钱**：SETTLE 不设任何资金余额字段，真实资金由持牌机构从老板绑定对公/法人账户划转；平台不沉淀资金、不做二清、不设资金池（AC-C1）。余额/汇总由 `settle_flow` 流水聚合计算。
 - **R-04 流水只增不改 + 哈希链**：`channel_order_no`（通道交易号）+ `hash`（SHA-256）+ 时间戳即证据链，可出证（P-02）；流水类（payroll/settle_flow/split_record/gig_settle）库层回收 UPDATE/DELETE 写权限，应用层禁改。
-- **幂等**：资金类写操作强制 `Idempotency-Key` 头，重复提交返回原单（3008 幂等返回）；服务端间接口（支付回调、分账触发）验签 + 幂等 + 内部 Token。
+- **幂等**：资金类写操作强制 `Idempotency-Key` 头，重复提交返回原单（3008 幂等返回）；**幂等键落库 `idem_key` 唯一索引 `uk_idem(发起人, idem_key)`（NULL 豁免、同月表内唯一），Redis 仅作加速缓存**；服务端间接口（支付回调、分账触发）验签 + 幂等 + 内部 Token。
 - **状态机 + 超时查单**：代付 `PENDING_VALIDATION → DISBURSING → PAID → CONFIRMED`（/ FAILED / OVERDUE → URGED → RESOLVED，仲裁走 TICKET）；通道失败/超时（4002）幂等重试或切备选通道；超时状态机自动查单兜底。
 - **每日对账**：对账不一致（3009）→ 每日对账 JOB 扫描补差；「写后立即读」强制走主库。
 - **欠薪预警**：「应发未发」超时自动触发 `/settle/arrears/warnings`，监管端催办（URGED），仲裁走 TICKET（D-02/T-15，不在本服务）。
@@ -162,7 +166,7 @@ erDiagram
 - **分表**：`payroll`/`settle_flow`/`split_record`/`gig_settle` 按月分表（只增流水类）；`arrears_warning`/`evidence_record`/`freight_escrow` 主数据不分片；分片键见 §5.2。
 - **分库定位**：P1 模块化单体期共享主库 + `settle_` schema 前缀隔离；P2 交易/结算独立库，SETTLE 为拆分第一顺位、M2 优先拆独立部署（详见 §5.1）。
 - **分布式 ID**：写库 Java 域统一雪花 ID（`infra-idgen`，DB 存 bigint，API 输出业务号前缀 `pay_`/`warn_`/`evd_`/`sf_`/`spl_`/`gig_`/`esc_`）；时钟回拨三档预案适用（§5.4）。
-- **监管审计（R-11）**：`settle_flow` 为监管端资金流水审计视图（`SettleBizType` 全业务类型 + 通道交易号 + 存证哈希）；审计日志 ≥6 个月（WORM/哈希链）。
+- **监管审计视图**：`settle_flow` 为监管端资金流水审计视图（`SettleBizType` 全业务类型 + 通道交易号 + 存证哈希）；审计日志 ≥6 个月（WORM/哈希链）。
 
 ## 4. 关系说明
 
@@ -181,7 +185,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节只做「平台策略 → SETTLE 结算域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节只做「平台策略 → SETTLE 结算域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -203,7 +207,7 @@ erDiagram
 | `evidence_record` | 不分片（只增不改，行数可控） | — | `evidence_record` | 不归档（存证留痕） | M1 起 |
 | `freight_escrow` | 不分片（托管工作单，M2 占位） | — | `freight_escrow` | 闭单（RELEASED/DISPUTED）后归档 | M2 |
 
-> **口径说明**：`payroll` 分片键/归档策略/里程碑原样采用《高并发架构演进设计》v0.3 §2.2（SETTLE 代付流水 `payroll`：按月分表，`employment_id`/`account_id`，>12 月热转冷 OSS 保留热表 12 个月，M1 起），**不改变**。`settle_flow` 按月分表口径来自 PDD §4.5 ⑨ 结算域。
+> **口径说明**：`payroll` 分片键/归档策略/里程碑原样采用《高并发架构演进设计》v1.0 §2.2（SETTLE 代付流水 `payroll`：按月分表，`employment_id`/`account_id`，>12 月热转冷 OSS 保留热表 12 个月，M1 起），**不改变**。`settle_flow` 按月分表口径来自 PDD §4.5 ⑨ 结算域。
 >
 > **分片阈值**（平台级建议初值，压测/数据增长标定）：单表 >2000 万行 或 >20GB 触发再分；按月分表天然可控，冷数据到点即归档，避免单表膨胀到亿级。
 
@@ -243,14 +247,15 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
 | 分片阈值 | 单表 >2000 万行 / >20GB | 评审 + 数据增长标定 |
 | 回拨容忍窗口 W / 号段步长 | W=5s、step=1000 | 评审 + 压测标定（TBD-10） |
 | 热表保留月数 | 12 个月 | 评审 |
-| **归属错位回改确认（§4-C07）** | 按执行方 SETTLE 设计（payroll/split_record 迁入 ⑨ 结算域） | 评审（EMP/TRADE 侧口径最终确认） |
-| `split_record` 分片键 | `order_id` + `created_at`（高并发 §2.2 仍列 split_record 于 TRADE `buyer_id`） | 评审 |
+| **归属错位回改确认（§4-C07）** | ✅ 已定档：按执行方 SETTLE 设计（payroll/split_record 已迁入 ⑨ 结算域；EMP 不设 payroll 表、TRADE 不设 split_record 表，2026-09-11 终审回改确认） | 已定档 |
+| `split_record` 分片键 | `order_id` + `created_at`（高并发 §2.2 已同步修正：split_record 归 SETTLE 结算域） | ✅ 已定档 |
 | 欠薪预警「应发未发」超时时限 | 应发日期 + X 工作日（对齐发薪周期） | 评审 |
 | 证据包 OSS 签名 URL 时效 | 短时效（如 15 分钟） | 评审 |
 | 零工/运费 M2 表分片口径 | 与 payroll 同口径（按月） | M2 评审 |
@@ -269,6 +274,7 @@ erDiagram
 | employment_id | varchar(32) | NO | — | — | 用工关系编号 `emp_` 前缀，**分表键①**（逻辑关联 EMP.employment） |
 | account_id | bigint UNSIGNED | NO | — | — | 老板（发起人）账户，**分表键②**（employment_id/account_id 组合）；水平越权校验 |
 | employee_id | bigint UNSIGNED | NO | — | — | 工作者（收款人）账户（逻辑关联 ACC.account） |
+| idem_key | varchar(64) | YES | UK(联合) | NULL | 幂等键 Idempotency-Key；`uk_idem(account_id, idem_key)` NULL 豁免（同月表内唯一，3008 幂等返回） |
 | employer_name | varchar(64) | YES | — | NULL | 老板/商户名称，**脱敏输出**如 张\*农资 |
 | employee_name | varchar(64) | YES | — | NULL | 工作者姓名，**脱敏输出**如 李\*华 |
 | amount | decimal(18,2) | NO | — | — | 代付金额（元），API 输出 string |
@@ -329,7 +335,7 @@ erDiagram
 | 字段 | 类型 | 空 | 键 | 默认 | 说明 |
 |---|---|---|---|---|---|
 | split_id | bigint UNSIGNED | NO | PK | — | 分账单号，雪花 ID；API 输出 `spl_` 前缀字符串 |
-| order_id | varchar(32) | NO | — | — | 交易订单号（TRADE，`O-` 前缀），**分表键**（逻辑关联 TRADE.order） |
+| order_id | varchar(32) | NO | UK | — | 交易订单号（TRADE，`O-` 前缀），**分表键**（逻辑关联 TRADE.order）；`uk_order(order_id)` 1:1 承担幂等（重复触发 3008 返回原单） |
 | merchant_id | varchar(32) | YES | — | NULL | 卖方商户（内部对账字段；接口以 merchantName 脱敏输出） |
 | merchant_name | varchar(64) | YES | — | NULL | 卖方商户名称，**脱敏输出** |
 | total_amount | decimal(18,2) | NO | — | — | 订单总额（元） |
@@ -349,6 +355,7 @@ erDiagram
 | employment_id | varchar(32) | NO | — | — | 零工用工记录编号 `emp_`，**分表键** |
 | employer_id | bigint UNSIGNED | NO | — | — | 老板（发起人）账户（内部字段，越权 2002） |
 | employee_id | bigint UNSIGNED | NO | — | — | 零工（收款人）账户（内部字段） |
+| idem_key | varchar(64) | YES | UK(联合) | NULL | 幂等键 Idempotency-Key；`uk_idem(employer_id, idem_key)` NULL 豁免（同月表内唯一，3008 幂等返回） |
 | period_type | enum('DAILY','WEEKLY','MONTHLY') | NO | — | — | 结算周期（GigPeriodType：日结/周结/月结） |
 | period_start | date | NO | — | — | 结算周期起 |
 | period_end | date | NO | — | — | 结算周期止 |
@@ -369,6 +376,7 @@ erDiagram
 | shipper_id | varchar(32) | YES | — | NULL | 货主账户（内部字段，按角色过滤 2002） |
 | shipper_name | varchar(64) | YES | — | NULL | 货主名称，**脱敏输出**如 王\*材 |
 | driver_id | varchar(32) | YES | — | NULL | 司机账户（内部字段） |
+| idem_key | varchar(64) | YES | UK(联合) | NULL | 幂等键 Idempotency-Key；`uk_idem(shipper_id, idem_key)` NULL 豁免（3008 幂等返回） |
 | driver_name | varchar(64) | YES | — | NULL | 司机名称，**脱敏输出**如 赵\*运 |
 | amount | decimal(18,2) | NO | — | — | 托管运费（元） |
 | status | enum('FROZEN','RELEASED','DISPUTED') | NO | — | FROZEN | 托管状态（EscrowStatus）：冻结托管→已放款；纠纷存证仲裁 |
@@ -381,7 +389,7 @@ erDiagram
 
 | 结构 | 类型 | 说明 |
 |---|---|---|
-| `idem:{Idempotency-Key}`（Redis） | 幂等缓存 | 资金类写操作（代付/分账/零工/运费放款）幂等缓存；重复提交返回原单（3008） |
+| `idem:{Idempotency-Key}`（Redis） | 幂等缓存 | 资金类写操作（代付/分账/零工/运费放款）幂等缓存（**加速层**）；重复提交返回原单（3008）——**权威幂等以落库 `idem_key`/`uk_order` 唯一索引为准**，Redis 仅防并发穿透（TTL 短★） |
 | 对账/超时扫描 JOB 锁（Redis SETNX/Redisson） | 分布式锁 | 单实例执行器防重复扫描（PDD §8.3.1 无状态约束） |
 | 通道查询热态（可选） | 缓存 | 代付状态/通道交易号热态，写后立即读走主库 |
 
@@ -393,7 +401,7 @@ erDiagram
 
 - **用途**：工资保障代付（I-03）——老板经持牌通道向工作者代付，平台校验用工/考勤后记账留痕、不碰钱；承载代付状态机 + 证据链。
 - **主键（策略）**：`payroll_id` bigint 雪花 ID（`infra-idgen`），API 输出 `pay_` 前缀；分表路由以业务字段 `created_at` 为准（号段兜底时依然正确）。
-- **索引**：PRIMARY KEY(`payroll_id`)；KEY `idx_employment_created`(`employment_id`, `created_at`)——按用工关系查询 + **分片键剪枝**；KEY `idx_account_created`(`account_id`, `created_at`)——发起人（老板）列表 + 分片键剪枝；KEY `idx_status_created`(`status`, `created_at`)——状态筛选/超时扫描；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**（未到账无通道号不参与）。
+- **索引**：PRIMARY KEY(`payroll_id`)；KEY `idx_employment_created`(`employment_id`, `created_at`)——按用工关系查询 + **分片键剪枝**；KEY `idx_account_created`(`account_id`, `created_at`)——发起人（老板）列表 + 分片键剪枝；KEY `idx_status_created`(`status`, `created_at`)——状态筛选/超时扫描；UNIQUE KEY `uk_idem`(`account_id`, `idem_key`)——**幂等键**，NULL 豁免（同月表内唯一）；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**（未到账无通道号不参与）。
 - **约束**：状态机 `PENDING_VALIDATION → DISBURSING → PAID → CONFIRMED`（/ FAILED / OVERDUE → URGED → RESOLVED）；**只增不改**（库层回收写权限）；`Idempotency-Key` 幂等（重复提交 3008）；「已到账」后仅收款人本人可确认（非 PAID 确认报 3007）。
 - **加密/脱敏**：`employer_name`/`employee_name` 脱敏输出；收款账号经 ACC 绑定（`payee_account` 只存绑定号，实名不一致 3002 拒绝）；`hash` 哈希链存证。
 - **生命周期**：热表 12 个月 → 归档 OSS（Parquet/压缩），对账/审计按需回捞，哈希链跨归档连续。
@@ -421,7 +429,7 @@ erDiagram
 
 ### 7.4 settle_flow（结算流水总览，按月分表）
 
-- **用途**：监管端资金流水审计（README 三端分布「资金流水审计」）——代付/分账/零工/运费全业务类型流水总览（通道交易号 + 存证哈希），R-11 监管审计视图。
+- **用途**：监管端资金流水审计（README 三端分布「资金流水审计」）——代付/分账/零工/运费全业务类型流水总览（通道交易号 + 存证哈希），监管审计视图。
 - **主键（策略）**：`flow_id` 雪花 ID，API 输出 `sf_` 前缀。
 - **索引**：PRIMARY KEY(`flow_id`)；KEY `idx_biz_created`(`biz_id`, `created_at`)——按业务单反查 + **分片键剪枝**；KEY `idx_biztype_created`(`biz_type`, `created_at`)——监管总览按类型+月筛选；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
 - **约束**：**只增不改** + `hash` 哈希链；与各业务单为逻辑关联（`biz_id` 引用，非外键）；跨月聚合走异步/从库，不进 OLTP 主库。
@@ -433,7 +441,7 @@ erDiagram
 
 - **用途**：商品购买结算分账（I-04，M2）——订单验收通过后经持牌通道分账（货款→卖方、服务费→平台，费率 0.5%~1% 公开 P-01）；执行由 TRADE 触发（服务端间 /settle/split/execute）。
 - **主键（策略）**：`split_id` 雪花 ID，API 输出 `spl_` 前缀。
-- **索引**：PRIMARY KEY(`split_id`)；KEY `idx_order_created`(`order_id`, `created_at`)——按订单查询 + **分片键剪枝**；KEY `idx_status_created`(`status`, `created_at`)——分账列表；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
+- **索引**：PRIMARY KEY(`split_id`)；UNIQUE KEY `uk_order`(`order_id`)——1:1 且**承担幂等**（重复触发 3008）；KEY `idx_order_created`(`order_id`, `created_at`)——按订单查询 + **分片键剪枝**；KEY `idx_status_created`(`status`, `created_at`)——分账列表；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
 - **约束**：状态机 `PENDING → SUCCESS / FAILED`；**只增不改** + `hash`；分账失败幂等重试 + 每日对账（3009）；全程走持牌分账通道不沉淀（R-01）。
 - **加密/脱敏**：`merchant_name` 脱敏输出。
 - **生命周期**：热表 12 个月 → 归档 OSS（M2 交付前口径以评审为准）。
@@ -443,7 +451,7 @@ erDiagram
 
 - **用途**：零工劳务结算（I-05，M2）——日结/周结/月结，复用 I-03 代付能力；到账计入劳务信用（I-02/I-05 联动）。
 - **主键（策略）**：`gig_settle_id` 雪花 ID，API 输出 `gig_` 前缀。
-- **索引**：PRIMARY KEY(`gig_settle_id`)；KEY `idx_employment_created`(`employment_id`, `created_at`)——**分片键剪枝** + 应结未结聚合；KEY `idx_status_created`(`status`, `created_at`)；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
+- **索引**：PRIMARY KEY(`gig_settle_id`)；KEY `idx_employment_created`(`employment_id`, `created_at`)——**分片键剪枝** + 应结未结聚合；KEY `idx_status_created`(`status`, `created_at`)；UNIQUE KEY `uk_idem`(`employer_id`, `idem_key`)——**幂等键**，NULL 豁免；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
 - **约束**：复用 PayrollStatus 状态机；`Idempotency-Key` 幂等；收款账户实名不匹配 3002、通道失败 4002；应结未结（dueAmount/paidAmount）为按 `employment_id + period` 聚合视图，不落单独余额表。
 - **加密/脱敏**：收款账号经 ACC 绑定，只存绑定号。
 - **生命周期**：热表 12 个月 → 归档 OSS（M2 交付前口径以评审为准）。
@@ -453,7 +461,7 @@ erDiagram
 
 - **用途**：货运运费托管结算（F-04，M2）——下单冻结运费（第三方持牌通道托管，平台不沉淀）→ 送达确认放款入司机账户，杜绝拖欠；货损/迟到纠纷存证仲裁（走 TICKET T-15/D-02）。
 - **主键（策略）**：`escrow_id` 雪花 ID，API 输出 `esc_` 前缀。
-- **索引**：PRIMARY KEY(`escrow_id`)；KEY `idx_freight`(`freight_order_id`)——按货运订单反查；KEY `idx_status_created`(`status`, `created_at`)——托管单列表/待放款队列；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
+- **索引**：PRIMARY KEY(`escrow_id`)；KEY `idx_freight`(`freight_order_id`)——按货运订单反查；KEY `idx_status_created`(`status`, `created_at`)——托管单列表/待放款队列；UNIQUE KEY `uk_idem`(`shipper_id`, `idem_key`)——**幂等键**，NULL 豁免；UNIQUE KEY `uk_channel_order_no`(`channel_order_no`)——**NULL 豁免**。
 - **约束**：状态机 `FROZEN → RELEASED / DISPUTED`；非托管中状态放款报 3007；`Idempotency-Key` 幂等；放款失败重试 + 对账。
 - **加密/脱敏**：`shipper_name`/`driver_name` 脱敏输出。
 - **生命周期**：闭单（RELEASED/DISPUTED）后归档（M2 交付前口径以评审为准）。
@@ -469,4 +477,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/settle/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.2/§6.4.2、《微服务边界与职责基准》v1.2 §2.2 同步维护。*
+*文档结束 · 与 `services/settle/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.2/§6.4.2、《微服务边界与职责基准》v1.6 §2.2 同步维护。*

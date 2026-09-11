@@ -1,8 +1,8 @@
 # 信用档案服务（CRED）数据库设计说明书
 
 > 内容：**ER 图 + 分库分表方案 + 数据字典 + 表设计说明书**（§1 图 / §2 实体清单 / §3 设计约定 / §4 关系说明 / §5 分库分表 / §6 数据字典 / §7 表设计说明书）。
-> 依据文档：`docs/design/产品设计文档.md` v1.12（§5.3 / §6.4.3 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.2（§2.3 / §3 / §4.5）、
-> `docs/design/高并发架构演进设计.md` v0.3（§2.1~§2.6）、`services/cred/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
+> 依据文档：`docs/design/产品设计文档.md` v1.0（基线）（§5.3 / §6.4.3 / §8.3.1）、`docs/design/微服务边界与职责基准.md` v1.6（§2.3 / §3 / §4.5）、
+> `docs/design/高并发架构演进设计.md` v1.0（§2.1~§2.6）、`services/cred/docs/openapi.yaml` v1.0.0（**唯一可手改源**）。
 > 数据域归属：② 档案域（`merchant`、`merchant_archive`、`price_list`、`commitment`、`person`、`certificate`、`credit_score`、`redblack`）——8 表落共享主库 + `cred_` schema 前缀隔离（Java 域既有路线，主数据不分片）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
 > 版本：v1.0 · 2026-09-10（首版：七章齐全；共享主库 + `cred_` schema 隔离，8 表全为主数据/档案/公示/榜单快照不分片；`credit_score` 为商户/人员/供应商信用分唯一权威存储，评分事件经服务端间接口幂等消费、供应商信用分由 TRACE 计算经接口回写）。
@@ -97,7 +97,7 @@ erDiagram
         enum subject_type PK "MERCHANT/PERSON/SUPPLIER,联合主键"
         bigint subject_id PK "主体编号,联合主键"
         decimal score "信用分0-100"
-        json dims "维度构成[{name,weight,score}],M1两维度待评审"
+        json dims "维度构成[{name,weight,score}],M1两维权重已定档:基础合规0.6+经营行为0.4(2026-09-11)"
         json deductions "扣分明细[{reason,points,at,appealable}]"
         boolean trusted "放心供应商标识,仅SUPPLIER,TRACE授予"
         int version "乐观锁版本号"
@@ -190,7 +190,7 @@ erDiagram
 
 ## 5. 分库分表方案
 
-> 平台级策略以《高并发架构演进设计》v0.3 §2.1~§2.6 为准，本节只做「平台策略 → CRED 档案域」的落地映射。
+> 平台级策略以《高并发架构演进设计》v1.0 §2.1~§2.6 为准，本节只做「平台策略 → CRED 档案域」的落地映射。
 
 ### 5.1 分库与隔离
 
@@ -251,13 +251,14 @@ erDiagram
 > ① **双写**：新表上线，旧表 + 新表双写（幂等）→ ② **回灌**：历史数据按分片键回灌新表，校验一致性 → ③ **切读**：读流量切新表，旧表降级只读 → ④ **收缩**：观察稳定后下线旧表。
 
 ### 5.7 待标定项
+> ✅ 2026-09-11 评审定档:共性项(分片阈值 2000 万行/20GB、回拨窗口 W=5s/step=1000、热表 12 个月)已评审通过;带 ★ 项初值已定、压测/运行标定;本表待决项裁决与遗留见 [docs/待评审事项汇总.md](/docs/待评审事项汇总.md) 顶部「⭐ 定档记录(2026-09-11)」与 §6 数据库待标定项。
 
 | 项 | 建议初值 | 裁决方式 |
 |---|---|---|
 | 分片阈值 | 单表 >2000 万行 / >20GB | 评审 + 数据增长标定 |
 | 回拨容忍窗口 W / 号段步长 | W=5s、step=1000 | 评审 + 压测标定 |
-| 信用分维度权重（M1 两维度） | 基础合规 + 经营行为，权重待定（openapi ScoreDim.weight） | 评审 |
-| 红黑榜上榜阈值 / 榜单刷新周期 | 待定（openapi 未含 batch/周期，暂存当前榜） | 评审 |
+| 信用分维度权重（M1 两维度） | ✅ 已定（2026-09-11）：基础合规 0.6 + 经营行为 0.4（openapi ScoreDim.weight） | 已定档 |
+| 红黑榜上榜阈值 / 榜单刷新周期 | ✅ 已定（2026-09-11）：信用分 ≥85 红榜、<60 黑榜，每日定时刷新 | 已定档 |
 | 证照临期扫描窗口（EXPIRING 阈值） | 提前 N 天（openapi CertStatus 未含天数） | 评审 + 运行标定 |
 | 价格公示状态机是否入 openapi | `price_list.status` 为预留列（DRAFT/PUBLISHED/DISPUTED）★，openapi `PriceListResult` 未暴露 status | 评审（openapi 补字段或收敛） |
 | `certificate` 分片触发预留（TBD） | 2000 万行或 20GB | 数据增长标定 |
@@ -370,7 +371,7 @@ erDiagram
 | subject_type | enum('MERCHANT','PERSON','SUPPLIER') | NO | PK(联合) | — | 信用分主体类型（openapi ScoreSubjectType） |
 | subject_id | bigint UNSIGNED | NO | PK(联合) | — | 主体编号；MERCHANT/PERSON 引用本域 ID，SUPPLIER 引用 TRACE `supplier_id`（只读引用） |
 | score | decimal(5,2) | NO | — | 0.00 | 信用分 0~100（openapi score） |
-| dims | JSON | YES | — | NULL | 维度构成 `[{name, weight, score}]`（openapi ScoreDim；M1 基础合规 + 经营行为两维度，权重待评审） |
+| dims | JSON | YES | — | NULL | 维度构成 `[{name, weight, score}]`（openapi ScoreDim；M1 基础合规 0.6 + 经营行为 0.4 两维度，2026-09-11 定档） |
 | deductions | JSON | YES | — | NULL | 扣分明细 `[{reason, points, at, appealable}]`（openapi ScoreDeduction；可申诉，申诉复用 TICKET D-03） |
 | trusted | tinyint(1) | NO | — | 0 | 放心供应商标识（仅 subject_type=SUPPLIER；openapi x-external `trusted`，TRACE 动态授予/撤销） |
 | version | int UNSIGNED | NO | — | 0 | 乐观锁版本号（评分事件并发写） |
@@ -475,7 +476,7 @@ erDiagram
 - **用途**：商户/人员/供应商红黑榜脱敏公示（A-07/S-04），支撑分级监管（低分多查/高分少查）与放心供应商联动。
 - **主键（策略）**：`redblack_id` bigint 雪花 ID（接口内嵌，RedBlackItem.subjectId 用主体编号）。
 - **索引**：PRIMARY KEY(`redblack_id`)；UNIQUE KEY `uk_subject`(`subject_type`, `subject_id`)——同主体唯一上榜；KEY `idx_list`(`list_type`, `effective_at`)——榜单查询（红/黑榜分页）；KEY `idx_category`(`category`)——商户榜品类筛选。
-- **约束**：`list_type` RED/BLACK 互斥（同主体至多一个榜单）；上榜/落榜由信用分阈值 + 定时刷新驱动（阈值待评审）；脱敏公示（R-03）；防刷拦截（R-15）。
+- **约束**：`list_type` RED/BLACK 互斥（同主体至多一个榜单）；上榜/落榜由信用分阈值驱动——**≥85 红榜、<60 黑榜，每日定时刷新（2026-09-11 定档）**；脱敏公示（R-03）；防刷拦截（R-15）。
 - **安全**：名称/原因脱敏公示；无 L1/L2 明文。
 - **生命周期**：榜单周期留档可回溯（≥6 月审计）；当前榜热态 + 历史留档。
 - **接口映射**：GET /cred/redblack（红黑榜分页，type/listType/category 筛选）、GET /cred/merchants/{merchantId}（聚合商户信用，来源 credit_score）。
@@ -490,4 +491,4 @@ erDiagram
 
 ---
 
-*文档结束 · 与 `services/cred/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v0.3 §2、《产品设计文档》v1.11 §5.3/§6.4.3、《微服务边界与职责基准》v1.2 §2.3/§3/§4.5 同步维护。*
+*文档结束 · 与 `services/cred/docs/openapi.yaml`（唯一可手改源）、《高并发架构演进设计》v1.0 §2、《产品设计文档》v1.0（基线） §5.3/§6.4.3、《微服务边界与职责基准》v1.6 §2.3/§3/§4.5 同步维护。*
