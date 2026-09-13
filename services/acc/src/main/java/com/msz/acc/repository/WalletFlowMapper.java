@@ -37,10 +37,14 @@ public interface WalletFlowMapper {
                                              @Param("offset") int offset,
                                              @Param("limit") int limit);
 
-    @Select("SELECT COUNT(*) FROM ${tableName} WHERE account_id = #{accountId} "
-            + "AND created_at >= #{from} AND created_at <= #{to}")
+    @Select("<script>"
+            + "SELECT COUNT(*) FROM ${tableName} WHERE account_id = #{accountId} "
+            + "AND created_at &gt;= #{from} AND created_at &lt;= #{to}"
+            + "<if test='type != null'> AND type = #{type}</if>"
+            + "</script>")
     long countByAccountAndRange(@Param("tableName") String tableName,
                                 @Param("accountId") long accountId,
                                 @Param("from") Instant from,
-                                @Param("to") Instant to);
+                                @Param("to") Instant to,
+                                @Param("type") String type);
 }

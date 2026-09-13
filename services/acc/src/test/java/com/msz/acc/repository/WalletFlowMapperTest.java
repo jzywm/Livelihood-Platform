@@ -123,10 +123,10 @@ class WalletFlowMapperTest extends AbstractDbTest {
                     "wallet_flow_202601; DROP TABLE account", 1L, from, to, 0, 10))
                     .hasRootCauseInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> mapper.countByAccountAndRange(
-                    "account", 1L, from, to))
+                    "account", 1L, from, to, null))
                     .hasRootCauseInstanceOf(IllegalArgumentException.class);
             // 合法表名正常返回
-            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 1L, from, to)).isZero();
+            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 1L, from, to, null)).isZero();
         }
     }
 
@@ -145,11 +145,31 @@ class WalletFlowMapperTest extends AbstractDbTest {
             WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
             DaoSupport.requireTableName("wallet_flow_202601");
             assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 42L,
-                    Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-31T23:59:59.999Z"))).isEqualTo(2);
+                    Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-31T23:59:59.999Z"), null)).isEqualTo(2);
             assertThat(mapper.selectByAccountAndRange("wallet_flow_202601", 42L,
                     Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-31T23:59:59.999Z"), 0, 10))
                     .hasSize(2)
                     .allSatisfy(f -> assertThat(f.getAccountId()).isEqualTo(42L));
+        }
+    }
+
+    @Test
+    @DisplayName("countByAccountAndRange type 过滤：type 参数下推、null 忽略")
+    void countByAccountAndRangeFiltersByType() {
+        Instant createdAt = Instant.parse("2026-01-14T00:00:00Z");
+        try (SqlSession s = openSession()) {
+            WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
+            mapper.insert(flow(7201L, 43L, "CH-7201", createdAt));
+            mapper.insert(flowOfType(7202L, 43L, "PAYROLL", "CH-7202", createdAt));
+        }
+
+        try (SqlSession s = openSession()) {
+            WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
+            Instant from = Instant.parse("2026-01-01T00:00:00Z");
+            Instant to = Instant.parse("2026-01-31T23:59:59.999Z");
+            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 43L, from, to, null)).isEqualTo(2);
+            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 43L, from, to, "PAYROLL")).isEqualTo(1);
+            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 43L, from, to, "REFUND")).isZero();
         }
     }
 
@@ -166,6 +186,12 @@ class WalletFlowMapperTest extends AbstractDbTest {
         flow.setHash("sha256-dummy");
         flow.setOccurredAt(createdAt);
         flow.setCreatedAt(createdAt);
+        return flow;
+    }
+
+    private static WalletFlow flowOfType(long flowId, long accountId, String type, String channelOrderNo, Instant createdAt) {
+        WalletFlow flow = flow(flowId, accountId, channelOrderNo, createdAt);
+        flow.setType(type);
         return flow;
     }
 

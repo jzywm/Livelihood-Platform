@@ -39,6 +39,7 @@ class RegisterFlowTest {
     private AccountMapper accountMapper;
     private RealnameRecordMapper realnameRecordMapper;
     private IdGenerator idGenerator;
+    private HmacFingerprint hmacFingerprint;
     private RegisterFlow flow;
 
     @BeforeEach
@@ -48,8 +49,10 @@ class RegisterFlowTest {
         accountMapper = mock(AccountMapper.class);
         realnameRecordMapper = mock(RealnameRecordMapper.class);
         idGenerator = mock(IdGenerator.class);
+        hmacFingerprint = new HmacFingerprint("test-secret");
         Clock clock = Clock.fixed(Instant.parse("2026-01-15T00:00:00Z"), ZoneOffset.UTC);
-        flow = new RegisterFlow(captchaPort, realnameChannelPort, accountMapper, realnameRecordMapper, idGenerator, clock);
+        flow = new RegisterFlow(captchaPort, realnameChannelPort, accountMapper, realnameRecordMapper,
+                idGenerator, hmacFingerprint, clock);
     }
 
     @Test
@@ -73,6 +76,9 @@ class RegisterFlowTest {
         assertThat(captor.getValue().getBizId()).isEqualTo("rz_123");
         assertThat(captor.getValue().getStatus()).isEqualTo("REALNAMING");
         assertThat(captor.getValue().getChannel()).isEqualTo("WECHAT");
+        assertThat(captor.getValue().getOpenId()).isEqualTo("pending_rz_123");
+        assertThat(captor.getValue().getName()).isEmpty();
+        assertThat(captor.getValue().getIdNo()).isEmpty();
     }
 
     @Test
@@ -109,7 +115,7 @@ class RegisterFlowTest {
         assertThat(result.accountId()).isEqualTo(999L);
         assertThat(result.idempotent()).isTrue();
         assertThat(result.realNameStatus()).isEqualTo("REALNAMED");
-        verify(accountMapper).selectByMobileHash(HmacFingerprint.sha256Hex("13800138000"));
+        verify(accountMapper).selectByMobileHash(hmacFingerprint.hmacSha256Hex("13800138000"));
         verify(realnameChannelPort, never()).requestAuthorization(any(), any(), any());
         verify(realnameRecordMapper, never()).insert(any());
     }

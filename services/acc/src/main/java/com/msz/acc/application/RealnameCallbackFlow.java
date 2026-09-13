@@ -6,7 +6,6 @@ import com.msz.acc.domain.model.RealNameStatus;
 import com.msz.acc.domain.model.RealnameRecord;
 import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.support.AccBusinessException;
-import com.msz.acc.infrastructure.crypto.AesGcmCipher;
 import com.msz.acc.repository.AccountMapper;
 import com.msz.acc.repository.RealnameRecordMapper;
 import com.msz.common.idgen.IdGenerator;
@@ -15,31 +14,31 @@ import java.time.Clock;
 
 /**
  * 实名回调流程（4.2）：验签 + 时间戳窗口 + nonce、bizId 幂等、uk_open_id 判重、状态机迁移、
- * pass=false 失败路径、建户回填 account_id/callback_at。
+ * pass=false 失败路径、建户回填 account_id/callback_at/open_id/name/id_no。
+ *
+ * <p>建户 mobile 口径：er.md account.mobile NOT NULL 与 openapi 回调报文无 mobile 存在既定张力，
+ * M1 最小处理为 account.mobile 置空串、mobileHash 置 NULL（列可空）；后续补全路径不属本变更。</p>
  */
 public final class RealnameCallbackFlow {
 
     private static final long TIMESTAMP_WINDOW_SECONDS = 300L;
     private static final int NONCE_MIN_LENGTH = 8;
     private static final int NONCE_MAX_LENGTH = 64;
-    private static final String PII_KEY_ID = "pii";
     private static final String DEFAULT_ROLE = "CONSUMER";
 
     private final SignatureVerifier signatureVerifier;
     private final RealnameRecordMapper realnameRecordMapper;
     private final AccountMapper accountMapper;
-    private final AesGcmCipher cipher;
     private final IdGenerator idGenerator;
     private final RealnameStatusMachine statusMachine;
     private final Clock clock;
 
     public RealnameCallbackFlow(SignatureVerifier signatureVerifier, RealnameRecordMapper realnameRecordMapper,
-                                AccountMapper accountMapper, AesGcmCipher cipher, IdGenerator idGenerator,
+                                AccountMapper accountMapper, IdGenerator idGenerator,
                                 RealnameStatusMachine statusMachine, Clock clock) {
         this.signatureVerifier = signatureVerifier;
         this.realnameRecordMapper = realnameRecordMapper;
         this.accountMapper = accountMapper;
-        this.cipher = cipher;
         this.idGenerator = idGenerator;
         this.statusMachine = statusMachine;
         this.clock = clock;
@@ -73,24 +72,27 @@ public final class RealnameCallbackFlow {
                 && RealNameStatus.REALNAMED.name().equals(byOpenId.getStatus())) {
             return new CallbackResult(byOpenId.getBizId(), RealNameStatus.REALNAMED.name(), byOpenId.getAccountId());
         }
-        // ⑥ pass=false：callback_at 回填、状态保持 REALNAMING（可重试）
+        // ⑥ pass=false：callback_at 回填、状态保持 REALNAMING（可重试），open_id/name/id_no 保持原值
         if (!req.pass()) {
-            realnameRecordMapper.updateCallback(req.bizId(), RealNameStatus.REALNAMING.name(), null, clock.instant());
+            realnameRecordMapper.updateCallback(req.bizId(), RealNameStatus.REALNAMING.name(), null, clock.instant(),
+                    record.getOpenId(), record.getName(), record.getIdNo());
             return new CallbackResult(req.bizId(), RealNameStatus.REALNAMING.name(), null);
         }
-        // ⑦ pass=true：状态机迁移 → 加密 name/id_no → 建户 → 回填
+        // ⑦ pass=true：状态机迁移 → 建户（name/id_no 明文透传，落库加密由 typeHandler 承担）→ 回填
         RealNameStatus newStatus = statusMachine.onCallbackPass(statusOf(record.getStatus()));
         long accountId = idGenerator.nextId();
         Account account = new Account();
         account.setAccountId(accountId);
         account.setRole(DEFAULT_ROLE);
+        account.setMobile("");
         account.setRealNameStatus(newStatus.name());
         account.setWalletStatus("ACTIVE");
-        account.setRealName(cipher.encrypt(PII_KEY_ID, req.name()));
-        account.setIdNo(cipher.encrypt(PII_KEY_ID, req.idNo()));
+        account.setRealName(req.name());
+        account.setIdNo(req.idNo());
         account.setCreatedAt(clock.instant());
         accountMapper.insert(account);
-        realnameRecordMapper.updateCallback(req.bizId(), newStatus.name(), accountId, clock.instant());
+        realnameRecordMapper.updateCallback(req.bizId(), newStatus.name(), accountId, clock.instant(),
+                req.openId(), req.name(), req.idNo());
         return new CallbackResult(req.bizId(), newStatus.name(), accountId);
     }
 
@@ -101,7 +103,8 @@ public final class RealnameCallbackFlow {
             throw new AccBusinessException(3006, "实名业务单不存在");
         }
         RealNameStatus newStatus = statusMachine.suspend(statusOf(record.getStatus()));
-        realnameRecordMapper.updateCallback(bizId, newStatus.name(), record.getAccountId(), clock.instant());
+        realnameRecordMapper.updateCallback(bizId, newStatus.name(), record.getAccountId(), clock.instant(),
+                record.getOpenId(), record.getName(), record.getIdNo());
         return new CallbackResult(bizId, newStatus.name(), record.getAccountId());
     }
 

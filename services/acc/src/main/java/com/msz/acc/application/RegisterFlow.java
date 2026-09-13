@@ -27,16 +27,18 @@ public final class RegisterFlow {
     private final AccountMapper accountMapper;
     private final RealnameRecordMapper realnameRecordMapper;
     private final IdGenerator idGenerator;
+    private final HmacFingerprint hmacFingerprint;
     private final Clock clock;
 
     public RegisterFlow(CaptchaPort captchaPort, RealnameChannelPort realnameChannelPort,
                         AccountMapper accountMapper, RealnameRecordMapper realnameRecordMapper,
-                        IdGenerator idGenerator, Clock clock) {
+                        IdGenerator idGenerator, HmacFingerprint hmacFingerprint, Clock clock) {
         this.captchaPort = captchaPort;
         this.realnameChannelPort = realnameChannelPort;
         this.accountMapper = accountMapper;
         this.realnameRecordMapper = realnameRecordMapper;
         this.idGenerator = idGenerator;
+        this.hmacFingerprint = hmacFingerprint;
         this.clock = clock;
     }
 
@@ -47,7 +49,7 @@ public final class RegisterFlow {
         if (captchaToken != null && !captchaToken.isEmpty()) {
             captchaPort.consumeToken(captchaToken);
         }
-        Account existing = accountMapper.selectByMobileHash(HmacFingerprint.sha256Hex(mobile));
+        Account existing = accountMapper.selectByMobileHash(hmacFingerprint.hmacSha256Hex(mobile));
         if (existing != null && RealNameStatus.REALNAMED.name().equals(existing.getRealNameStatus())) {
             return new RegisterResult(existing.getAccountId(), null, null, RealNameStatus.REALNAMED.name(), true);
         }
@@ -56,6 +58,11 @@ public final class RegisterFlow {
         RealnameRecord record = new RealnameRecord();
         record.setBizId(bizId);
         record.setChannel(DEFAULT_CHANNEL);
+        // open_id/name/id_no 为 NOT NULL：注册发起时尚未获得实名信息，以占位/空串满足列约束，
+        // open_id 用 "pending_"+bizId 保证唯一、不污染 uk_open_id 判重（判重仅命中 REALNAMED 记录）。
+        record.setOpenId("pending_" + bizId);
+        record.setName("");
+        record.setIdNo("");
         record.setStatus(RealNameStatus.REALNAMING.name());
         record.setLevel("BASE");
         record.setCreatedAt(clock.instant());

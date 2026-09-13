@@ -53,9 +53,9 @@ class WalletFlowQueryServiceTest {
         WalletFlow c = flow(3L, "SPLIT", Instant.parse("2026-01-05T10:00:00Z"));
         WalletFlow d = flow(4L, "PAYROLL", Instant.parse("2026-01-20T10:00:00Z"));
 
-        when(mapper.countByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any())).thenReturn(1L);
-        when(mapper.countByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any())).thenReturn(1L);
-        when(mapper.countByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any())).thenReturn(2L);
+        when(mapper.countByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any(), any())).thenReturn(1L);
+        when(mapper.countByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any(), any())).thenReturn(1L);
+        when(mapper.countByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), any())).thenReturn(2L);
         when(mapper.selectByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any(), anyInt(), anyInt()))
                 .thenReturn(List.of(a));
         when(mapper.selectByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any(), anyInt(), anyInt()))
@@ -69,14 +69,14 @@ class WalletFlowQueryServiceTest {
         assertThat(result.total()).isEqualTo(4L);
         assertThat(result.list()).extracting(WalletFlow::getFlowId)
                 .containsExactly(4L, 3L, 2L, 1L);
-        verify(mapper, times(3)).countByAccountAndRange(anyString(), eq(1L), any(), any());
+        verify(mapper, times(3)).countByAccountAndRange(anyString(), eq(1L), any(), any(), any());
         verify(mapper, times(3)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt());
     }
 
     @Test
     @DisplayName("UT-B07: 无日期查询默认近 12 个月热表")
     void ut_noDateQueriesTwelveHotTables() {
-        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any())).thenReturn(0L);
+        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), any())).thenReturn(0L);
         when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
                 .thenReturn(List.of());
 
@@ -84,7 +84,7 @@ class WalletFlowQueryServiceTest {
 
         assertThat(result.total()).isZero();
         assertThat(result.list()).isEmpty();
-        verify(mapper, times(12)).countByAccountAndRange(anyString(), eq(1L), any(), any());
+        verify(mapper, times(12)).countByAccountAndRange(anyString(), eq(1L), any(), any(), any());
         verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt());
     }
 
@@ -117,7 +117,7 @@ class WalletFlowQueryServiceTest {
     @Test
     @DisplayName("pageSize 超 100 → 截断为 100")
     void ut_pageSizeCappedAtHundred() {
-        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any())).thenReturn(0L);
+        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), any())).thenReturn(0L);
         when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
                 .thenReturn(List.of());
 
@@ -126,6 +126,20 @@ class WalletFlowQueryServiceTest {
         assertThat(result.page()).isEqualTo(1);
         assertThat(result.pageSize()).isEqualTo(100);
         verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), eq(0), eq(100));
+    }
+
+    @Test
+    @DisplayName("type 过滤：total 使用带 type 的 count（口径修复）")
+    void ut_typeFilteredTotalUsesTypedCount() {
+        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), eq("PAYROLL"))).thenReturn(3L);
+        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
+                .thenReturn(List.of(flow(1L, "PAYROLL", Instant.parse("2026-01-05T10:00:00Z"))));
+
+        PageResult<WalletFlow> result = service.query(1L, "PAYROLL", null, null, 1, 20);
+
+        assertThat(result.total()).isEqualTo(36L); // 12 热表 × 3
+        assertThat(result.list()).extracting(WalletFlow::getType).containsOnly("PAYROLL");
+        verify(mapper, times(12)).countByAccountAndRange(anyString(), eq(1L), any(), any(), eq("PAYROLL"));
     }
 
     @Test

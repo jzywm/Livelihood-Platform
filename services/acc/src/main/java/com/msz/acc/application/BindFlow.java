@@ -6,7 +6,6 @@ import com.msz.acc.domain.model.BindingStatus;
 import com.msz.acc.domain.model.RealNameStatus;
 import com.msz.acc.domain.model.WalletBinding;
 import com.msz.acc.domain.support.AccBusinessException;
-import com.msz.acc.infrastructure.crypto.AesGcmCipher;
 import com.msz.acc.repository.AccountMapper;
 import com.msz.acc.repository.IdempotencyGuard;
 import com.msz.acc.repository.IdempotencyRecordMapper;
@@ -21,24 +20,21 @@ import java.util.Objects;
  */
 public final class BindFlow {
 
-    private static final String PII_KEY_ID = "pii";
     private static final String SCENE = "bind";
 
     private final AccountMapper accountMapper;
     private final WalletBindingMapper walletBindingMapper;
     private final PaymentChannelPort paymentChannelPort;
-    private final AesGcmCipher cipher;
     private final IdempotencyGuard idempotencyGuard;
     private final IdGenerator idGenerator;
     private final Clock clock;
 
     public BindFlow(AccountMapper accountMapper, WalletBindingMapper walletBindingMapper,
-                    PaymentChannelPort paymentChannelPort, AesGcmCipher cipher,
+                    PaymentChannelPort paymentChannelPort,
                     IdempotencyRecordMapper idempotencyRecordMapper, IdGenerator idGenerator, Clock clock) {
         this.accountMapper = accountMapper;
         this.walletBindingMapper = walletBindingMapper;
         this.paymentChannelPort = paymentChannelPort;
-        this.cipher = cipher;
         this.idempotencyGuard = new IdempotencyGuard(idempotencyRecordMapper, () -> "");
         this.idGenerator = idGenerator;
         this.clock = clock;
@@ -101,8 +97,8 @@ public final class BindFlow {
         binding.setBindingId("bnd_" + idGenerator.nextId());
         binding.setAccountId(accountId);
         binding.setChannel(channel);
-        binding.setPayeeAccount(cipher.encrypt(PII_KEY_ID, payeeAccount));
-        binding.setPayeeName(cipher.encrypt(PII_KEY_ID, payeeName));
+        binding.setPayeeAccount(payeeAccount);
+        binding.setPayeeName(payeeName);
         binding.setStatus(BindingStatus.BOUND.name());
         binding.setCreatedAt(clock.instant());
         walletBindingMapper.insert(binding);

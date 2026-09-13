@@ -1,27 +1,31 @@
 package com.msz.acc.application.support;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.GeneralSecurityException;
 import java.util.HexFormat;
 
 /**
- * 手机号指纹工具：SHA-256 十六进制（64 字符），对齐 account.mobile_hash varchar(64) 辅助列。
- * 说明：er.md 称「HMAC-SHA256 指纹」，但 S4 工具签名为单参 {@code sha256Hex(String)}（无密钥），
- * 故按 SHA-256 实现；带密钥的 HMAC 变体待密钥管理（KMS）落地后扩展。
+ * 手机号指纹工具：带密钥的 HMAC-SHA256 十六进制（64 字符），对齐 er.md §7.1「mobile_hash 指纹辅助列」口径。
+ * 密钥构造注入（测试用固定测试凭据，生产经 KMS 配置）。
  */
 public final class HmacFingerprint {
 
-    private HmacFingerprint() {
+    private final SecretKeySpec key;
+
+    public HmacFingerprint(String secret) {
+        this.key = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
     }
 
-    public static String sha256Hex(String input) {
+    public String hmacSha256Hex(String value) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(key);
+            byte[] bytes = mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(bytes);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 不可用", e);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HMAC-SHA256 不可用", e);
         }
     }
 }

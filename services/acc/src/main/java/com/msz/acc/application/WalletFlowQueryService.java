@@ -48,7 +48,7 @@ public final class WalletFlowQueryService {
         long total = 0L;
         List<WalletFlow> merged = new ArrayList<>();
         for (String table : range.tables()) {
-            total += walletFlowMapper.countByAccountAndRange(table, accountId, range.fromInstant(), range.toInstant());
+            total += walletFlowMapper.countByAccountAndRange(table, accountId, range.fromInstant(), range.toInstant(), typeFilter);
             merged.addAll(walletFlowMapper.selectByAccountAndRange(
                     table, accountId, range.fromInstant(), range.toInstant(), 0, p * ps));
         }

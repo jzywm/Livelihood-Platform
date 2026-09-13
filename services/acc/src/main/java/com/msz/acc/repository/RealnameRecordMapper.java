@@ -41,12 +41,18 @@ public interface RealnameRecordMapper {
     })
     RealnameRecord selectByOpenId(@Param("openId") String openId);
 
-    @Update("UPDATE realname_record SET status = #{status}, account_id = #{accountId}, callback_at = #{callbackAt} "
+    @Update("UPDATE realname_record SET status = #{status}, account_id = #{accountId}, callback_at = #{callbackAt}, "
+            + "open_id = #{openId}, "
+            + "name = #{name,typeHandler=" + ENC + "}, "
+            + "id_no = #{idNo,typeHandler=" + ENC + "} "
             + "WHERE biz_id = #{bizId}")
     int updateCallback(@Param("bizId") String bizId,
                        @Param("status") String status,
                        @Param("accountId") Long accountId,
-                       @Param("callbackAt") Instant callbackAt);
+                       @Param("callbackAt") Instant callbackAt,
+                       @Param("openId") String openId,
+                       @Param("name") String name,
+                       @Param("idNo") String idNo);
 
     @Select("SELECT * FROM realname_record WHERE account_id = #{accountId} AND status = #{status}")
     @Results({

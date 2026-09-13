@@ -5,8 +5,6 @@ import com.msz.acc.domain.model.Account;
 import com.msz.acc.domain.model.RealnameRecord;
 import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.support.AccBusinessException;
-import com.msz.acc.infrastructure.crypto.AesGcmCipher;
-import com.msz.acc.infrastructure.crypto.FixedKeyProvider;
 import com.msz.acc.repository.AccountMapper;
 import com.msz.acc.repository.RealnameRecordMapper;
 import com.msz.common.idgen.IdGenerator;
@@ -15,12 +13,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -33,7 +28,7 @@ import static org.mockito.Mockito.when;
 /**
  * RealnameCallbackFlowTest（UT-A04~A07 口径）：验签失败 4001 拒收且状态不变；
  * 重放同 bizId（已 REALNAMED）幂等返回原 accountId；open_id 判重命中返回原账户；
- * pass=false 保持 REALNAMING 可重试；pass=true 建户 + REALNAMED + callback_at/account_id 回填；
+ * pass=false 保持 REALNAMING 可重试；pass=true 建户 + REALNAMED + callback_at/account_id/open_id/name/id_no 回填；
  * suspendOnChannelUnavailable → SUSPENDED；时间戳超窗 1003。
  */
 class RealnameCallbackFlowTest {
@@ -44,7 +39,6 @@ class RealnameCallbackFlowTest {
     private RealnameRecordMapper realnameRecordMapper;
     private AccountMapper accountMapper;
     private IdGenerator idGenerator;
-    private AesGcmCipher cipher;
     private RealnameCallbackFlow flow;
 
     @BeforeEach
@@ -53,10 +47,9 @@ class RealnameCallbackFlowTest {
         realnameRecordMapper = mock(RealnameRecordMapper.class);
         accountMapper = mock(AccountMapper.class);
         idGenerator = mock(IdGenerator.class);
-        cipher = cipher();
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         flow = new RealnameCallbackFlow(signatureVerifier, realnameRecordMapper, accountMapper,
-                cipher, idGenerator, new RealnameStatusMachine(), clock);
+                idGenerator, new RealnameStatusMachine(), clock);
     }
 
     @Test
@@ -70,7 +63,7 @@ class RealnameCallbackFlowTest {
                         e -> assertThat(e.code()).isEqualTo(4001));
 
         verify(accountMapper, never()).insert(any());
-        verify(realnameRecordMapper, never()).updateCallback(any(), any(), any(), any());
+        verify(realnameRecordMapper, never()).updateCallback(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -115,7 +108,8 @@ class RealnameCallbackFlowTest {
 
         assertThat(result.status()).isEqualTo("REALNAMING");
         assertThat(result.accountId()).isNull();
-        verify(realnameRecordMapper).updateCallback("rz_1", "REALNAMING", null, NOW);
+        verify(realnameRecordMapper).updateCallback("rz_1", "REALNAMING", null, NOW,
+                "pending_rz_1", "", "");
         verify(accountMapper, never()).insert(any());
     }
 
@@ -137,10 +131,13 @@ class RealnameCallbackFlowTest {
         assertThat(created.getAccountId()).isEqualTo(888L);
         assertThat(created.getRole()).isEqualTo("CONSUMER");
         assertThat(created.getRealNameStatus()).isEqualTo("REALNAMED");
-        assertThat(cipher.decrypt("pii", created.getRealName())).isEqualTo("张三");
-        assertThat(cipher.decrypt("pii", created.getIdNo())).isEqualTo("110101199001011234");
+        assertThat(created.getMobile()).isEmpty();
+        assertThat(created.getMobileHash()).isNull();
+        assertThat(created.getRealName()).isEqualTo("张三");
+        assertThat(created.getIdNo()).isEqualTo("110101199001011234");
 
-        verify(realnameRecordMapper).updateCallback("rz_1", "REALNAMED", 888L, NOW);
+        verify(realnameRecordMapper).updateCallback("rz_1", "REALNAMED", 888L, NOW,
+                "openid-1", "张三", "110101199001011234");
     }
 
     @Test
@@ -151,7 +148,8 @@ class RealnameCallbackFlowTest {
         CallbackResult result = flow.suspendOnChannelUnavailable("rz_1");
 
         assertThat(result.status()).isEqualTo("SUSPENDED");
-        verify(realnameRecordMapper).updateCallback("rz_1", "SUSPENDED", null, NOW);
+        verify(realnameRecordMapper).updateCallback("rz_1", "SUSPENDED", null, NOW,
+                "pending_rz_1", "", "");
     }
 
     @Test
@@ -178,17 +176,11 @@ class RealnameCallbackFlowTest {
         record.setBizId(bizId);
         record.setStatus(status);
         record.setChannel("WECHAT");
+        record.setOpenId("pending_" + bizId);
+        record.setName("");
+        record.setIdNo("");
         record.setCreatedAt(Instant.parse("2026-01-01T00:00:00Z"));
         return record;
-    }
-
-    private static AesGcmCipher cipher() {
-        byte[] bytes = new byte[32];
-        for (int i = 0; i < bytes.length; i++) {
-            bytes[i] = (byte) (i + 1);
-        }
-        SecretKey key = new SecretKeySpec(bytes, "AES");
-        return new AesGcmCipher(new FixedKeyProvider(Map.of("pii", key)));
     }
 
     private static final class FakeSignatureVerifier implements SignatureVerifier {

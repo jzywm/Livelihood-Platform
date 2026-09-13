@@ -5,8 +5,6 @@ import com.msz.acc.domain.model.Account;
 import com.msz.acc.domain.model.IdempotencyRecord;
 import com.msz.acc.domain.model.WalletBinding;
 import com.msz.acc.domain.support.AccBusinessException;
-import com.msz.acc.infrastructure.crypto.AesGcmCipher;
-import com.msz.acc.infrastructure.crypto.FixedKeyProvider;
 import com.msz.acc.repository.AccountMapper;
 import com.msz.acc.repository.IdempotencyRecordMapper;
 import com.msz.acc.repository.WalletBindingMapper;
@@ -16,12 +14,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,7 +43,6 @@ class BindFlowTest {
     private FakePaymentChannelPort paymentChannelPort;
     private IdempotencyRecordMapper idempotencyRecordMapper;
     private IdGenerator idGenerator;
-    private AesGcmCipher cipher;
     private BindFlow flow;
 
     @BeforeEach
@@ -58,9 +52,8 @@ class BindFlowTest {
         paymentChannelPort = new FakePaymentChannelPort();
         idempotencyRecordMapper = mock(IdempotencyRecordMapper.class);
         idGenerator = mock(IdGenerator.class);
-        cipher = cipher();
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        flow = new BindFlow(accountMapper, walletBindingMapper, paymentChannelPort, cipher,
+        flow = new BindFlow(accountMapper, walletBindingMapper, paymentChannelPort,
                 idempotencyRecordMapper, idGenerator, clock);
     }
 
@@ -80,8 +73,8 @@ class BindFlowTest {
         WalletBinding inserted = captor.getValue();
         assertThat(inserted.getBindingId()).isEqualTo("bnd_10");
         assertThat(inserted.getStatus()).isEqualTo("BOUND");
-        assertThat(cipher.decrypt("pii", inserted.getPayeeAccount())).isEqualTo("6222021234567890");
-        assertThat(cipher.decrypt("pii", inserted.getPayeeName())).isEqualTo("张三");
+        assertThat(inserted.getPayeeAccount()).isEqualTo("6222021234567890");
+        assertThat(inserted.getPayeeName()).isEqualTo("张三");
     }
 
     @Test
@@ -198,15 +191,6 @@ class BindFlowTest {
         account.setRealNameStatus(realNameStatus);
         account.setRealName(realName);
         return account;
-    }
-
-    private static AesGcmCipher cipher() {
-        byte[] bytes = new byte[32];
-        for (int i = 0; i < bytes.length; i++) {
-            bytes[i] = (byte) (i + 1);
-        }
-        SecretKey key = new SecretKeySpec(bytes, "AES");
-        return new AesGcmCipher(new FixedKeyProvider(Map.of("pii", key)));
     }
 
     private static final class FakePaymentChannelPort implements PaymentChannelPort {

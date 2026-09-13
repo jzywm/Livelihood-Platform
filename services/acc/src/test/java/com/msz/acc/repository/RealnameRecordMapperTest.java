@@ -10,7 +10,7 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * RealnameRecordMapperTest：uk_open_id 冲突被拒、updateCallback 回填 account_id/callback_at。
+ * RealnameRecordMapperTest：uk_open_id 冲突被拒、updateCallback 回填 account_id/callback_at/open_id/name/id_no。
  */
 class RealnameRecordMapperTest extends AbstractDbTest {
 
@@ -25,7 +25,7 @@ class RealnameRecordMapperTest extends AbstractDbTest {
     }
 
     @Test
-    @DisplayName("updateCallback 回填 account_id/callback_at")
+    @DisplayName("updateCallback 回填 account_id/callback_at/open_id/name/id_no")
     void updateCallbackFillsAccountAndCallbackAt() {
         try (SqlSession s = openSession()) {
             s.getMapper(RealnameRecordMapper.class).insert(record("rz_10", "openid-10", null));
@@ -34,7 +34,8 @@ class RealnameRecordMapperTest extends AbstractDbTest {
         Instant callbackAt = Instant.parse("2026-01-02T03:04:05Z");
         try (SqlSession s = openSession()) {
             assertThat(s.getMapper(RealnameRecordMapper.class)
-                    .updateCallback("rz_10", "REALNAMED", 888L, callbackAt)).isEqualTo(1);
+                    .updateCallback("rz_10", "REALNAMED", 888L, callbackAt,
+                            "openid-10", "张三", "110101199001011234")).isEqualTo(1);
         }
 
         try (SqlSession s = openSession()) {
@@ -43,6 +44,9 @@ class RealnameRecordMapperTest extends AbstractDbTest {
             assertThat(loaded.getAccountId()).isEqualTo(888L);
             assertThat(loaded.getCallbackAt()).isEqualTo(callbackAt);
             assertThat(loaded.getStatus()).isEqualTo("REALNAMED");
+            assertThat(loaded.getOpenId()).isEqualTo("openid-10");
+            assertThat(loaded.getName()).isEqualTo("张三");
+            assertThat(loaded.getIdNo()).isEqualTo("110101199001011234");
         }
     }
 
