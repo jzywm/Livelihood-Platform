@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * realname_record Mapper（注解式）：L1 字段 name/id_no 经 EncryptedStringTypeHandler 加解密。
@@ -46,4 +47,11 @@ public interface RealnameRecordMapper {
                        @Param("status") String status,
                        @Param("accountId") Long accountId,
                        @Param("callbackAt") Instant callbackAt);
+
+    @Select("SELECT * FROM realname_record WHERE account_id = #{accountId} AND status = #{status}")
+    @Results({
+            @Result(column = "name", property = "name", typeHandler = EncryptedStringTypeHandler.class),
+            @Result(column = "id_no", property = "idNo", typeHandler = EncryptedStringTypeHandler.class)
+    })
+    List<RealnameRecord> selectByAccountIdAndStatus(@Param("accountId") long accountId, @Param("status") String status);
 }
