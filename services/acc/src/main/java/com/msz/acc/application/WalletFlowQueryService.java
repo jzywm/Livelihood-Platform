@@ -50,10 +50,7 @@ public final class WalletFlowQueryService {
         for (String table : range.tables()) {
             total += walletFlowMapper.countByAccountAndRange(table, accountId, range.fromInstant(), range.toInstant(), typeFilter);
             merged.addAll(walletFlowMapper.selectByAccountAndRange(
-                    table, accountId, range.fromInstant(), range.toInstant(), 0, p * ps));
-        }
-        if (typeFilter != null) {
-            merged.removeIf(flow -> !typeFilter.equals(flow.getType()));
+                    table, accountId, range.fromInstant(), range.toInstant(), 0, p * ps, typeFilter));
         }
         merged.sort(Comparator.comparing(WalletFlow::getOccurredAt).reversed());
 
@@ -74,7 +71,7 @@ public final class WalletFlowQueryService {
         Map<String, TypeAccumulator> byType = new LinkedHashMap<>();
         for (String table : tables) {
             for (WalletFlow flow : walletFlowMapper.selectByAccountAndRange(
-                    table, accountId, fromInstant, toInstant, 0, FULL_LIMIT)) {
+                    table, accountId, fromInstant, toInstant, 0, FULL_LIMIT, null)) {
                 BigDecimal amount = new BigDecimal(flow.getAmount());
                 if ("IN".equals(flow.getDirection())) {
                     totalIn = totalIn.add(amount);

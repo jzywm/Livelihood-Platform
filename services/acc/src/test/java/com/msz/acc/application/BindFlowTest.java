@@ -30,9 +30,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * BindFlowTest（UT-C01~C06 口径）：未实名 3001；户名与实名不符 3002；通道失败 4002 可重试（不落脏数据）；
+ * BindFlowTest（UT-C01~C06 口径）：未实名 3001；户名与实名不符 3002；通道失败 4002 可重试（不落脏数据、同 key）；
  * 重复绑定幂等返回原 bindingId 复用原行；解绑 markUnbound；越权解绑他人 binding 2002；
- * IdempotencyGuard 同 key 第二次返回首次结果。
+ * IdempotencyGuard 同 key 第二次返回首次结果；replace 换绑（不存在 3006/属主 2002/旧行 UNBOUND+新通道复用或插入）。
  */
 class BindFlowTest {
 
@@ -100,7 +100,7 @@ class BindFlowTest {
     }
 
     @Test
-    @DisplayName("UT-C04: 通道失败 4002 可重试，不落脏数据")
+    @DisplayName("UT-C04: 通道失败 4002 可重试（同 key），不污染幂等槽位、不落脏数据")
     void ut_channelFailureRetryable() {
         when(accountMapper.selectById(1L)).thenReturn(account(1L, "REALNAMED", "张三"));
         when(walletBindingMapper.selectByAccountAndChannel(1L, "WECHAT")).thenReturn(null);
@@ -111,13 +111,15 @@ class BindFlowTest {
                 .isInstanceOfSatisfying(AccBusinessException.class,
                         e -> assertThat(e.code()).isEqualTo(4002));
         verify(walletBindingMapper, never()).insert(any());
+        verify(idempotencyRecordMapper, never()).insertIgnore(anyString(), anyString(), anyInt(), anyString());
 
-        // 通道恢复后可重试成功
+        // 通道恢复后同 Idempotency-Key 重试成功（4002 未占槽位）
         paymentChannelPort.fail = false;
         when(idGenerator.nextId()).thenReturn(20L);
-        assertThat(flow.bind(1L, "WECHAT", "6222021234567890", "张三", "k-retry"))
+        assertThat(flow.bind(1L, "WECHAT", "6222021234567890", "张三", "k-fail"))
                 .isEqualTo("bnd_20");
         verify(walletBindingMapper).insert(any());
+        verify(idempotencyRecordMapper).insertIgnore(anyString(), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -183,6 +185,81 @@ class BindFlowTest {
         assertThat(first).isEqualTo("bnd_30");
         assertThat(second).isEqualTo("bnd_30");
         verify(walletBindingMapper, times(1)).insert(any());
+    }
+
+    @Test
+    @DisplayName("replace：bindingId 不存在 → 3006")
+    void ut_replaceMissingBindingRejected() {
+        when(accountMapper.selectById(1L)).thenReturn(account(1L, "REALNAMED", "张三"));
+        when(walletBindingMapper.selectById("bnd_missing")).thenReturn(null);
+
+        assertThatThrownBy(() -> flow.replace(1L, "bnd_missing", "ALIPAY", "6222021234567890", "张三", "k1"))
+                .isInstanceOfSatisfying(AccBusinessException.class,
+                        e -> assertThat(e.code()).isEqualTo(3006));
+        verify(walletBindingMapper, never()).markUnbound(anyString(), any());
+        verify(walletBindingMapper, never()).insert(any());
+    }
+
+    @Test
+    @DisplayName("replace：属主不符（他人 binding）→ 2002")
+    void ut_replaceOtherAccountForbidden() {
+        when(accountMapper.selectById(1L)).thenReturn(account(1L, "REALNAMED", "张三"));
+        WalletBinding old = new WalletBinding();
+        old.setBindingId("bnd_other");
+        old.setAccountId(2L);
+        old.setChannel("WECHAT");
+        when(walletBindingMapper.selectById("bnd_other")).thenReturn(old);
+
+        assertThatThrownBy(() -> flow.replace(1L, "bnd_other", "ALIPAY", "6222021234567890", "张三", "k1"))
+                .isInstanceOfSatisfying(AccBusinessException.class,
+                        e -> assertThat(e.code()).isEqualTo(2002));
+        verify(walletBindingMapper, never()).markUnbound(anyString(), any());
+        verify(walletBindingMapper, never()).insert(any());
+    }
+
+    @Test
+    @DisplayName("replace happy path：旧行 UNBOUND + 新通道 BOUND（插入新行）")
+    void ut_replaceHappyPath() {
+        when(accountMapper.selectById(1L)).thenReturn(account(1L, "REALNAMED", "张三"));
+        WalletBinding old = new WalletBinding();
+        old.setBindingId("bnd_old");
+        old.setAccountId(1L);
+        old.setChannel("WECHAT");
+        when(walletBindingMapper.selectById("bnd_old")).thenReturn(old);
+        when(walletBindingMapper.selectByAccountAndChannel(1L, "ALIPAY")).thenReturn(null);
+        when(idempotencyRecordMapper.insertIgnore(anyString(), anyString(), anyInt(), anyString())).thenReturn(1);
+        when(idGenerator.nextId()).thenReturn(50L);
+
+        String newBindingId = flow.replace(1L, "bnd_old", "ALIPAY", "6222021234567890", "张三", "k-replace");
+
+        assertThat(newBindingId).isEqualTo("bnd_50");
+        verify(walletBindingMapper).markUnbound("bnd_old", NOW);
+        verify(walletBindingMapper).insert(any());
+        verify(walletBindingMapper, never()).markBound(anyString());
+    }
+
+    @Test
+    @DisplayName("replace 复用：新通道已有行 → markBound 复用（每通道至多一行 BOUND）")
+    void ut_replaceReusesExistingChannelRow() {
+        when(accountMapper.selectById(1L)).thenReturn(account(1L, "REALNAMED", "张三"));
+        WalletBinding old = new WalletBinding();
+        old.setBindingId("bnd_old");
+        old.setAccountId(1L);
+        old.setChannel("WECHAT");
+        when(walletBindingMapper.selectById("bnd_old")).thenReturn(old);
+        WalletBinding alipay = new WalletBinding();
+        alipay.setBindingId("bnd_alipay");
+        alipay.setAccountId(1L);
+        alipay.setChannel("ALIPAY");
+        when(walletBindingMapper.selectByAccountAndChannel(1L, "ALIPAY")).thenReturn(alipay);
+        when(idempotencyRecordMapper.insertIgnore(anyString(), anyString(), anyInt(), anyString())).thenReturn(1);
+
+        String result = flow.replace(1L, "bnd_old", "ALIPAY", "6222021234567890", "张三", "k-replace");
+
+        assertThat(result).isEqualTo("bnd_alipay");
+        verify(walletBindingMapper).markUnbound("bnd_old", NOW);
+        verify(walletBindingMapper).markBound("bnd_alipay");
+        verify(walletBindingMapper, never()).insert(any());
     }
 
     private static Account account(long id, String realNameStatus, String realName) {

@@ -79,7 +79,7 @@ public final class RecordFlowService {
         Instant toInstant = toDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
         for (String table : tables) {
             for (WalletFlow flow : walletFlowMapper.selectByAccountAndRange(
-                    table, accountId, fromInstant, toInstant, 0, FULL_LIMIT)) {
+                    table, accountId, fromInstant, toInstant, 0, FULL_LIMIT, null)) {
                 if (channelOrderNo.equals(flow.getChannelOrderNo())) {
                     return flow;
                 }

@@ -26,16 +26,20 @@ public interface WalletFlowMapper {
             + "#{bizType}, #{hash}, #{occurredAt}, #{createdAt})")
     int insert(WalletFlow flow);
 
-    @Select("SELECT flow_id, account_id, type, direction, amount, status, channel_order_no, biz_type, hash, "
+    @Select("<script>"
+            + "SELECT flow_id, account_id, type, direction, amount, status, channel_order_no, biz_type, hash, "
             + "occurred_at, created_at FROM ${tableName} "
-            + "WHERE account_id = #{accountId} AND created_at >= #{from} AND created_at <= #{to} "
-            + "ORDER BY created_at DESC LIMIT #{limit} OFFSET #{offset}")
+            + "WHERE account_id = #{accountId} AND created_at &gt;= #{from} AND created_at &lt;= #{to}"
+            + "<if test='type != null'> AND type = #{type}</if> "
+            + "ORDER BY created_at DESC LIMIT #{limit} OFFSET #{offset}"
+            + "</script>")
     List<WalletFlow> selectByAccountAndRange(@Param("tableName") String tableName,
                                              @Param("accountId") long accountId,
                                              @Param("from") Instant from,
                                              @Param("to") Instant to,
                                              @Param("offset") int offset,
-                                             @Param("limit") int limit);
+                                             @Param("limit") int limit,
+                                             @Param("type") String type);
 
     @Select("<script>"
             + "SELECT COUNT(*) FROM ${tableName} WHERE account_id = #{accountId} "

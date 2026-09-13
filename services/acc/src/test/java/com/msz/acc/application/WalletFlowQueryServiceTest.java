@@ -56,11 +56,11 @@ class WalletFlowQueryServiceTest {
         when(mapper.countByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any(), any())).thenReturn(1L);
         when(mapper.countByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any(), any())).thenReturn(1L);
         when(mapper.countByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), any())).thenReturn(2L);
-        when(mapper.selectByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(eq("wallet_flow_202511"), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of(a));
-        when(mapper.selectByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(eq("wallet_flow_202512"), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of(b));
-        when(mapper.selectByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of(d, c));
 
         PageResult<WalletFlow> result = service.query(1L, null,
@@ -70,14 +70,14 @@ class WalletFlowQueryServiceTest {
         assertThat(result.list()).extracting(WalletFlow::getFlowId)
                 .containsExactly(4L, 3L, 2L, 1L);
         verify(mapper, times(3)).countByAccountAndRange(anyString(), eq(1L), any(), any(), any());
-        verify(mapper, times(3)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt());
+        verify(mapper, times(3)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), any());
     }
 
     @Test
     @DisplayName("UT-B07: 无日期查询默认近 12 个月热表")
     void ut_noDateQueriesTwelveHotTables() {
         when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), any())).thenReturn(0L);
-        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of());
 
         PageResult<WalletFlow> result = service.query(1L, null, null, null, 1, 20);
@@ -85,7 +85,7 @@ class WalletFlowQueryServiceTest {
         assertThat(result.total()).isZero();
         assertThat(result.list()).isEmpty();
         verify(mapper, times(12)).countByAccountAndRange(anyString(), eq(1L), any(), any(), any());
-        verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt());
+        verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), any());
     }
 
     @Test
@@ -95,7 +95,7 @@ class WalletFlowQueryServiceTest {
                 flow(1L, "PAYROLL", "IN", "1000.00", Instant.parse("2026-01-05T10:00:00Z")),
                 flow(2L, "REFUND", "OUT", "50.00", Instant.parse("2026-01-06T10:00:00Z")),
                 flow(3L, "PAYROLL", "IN", "200.00", Instant.parse("2026-01-07T10:00:00Z")));
-        when(mapper.selectByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(eq("wallet_flow_202601"), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(flows);
 
         WalletSummary summary = service.summary(1L);
@@ -118,28 +118,32 @@ class WalletFlowQueryServiceTest {
     @DisplayName("pageSize 超 100 → 截断为 100")
     void ut_pageSizeCappedAtHundred() {
         when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), any())).thenReturn(0L);
-        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of());
 
         PageResult<WalletFlow> result = service.query(1L, null, null, null, 1, 500);
 
         assertThat(result.page()).isEqualTo(1);
         assertThat(result.pageSize()).isEqualTo(100);
-        verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), eq(0), eq(100));
+        verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), eq(0), eq(100), any());
     }
 
     @Test
-    @DisplayName("type 过滤：total 使用带 type 的 count（口径修复）")
-    void ut_typeFilteredTotalUsesTypedCount() {
-        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), eq("PAYROLL"))).thenReturn(3L);
-        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
-                .thenReturn(List.of(flow(1L, "PAYROLL", Instant.parse("2026-01-05T10:00:00Z"))));
+    @DisplayName("type 下推：count 与 select 均携带 type，目标 type 行不受 LIMIT 前截断、total 一致")
+    void ut_typePushedDownToCountAndSelect() {
+        when(mapper.countByAccountAndRange(anyString(), eq(1L), any(), any(), eq("PAYROLL"))).thenReturn(2L);
+        // 下推后由 SQL 先 WHERE type 再 LIMIT：目标 type 行即使不在原始表前 p*ps 内也能正确返回
+        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), eq("PAYROLL")))
+                .thenReturn(List.of(
+                        flow(9L, "PAYROLL", Instant.parse("2026-01-05T10:00:00Z")),
+                        flow(10L, "PAYROLL", Instant.parse("2026-01-06T10:00:00Z"))));
 
         PageResult<WalletFlow> result = service.query(1L, "PAYROLL", null, null, 1, 20);
 
-        assertThat(result.total()).isEqualTo(36L); // 12 热表 × 3
+        assertThat(result.total()).isEqualTo(24L); // 12 热表 × 2
         assertThat(result.list()).extracting(WalletFlow::getType).containsOnly("PAYROLL");
         verify(mapper, times(12)).countByAccountAndRange(anyString(), eq(1L), any(), any(), eq("PAYROLL"));
+        verify(mapper, times(12)).selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), eq("PAYROLL"));
     }
 
     @Test

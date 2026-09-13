@@ -99,7 +99,7 @@ class RecordFlowServiceTest {
         existing.setChannelOrderNo("wx001");
         existing.setOccurredAt(OCCURRED_AT);
         existing.setCreatedAt(OCCURRED_AT);
-        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt()))
+        when(mapper.selectByAccountAndRange(anyString(), eq(1L), any(), any(), anyInt(), anyInt(), any()))
                 .thenReturn(List.of(existing));
 
         RecordFlowRequest req = new RecordFlowRequest(1L, "PAYROLL", "IN", "3200.00", "wx001", "PAYROLL", OCCURRED_AT);

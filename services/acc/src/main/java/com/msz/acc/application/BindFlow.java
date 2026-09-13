@@ -43,8 +43,10 @@ public final class BindFlow {
     public String bind(long accountId, String channel, String payeeAccount, String payeeName, String idempotencyKey) {
         Account account = requireRealnamedAccount(accountId);
         validatePayeeName(account.getRealName(), payeeName);
+        // 通道校验移出 guard：4002 不占幂等槽位，失败后同 Idempotency-Key 可重试
+        paymentChannelPort.verifyPayee(account.getAccountId(), channel, payeeAccount, account.getRealName());
         return idempotencyGuard.execute(SCENE, idempotencyKey,
-                () -> doBind(account, channel, payeeAccount, payeeName));
+                () -> bindCommit(account.getAccountId(), channel, payeeAccount, payeeName));
     }
 
     public void unbind(long accountId, String bindingId) {
@@ -62,9 +64,19 @@ public final class BindFlow {
                           String payeeName, String idempotencyKey) {
         Account account = requireRealnamedAccount(accountId);
         validatePayeeName(account.getRealName(), payeeName);
-        // 先校验新通道（失败/超时 4002 可重试）
-        paymentChannelPort.verifyPayee(accountId, channel, payeeAccount, account.getRealName());
+        // 先校验后替换：加载旧绑定 → 属主校验 → 校验新通道 → 旧行 UNBOUND + 新通道复用或插入
+        WalletBinding old = walletBindingMapper.selectById(bindingId);
+        if (old == null) {
+            throw new AccBusinessException(3006, "绑定不存在");
+        }
+        if (old.getAccountId() != accountId) {
+            throw new AccBusinessException(2002, "越权操作他人绑定");
+        }
+        // 通道校验移出 guard：4002 不占幂等槽位
+        paymentChannelPort.verifyPayee(account.getAccountId(), channel, payeeAccount, account.getRealName());
         return idempotencyGuard.execute(SCENE, idempotencyKey, () -> {
+            // 幂等提交段：旧行 UNBOUND + 新通道复用或插入（每通道至多一行 BOUND）
+            walletBindingMapper.markUnbound(bindingId, clock.instant());
             WalletBinding existing = walletBindingMapper.selectByAccountAndChannel(accountId, channel);
             if (existing != null) {
                 walletBindingMapper.markBound(existing.getBindingId());
@@ -82,14 +94,13 @@ public final class BindFlow {
         throw new AccBusinessException(3002, "实名不匹配");
     }
 
-    private String doBind(Account account, String channel, String payeeAccount, String payeeName) {
-        WalletBinding existing = walletBindingMapper.selectByAccountAndChannel(account.getAccountId(), channel);
+    private String bindCommit(long accountId, String channel, String payeeAccount, String payeeName) {
+        WalletBinding existing = walletBindingMapper.selectByAccountAndChannel(accountId, channel);
         if (existing != null) {
             walletBindingMapper.markBound(existing.getBindingId());
             return existing.getBindingId();
         }
-        paymentChannelPort.verifyPayee(account.getAccountId(), channel, payeeAccount, account.getRealName());
-        return insertBinding(account.getAccountId(), channel, payeeAccount, payeeName);
+        return insertBinding(accountId, channel, payeeAccount, payeeName);
     }
 
     private String insertBinding(long accountId, String channel, String payeeAccount, String payeeName) {
