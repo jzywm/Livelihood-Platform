@@ -40,11 +40,23 @@ class JwtCodecTest {
     void ut_tamperedSignatureThrowsAuthException() {
         String token = codec.sign(claims(), SECRET, 300);
 
-        char last = token.charAt(token.length() - 1);
-        String tampered = token.substring(0, token.length() - 1) + (last == 'a' ? 'b' : 'a');
+        String tampered = tamperPayloadMiddle(token);
 
         assertThatThrownBy(() -> codec.verify(tampered, SECRET))
                 .isInstanceOf(AuthException.class);
+    }
+
+    /**
+     * 确定性篡改：改 payload 段（第 2 段）中间某字符。verify 的签名输入为原始字符串
+     * {@code header + "." + payload}，任何字符变化必导致重算 HMAC 失配（不依赖 base64url 解码差异）。
+     */
+    private static String tamperPayloadMiddle(String token) {
+        String[] parts = token.split("\\.");
+        String payload = parts[1];
+        int idx = payload.length() / 2;
+        char original = payload.charAt(idx);
+        char changed = original == 'A' ? 'B' : 'A';
+        return parts[0] + "." + payload.substring(0, idx) + changed + payload.substring(idx + 1) + "." + parts[2];
     }
 
     @Test

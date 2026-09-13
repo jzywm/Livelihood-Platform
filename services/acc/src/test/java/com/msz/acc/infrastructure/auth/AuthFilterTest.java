@@ -50,7 +50,7 @@ class AuthFilterTest {
     @DisplayName("SEC-07 坏签名 → 401 + code 2001")
     void ut_badSignatureReturns2001() throws Exception {
         String token = codec.sign(Map.of("sub", "1001", "role", "CONSUMER", "jti", "jti-1"), SECRET, 300);
-        String tampered = token.substring(0, token.length() - 1) + (token.endsWith("a") ? "b" : "a");
+        String tampered = tamperPayloadMiddle(token);
 
         CapturedResponse response = runFilter("Bearer " + tampered, new NoopRevocationStore(), new AtomicBoolean());
 
@@ -88,6 +88,19 @@ class AuthFilterTest {
 
     private CapturedResponse runFilter(String authHeader, RevocationStore revocation, AtomicBoolean chained) throws Exception {
         return runFilter(authHeader, revocation, chained, new HashMap<>());
+    }
+
+    /**
+     * 确定性篡改：改 payload 段（第 2 段）中间某字符。JwtCodec.verify 的签名输入为原始字符串
+     * {@code header + "." + payload}，任何字符变化必导致重算 HMAC 失配（不依赖 base64url 解码差异）。
+     */
+    private static String tamperPayloadMiddle(String token) {
+        String[] parts = token.split("\\.");
+        String payload = parts[1];
+        int idx = payload.length() / 2;
+        char original = payload.charAt(idx);
+        char changed = original == 'A' ? 'B' : 'A';
+        return parts[0] + "." + payload.substring(0, idx) + changed + payload.substring(idx + 1) + "." + parts[2];
     }
 
     private CapturedResponse runFilter(String authHeader, RevocationStore revocation, AtomicBoolean chained,
