@@ -111,6 +111,26 @@ class WalletFlowMapperTest extends AbstractDbTest {
     }
 
     @Test
+    @DisplayName("查询路径白名单拦截器：绕过手工预校验直接调用时非法表名被拦截器拒绝")
+    void queryPathTableNameWhitelistEnforcedByInterceptor() {
+        Instant from = Instant.parse("2026-01-01T00:00:00Z");
+        Instant to = Instant.parse("2026-01-31T23:59:59.999Z");
+        try (SqlSession s = openSession()) {
+            WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
+            // 不预先调用 DaoSupport.requireTableName，直接调 mapper，靠拦截器强制校验。
+            // 拦截器抛 IllegalArgumentException，经 MyBatis 包装为 PersistenceException，故断言根因。
+            assertThatThrownBy(() -> mapper.selectByAccountAndRange(
+                    "wallet_flow_202601; DROP TABLE account", 1L, from, to, 0, 10))
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> mapper.countByAccountAndRange(
+                    "account", 1L, from, to))
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class);
+            // 合法表名正常返回
+            assertThat(mapper.countByAccountAndRange("wallet_flow_202601", 1L, from, to)).isZero();
+        }
+    }
+
+    @Test
     @DisplayName("selectByAccountAndRange / countByAccountAndRange 按 account_id + 日期范围命中")
     void selectByAccountAndRange() {
         Instant createdAt = Instant.parse("2026-01-12T00:00:00Z");

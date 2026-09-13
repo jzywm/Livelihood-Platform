@@ -48,6 +48,7 @@ public final class DaoSupport {
         // 关闭一级缓存（STATEMENT 级）：幂等轮询/并发场景须每次真实查库，避免会话级缓存返回陈旧数据。
         configuration.setLocalCacheScope(LocalCacheScope.STATEMENT);
         configuration.addInterceptor(new MonthlyShardingInterceptor("createdAt"));
+        configuration.addInterceptor(new TableNameGuardInterceptor());
         // 以 CharSequence 为显式 javaType 注册实例：使 #{...,typeHandler=EncryptedStringTypeHandler}
         // 经 getMappingTypeHandler(Class) 命中该实例，同时不覆盖 String 默认 handler（避免全局加密）。
         configuration.getTypeHandlerRegistry().register(
