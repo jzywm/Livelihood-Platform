@@ -102,6 +102,12 @@
       <artifactId>slf4j-api</artifactId>
       <version>2.0.17</version>
     </dependency>
+    <!-- 简报 line 47：ConstraintViolationException → 1002 映射（API 级，全站无 @Valid/无校验器 Provider） -->
+    <dependency>
+      <groupId>jakarta.validation</groupId>
+      <artifactId>jakarta.validation-api</artifactId>
+      <version>3.0.2</version>
+    </dependency>
     <dependency>
       <groupId>org.apache.poi</groupId>
       <artifactId>poi-ooxml</artifactId>

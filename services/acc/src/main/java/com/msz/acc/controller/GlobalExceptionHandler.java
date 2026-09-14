@@ -9,6 +9,7 @@ import com.msz.acc.infrastructure.web.TraceIds;
 import com.msz.common.api.Envelope;
 import com.msz.common.api.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -65,7 +66,8 @@ public class GlobalExceptionHandler {
                 request, e);
     }
 
-    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class})
+    @ExceptionHandler({MethodArgumentNotValidException.class, ConstraintViolationException.class,
+            HttpMessageNotReadableException.class})
     public ResponseEntity<Envelope<Void>> handleInvalidBody(Exception e, HttpServletRequest request) {
         return fail(ErrorCode.PARAM_FORMAT, ErrorCode.message(ErrorCode.PARAM_FORMAT), HttpStatus.BAD_REQUEST,
                 request, e);
