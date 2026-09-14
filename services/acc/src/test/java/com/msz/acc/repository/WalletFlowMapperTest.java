@@ -197,6 +197,30 @@ class WalletFlowMapperTest extends AbstractDbTest {
         }
     }
 
+    @Test
+    @DisplayName("selectAllByRange：跨账户全量读取（审计/对账口径），非法表名被拦截器拒绝")
+    void selectAllByRange() {
+        Instant createdAt = Instant.parse("2026-01-12T00:00:00Z");
+        try (SqlSession s = openSession()) {
+            WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
+            mapper.insert(flow(7401L, 42L, "CH-7401", createdAt));
+            mapper.insert(flow(7402L, 99L, "CH-7402", Instant.parse("2026-01-13T00:00:00Z")));
+        }
+
+        try (SqlSession s = openSession()) {
+            WalletFlowMapper mapper = s.getMapper(WalletFlowMapper.class);
+            Instant from = Instant.parse("2026-01-01T00:00:00Z");
+            Instant to = Instant.parse("2026-01-31T23:59:59.999Z");
+            assertThat(mapper.selectAllByRange("wallet_flow_202601", from, to, 0, 10))
+                    .hasSize(2)
+                    .extracting(WalletFlow::getAccountId)
+                    .containsExactlyInAnyOrder(42L, 99L);
+            assertThatThrownBy(() -> mapper.selectAllByRange(
+                    "account", from, to, 0, 10))
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
     private static WalletFlow flow(long flowId, long accountId, String channelOrderNo, Instant createdAt) {
         WalletFlow flow = new WalletFlow();
         flow.setFlowId(flowId);

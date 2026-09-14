@@ -12,7 +12,9 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -86,8 +88,55 @@ class AuthFilterTest {
         assertThat(ctx.jti()).isEqualTo("jti-ok");
     }
 
+    @Test
+    @DisplayName("SEC-07 白名单路径：无 token 放行（captcha/register/status/callback/internal），其余仍 401")
+    void ut_noAuthPathsBypassJwt() throws Exception {
+        AuthFilter filter = new AuthFilter(codec, SECRET, new NoopRevocationStore(),
+                Set.of("/acc/captcha", "/acc/register", "/acc/realname/status",
+                        "/acc/realname/callback", "/acc/internal"));
+
+        for (String uri : List.of("/acc/captcha", "/acc/captcha/verify", "/acc/register",
+                "/acc/realname/status", "/acc/realname/callback", "/acc/internal/account/1")) {
+            AtomicBoolean chained = new AtomicBoolean(false);
+            runFilter(filter, null, new NoopRevocationStore(), chained, uri);
+            assertThat(chained).as("白名单路径应放行: %s", uri).isTrue();
+        }
+
+        AtomicBoolean chained = new AtomicBoolean(false);
+        CapturedResponse response = runFilter(filter, null, new NoopRevocationStore(), chained, "/acc/me");
+        assertThat(chained).isFalse();
+        assertThat(response.status).isEqualTo(401);
+    }
+
+    @Test
+    @DisplayName("SEC-07 mfa claim 透传：true/false 写入 AuthContext；缺失默认 false（fail-closed）")
+    void ut_mfaClaimPassthrough() throws Exception {
+        AuthFilter filter = new AuthFilter(codec, SECRET, new NoopRevocationStore(), Set.of());
+        Map<String, Object> attributes = new HashMap<>();
+        AtomicBoolean chained = new AtomicBoolean(false);
+
+        String tokenTrue = codec.sign(Map.of("sub", "1001", "role", "CONSUMER", "jti", "j1", "mfa", true), SECRET, 300);
+        runFilter(filter, "Bearer " + tokenTrue, new NoopRevocationStore(), chained, "/acc/me", attributes);
+        assertThat(((AuthContext) attributes.get(ATTR)).mfa()).isTrue();
+
+        attributes.clear();
+        String tokenFalse = codec.sign(Map.of("sub", "1001", "role", "CONSUMER", "jti", "j2", "mfa", false), SECRET, 300);
+        runFilter(filter, "Bearer " + tokenFalse, new NoopRevocationStore(), chained, "/acc/me", attributes);
+        assertThat(((AuthContext) attributes.get(ATTR)).mfa()).isFalse();
+
+        attributes.clear();
+        String tokenNoMfa = codec.sign(Map.of("sub", "1001", "role", "CONSUMER", "jti", "j3"), SECRET, 300);
+        runFilter(filter, "Bearer " + tokenNoMfa, new NoopRevocationStore(), chained, "/acc/me", attributes);
+        assertThat(((AuthContext) attributes.get(ATTR)).mfa()).isFalse();
+    }
+
     private CapturedResponse runFilter(String authHeader, RevocationStore revocation, AtomicBoolean chained) throws Exception {
         return runFilter(authHeader, revocation, chained, new HashMap<>());
+    }
+
+    private CapturedResponse runFilter(AuthFilter filter, String authHeader, RevocationStore revocation,
+                                       AtomicBoolean chained, String uri) throws Exception {
+        return runFilter(filter, authHeader, revocation, chained, uri, new HashMap<>());
     }
 
     /**
@@ -106,12 +155,17 @@ class AuthFilterTest {
     private CapturedResponse runFilter(String authHeader, RevocationStore revocation, AtomicBoolean chained,
                                        Map<String, Object> attributes) throws Exception {
         AuthFilter filter = new AuthFilter(codec, SECRET, revocation);
+        return runFilter(filter, authHeader, revocation, chained, "/acc/me", attributes);
+    }
 
+    private CapturedResponse runFilter(AuthFilter filter, String authHeader, RevocationStore revocation,
+                                       AtomicBoolean chained, String uri, Map<String, Object> attributes)
+            throws Exception {
         StringWriter sw = new StringWriter();
         AtomicInteger status = new AtomicInteger();
         PrintWriter writer = new PrintWriter(sw);
 
-        HttpServletRequest request = fakeRequest(authHeader, attributes);
+        HttpServletRequest request = fakeRequest(authHeader, attributes, uri);
         HttpServletResponse response = fakeResponse(status, writer);
 
         FilterChain chain = (req, res) -> chained.set(true);
@@ -122,7 +176,7 @@ class AuthFilterTest {
         return new CapturedResponse(status.get(), sw.toString());
     }
 
-    private static HttpServletRequest fakeRequest(String authHeader, Map<String, Object> attributes) {
+    private static HttpServletRequest fakeRequest(String authHeader, Map<String, Object> attributes, String uri) {
         return (HttpServletRequest) Proxy.newProxyInstance(
                 HttpServletRequest.class.getClassLoader(),
                 new Class<?>[]{HttpServletRequest.class},
@@ -130,6 +184,9 @@ class AuthFilterTest {
                     switch (method.getName()) {
                         case "getHeader" -> {
                             return "Authorization".equals(args[0]) ? authHeader : null;
+                        }
+                        case "getRequestURI" -> {
+                            return uri;
                         }
                         case "setAttribute" -> {
                             attributes.put((String) args[0], args[1]);

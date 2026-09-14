@@ -1,5 +1,6 @@
 package com.msz.acc.infrastructure.auth;
 
+import com.msz.acc.infrastructure.web.TraceIds;
 import com.msz.common.api.Envelope;
 import com.msz.common.api.ErrorCode;
 import jakarta.servlet.Filter;
@@ -13,14 +14,16 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * 鉴权 Filter 最小版（2.3）：Bearer JWT 解析 / 吊销检查 / 六方角色透传。
+ * 鉴权 Filter（2.3，S5 增补白名单/mfa/traceId）：Bearer JWT 解析 / 吊销检查 / 六方角色透传。
  *
- * <p>逻辑：无 Authorization 头或非 Bearer → 401 + code 2001；验签/过期失败 → 401 + 2001；
- * 已吊销 → 401 + 2001；通过 → 解析 sub/role/jti 组装 {@link AuthContext} 写入
+ * <p>逻辑：白名单路径（captcha/register/status 等公开接口，及 callback/internal 由内部 Token 鉴权）
+ * 直接放行；无 Authorization 头或非 Bearer → 401 + code 2001；验签/过期失败 → 401 + 2001；
+ * 已吊销 → 401 + 2001；通过 → 解析 sub/role/jti/mfa 组装 {@link AuthContext} 写入
  * {@code request.setAttribute("authContext", ...)} 并放行。资金/资源级越权（2002/403）由
- * {@link FundsGuard} 在后续装配（5.x）执行。
+ * {@link FundsGuard} 在后续装配（5.x）执行。</p>
  */
 public final class AuthFilter implements Filter {
 
@@ -31,11 +34,17 @@ public final class AuthFilter implements Filter {
     private final JwtCodec codec;
     private final String secret;
     private final RevocationStore revocationStore;
+    private final Set<String> noAuthPaths;
 
     public AuthFilter(JwtCodec codec, String secret, RevocationStore revocationStore) {
+        this(codec, secret, revocationStore, Set.of());
+    }
+
+    public AuthFilter(JwtCodec codec, String secret, RevocationStore revocationStore, Set<String> noAuthPaths) {
         this.codec = codec;
         this.secret = secret;
         this.revocationStore = revocationStore;
+        this.noAuthPaths = Set.copyOf(noAuthPaths);
     }
 
     @Override
@@ -44,9 +53,15 @@ public final class AuthFilter implements Filter {
         HttpServletRequest req = (HttpServletRequest) request;
         HttpServletResponse res = (HttpServletResponse) response;
 
+        String uri = req.getRequestURI();
+        if (noAuthPaths.stream().anyMatch(prefix -> uri != null && uri.startsWith(prefix))) {
+            chain.doFilter(req, res);
+            return;
+        }
+
         String header = req.getHeader(AUTH_HEADER);
         if (header == null || !header.startsWith(BEARER_PREFIX)) {
-            writeUnauthorized(res);
+            writeUnauthorized(req, res);
             return;
         }
         String token = header.substring(BEARER_PREFIX.length()).trim();
@@ -55,25 +70,27 @@ public final class AuthFilter implements Filter {
         try {
             claims = codec.verify(token, secret);
         } catch (AuthException e) {
-            writeUnauthorized(res);
+            writeUnauthorized(req, res);
             return;
         }
 
         String jti = (String) claims.get("jti");
         if (revocationStore.isRevoked(jti)) {
-            writeUnauthorized(res);
+            writeUnauthorized(req, res);
             return;
         }
 
-        AuthContext ctx = new AuthContext((String) claims.get("sub"), (String) claims.get("role"), jti);
+        boolean mfa = claims.get("mfa") instanceof Boolean value && value;
+        AuthContext ctx = new AuthContext((String) claims.get("sub"), (String) claims.get("role"), jti, mfa);
         req.setAttribute(ATTR_AUTH_CONTEXT, ctx);
         chain.doFilter(req, res);
     }
 
-    private void writeUnauthorized(HttpServletResponse res) throws IOException {
+    private void writeUnauthorized(HttpServletRequest req, HttpServletResponse res) throws IOException {
         res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         res.setContentType("application/json;charset=UTF-8");
-        Envelope<Void> envelope = Envelope.fail(ErrorCode.UNAUTHORIZED, ErrorCode.message(ErrorCode.UNAUTHORIZED), traceId());
+        Envelope<Void> envelope = Envelope.fail(ErrorCode.UNAUTHORIZED, ErrorCode.message(ErrorCode.UNAUTHORIZED),
+                TraceIds.of(req));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("code", envelope.code());
         body.put("message", envelope.message());
@@ -81,9 +98,5 @@ public final class AuthFilter implements Filter {
         body.put("traceId", envelope.traceId());
         body.put("timestamp", envelope.timestamp());
         res.getWriter().write(Json.toJson(body));
-    }
-
-    private String traceId() {
-        return "";
     }
 }

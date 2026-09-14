@@ -30,12 +30,14 @@ public final class TableNameGuardInterceptor implements Interceptor {
 
     private static final String SELECT_BY_ACCOUNT_AND_RANGE = "WalletFlowMapper.selectByAccountAndRange";
     private static final String COUNT_BY_ACCOUNT_AND_RANGE = "WalletFlowMapper.countByAccountAndRange";
+    private static final String SELECT_ALL_BY_RANGE = "WalletFlowMapper.selectAllByRange";
 
     @Override
     public Object intercept(Invocation invocation) throws Throwable {
         MappedStatement statement = (MappedStatement) invocation.getArgs()[0];
         String id = statement.getId();
-        if (id.endsWith(SELECT_BY_ACCOUNT_AND_RANGE) || id.endsWith(COUNT_BY_ACCOUNT_AND_RANGE)) {
+        if (id.endsWith(SELECT_BY_ACCOUNT_AND_RANGE) || id.endsWith(COUNT_BY_ACCOUNT_AND_RANGE)
+                || id.endsWith(SELECT_ALL_BY_RANGE)) {
             DaoSupport.requireTableName(resolveTableName(invocation.getArgs()[1]));
         }
         return invocation.proceed();

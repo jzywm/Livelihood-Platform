@@ -76,6 +76,33 @@ class ReconcileTaskMapperTest extends AbstractDbTest {
         }
     }
 
+    @Test
+    @DisplayName("selectAllByRange：任务日期区间与查询区间相交即命中")
+    void selectAllByRangeCoverage() {
+        try (SqlSession s = openSession()) {
+            ReconcileTaskMapper mapper = s.getMapper(ReconcileTaskMapper.class);
+            mapper.insert(task("rec_30", "RUNNING"));                              // 2026-01-01..2026-01-31
+            ReconcileTask feb = task("rec_31", "RUNNING");
+            feb.setFromDate(LocalDate.parse("2026-02-01"));
+            feb.setToDate(LocalDate.parse("2026-02-28"));
+            mapper.insert(feb);
+        }
+        try (SqlSession s = openSession()) {
+            ReconcileTaskMapper mapper = s.getMapper(ReconcileTaskMapper.class);
+            assertThat(mapper.selectAllByRange(
+                    LocalDate.parse("2026-01-10"), LocalDate.parse("2026-01-20")))
+                    .extracting(ReconcileTask::getReconcileId)
+                    .containsExactly("rec_30");
+            assertThat(mapper.selectAllByRange(
+                    LocalDate.parse("2026-01-20"), LocalDate.parse("2026-02-10")))
+                    .extracting(ReconcileTask::getReconcileId)
+                    .containsExactlyInAnyOrder("rec_30", "rec_31");
+            assertThat(mapper.selectAllByRange(
+                    LocalDate.parse("2026-03-01"), LocalDate.parse("2026-03-31")))
+                    .isEmpty();
+        }
+    }
+
     private static ReconcileTask task(String reconcileId, String status) {
         ReconcileTask task = new ReconcileTask();
         task.setReconcileId(reconcileId);

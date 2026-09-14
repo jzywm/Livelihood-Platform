@@ -51,4 +51,16 @@ public interface WalletFlowMapper {
                                 @Param("from") Instant from,
                                 @Param("to") Instant to,
                                 @Param("type") String type);
+
+    @Select("<script>"
+            + "SELECT flow_id, account_id, type, direction, amount, status, channel_order_no, biz_type, hash, "
+            + "occurred_at, created_at FROM ${tableName} "
+            + "WHERE created_at &gt;= #{from} AND created_at &lt;= #{to} "
+            + "ORDER BY created_at DESC LIMIT #{limit} OFFSET #{offset}"
+            + "</script>")
+    List<WalletFlow> selectAllByRange(@Param("tableName") String tableName,
+                                      @Param("from") Instant from,
+                                      @Param("to") Instant to,
+                                      @Param("offset") int offset,
+                                      @Param("limit") int limit);
 }

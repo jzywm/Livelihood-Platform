@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -33,4 +34,8 @@ public interface ReconcileTaskMapper {
     List<ReconcileTask> listByStatusCreated(@Param("status") String status,
                                             @Param("offset") int offset,
                                             @Param("limit") int limit);
+
+    @Select("<script>SELECT * FROM reconcile_task WHERE from_date &lt;= #{to} AND to_date &gt;= #{from} "
+            + "ORDER BY created_at DESC</script>")
+    List<ReconcileTask> selectAllByRange(@Param("from") LocalDate from, @Param("to") LocalDate to);
 }

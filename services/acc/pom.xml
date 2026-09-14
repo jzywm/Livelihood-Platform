@@ -85,6 +85,46 @@
       <version>${jqwik.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+      <version>3.5.0</version>
+    </dependency>
+    <!-- GlobalExceptionHandler 错误码映射（DuplicateKeyException→3008 / DataAccessException→5001，简报裁决） -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-tx</artifactId>
+      <version>6.2.7</version>
+    </dependency>
+    <!-- 对齐 Boot 3.5 Logback 的 SLF4J 2.x API（mariaDB4j 传递 1.7.32 会与 logback 1.5 冲突） -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.17</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>5.2.5</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <version>3.5.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-junit-jupiter</artifactId>
+      <version>5.10.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>3.9.1</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -95,6 +135,7 @@
         <version>3.11.0</version>
         <configuration>
           <release>17</release>
+          <parameters>true</parameters>
         </configuration>
       </plugin>
       <plugin>
