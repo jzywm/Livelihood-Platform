@@ -19,6 +19,9 @@ import com.msz.acc.application.port.ReconcileExecutor;
 import com.msz.acc.application.port.SessionStore;
 import com.msz.acc.application.port.SignatureVerifier;
 import com.msz.acc.application.support.HmacFingerprint;
+import com.msz.acc.controller.AuthController;
+import com.msz.acc.controller.SessionCookie;
+import com.msz.acc.controller.SessionViewMapper;
 import com.msz.acc.domain.service.AmountPolicy;
 import com.msz.acc.domain.service.HashChainService;
 import com.msz.acc.domain.service.MaskingPolicy;
@@ -26,6 +29,7 @@ import com.msz.acc.domain.service.ReconcileDecision;
 import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.service.ShardingRouter;
 import com.msz.acc.infrastructure.auth.JwtCodec;
+import com.msz.acc.infrastructure.auth.OriginValidator;
 import com.msz.acc.infrastructure.auth.TrustedHeaderAuthFilter;
 import com.msz.acc.infrastructure.auth.session.AccessTokenIssuer;
 import com.msz.acc.infrastructure.auth.session.InMemorySessionStore;
@@ -96,10 +100,16 @@ import java.util.function.LongSupplier;
 @EnableConfigurationProperties(AccProperties.class)
 public class AccConfiguration {
 
-    /** JWT 白名单路径（无 token 放行；callback/internal 由内部 Token 鉴权）。 */
+    /**
+     * JWT 白名单路径（无 token 放行；callback/internal 由内部 Token 鉴权；会话登录/换发为
+     * 「无短 token 时的必经入口」）。**不含 {@code /acc/auth/logout}**——登出需要有效短 token
+     * 或有效长 token Cookie，白名单化只会削弱保护。匹配走**路径段边界**
+     * （{@link AuthPathMatcher}），{@code /acc/auth/loginAny} 之类的近似路径不得放行。
+     */
     public static final Set<String> NO_AUTH_PATHS = Set.of(
             "/acc/captcha", "/acc/register", "/acc/realname/status",
-            "/acc/realname/callback", "/acc/internal");
+            "/acc/realname/callback", "/acc/internal",
+            "/acc/auth/login", "/acc/auth/refresh");
 
     private static final String KEY_ID = "k1";
     private static final String FINGERPRINT_SECRET = "acc-fingerprint-test-secret";
@@ -480,6 +490,33 @@ public class AccConfiguration {
     @Bean
     public Logger sessionAuditLogger() {
         return LoggerFactory.getLogger("acc.session.audit");
+    }
+
+    /**
+     * 会话端点 Cookie 口径（R-A7，design D6）：`HttpOnly; Secure; SameSite=<配置>;
+     * Path=/api/v1/acc/auth`（**对外路径**，网关改写前口径，与 openapi 文档一致）；
+     * Max-Age = refresh 有效期。
+     */
+    @Bean
+    public SessionCookie sessionCookie(AccProperties properties) {
+        return SessionCookie.forSessionEndpoints(properties.getSession().getCookieName(),
+                properties.getSession().isCookieSecure(), properties.getSession().getCookieSameSite(),
+                SessionCookie.SESSION_PATH, properties.getSession().getRefreshTokenTtlSeconds());
+    }
+
+    /** 换发/仅凭 Cookie 登出的来源校验（R-A3）：允许列表来自 {@code acc.session.allowed-origins}。 */
+    @Bean
+    public OriginValidator originValidator(AccProperties properties) {
+        return new OriginValidator(properties.getSession().getAllowedOrigins());
+    }
+
+    /** 会话控制器（openapi v1.2.0 `/acc/auth/{login,refresh,logout}`）。 */
+    @Bean
+    public AuthController authController(SessionFlow sessionFlow, OriginValidator originValidator,
+                                         SessionCookie sessionCookie, JwtCodec jwtCodec,
+                                         AccProperties properties, Clock clock) {
+        return new AuthController(sessionFlow, originValidator, sessionCookie, new SessionViewMapper(),
+                jwtCodec, properties.getJwtSecret(), clock);
     }
 
     @Bean

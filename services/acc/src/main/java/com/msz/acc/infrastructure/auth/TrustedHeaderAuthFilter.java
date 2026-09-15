@@ -28,6 +28,11 @@ import java.util.Set;
  * 内网直连且无身份头即视为未认证,不放行;通过 → 组装 AuthContext 写入
  * {@code request.setAttribute("authContext", ...)}。业务越权(2002/403)由 {@link FundsGuard} 在服务内执行。</p>
  *
+ * <p><b>2026-09-15 会话端点接入</b>：白名单增 {@code /acc/auth/login}、{@code /acc/auth/refresh}
+ * （无短 token 时的必经入口）；{@code /acc/auth/logout} **不进白名单**（需有效短 token 或有效长 token
+ * Cookie，由 {@code AuthController} 自行判定）。白名单匹配改为**路径段边界**
+ * （{@link AuthPathMatcher}），避免 {@code /acc/auth/loginAny} 蹭白名单。</p>
+ *
  * <p>信任前提:服务只接受内网(网关/Nginx)流量,且网关在入口无条件剥离客户端伪造的
  * {@code X-User-*} 头(见 `services/gateway` RequestSanitizerFilter)。</p>
  */
@@ -53,7 +58,7 @@ public final class TrustedHeaderAuthFilter implements Filter {
         HttpServletResponse res = (HttpServletResponse) response;
 
         String uri = req.getRequestURI();
-        if (noAuthPaths.stream().anyMatch(prefix -> uri != null && uri.startsWith(prefix))) {
+        if (AuthPathMatcher.matchesAny(uri, noAuthPaths)) {
             chain.doFilter(req, res);
             return;
         }

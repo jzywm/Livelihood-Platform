@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * <p><b>事务边界</b>：不做任何数据库显式事务——账户查询走事务感知 Mapper 代理，天然落在请求级
  * 事务内（`fix-acc-transaction-boundary` 已收敛）；会话状态在 Redis，不参与数据库事务。</p>
  */
-public final class SessionFlow {
+public final class SessionFlow implements SessionOperations {
 
     /** 审计日志事件名：refresh 重放（泄露信号）→ 整族吊销。 */
     public static final String AUDIT_REFRESH_REPLAY = "SESSION_REFRESH_REPLAY";
