@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   构建 ACC 真机联调桩（deploy/drill/AccDrill.java）的运行 classpath 并编译。
 
