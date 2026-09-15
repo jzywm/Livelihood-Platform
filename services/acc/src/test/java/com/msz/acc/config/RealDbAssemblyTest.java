@@ -388,7 +388,8 @@ class RealDbAssemblyTest {
      * <p>观测口径：① 外部连接 {@code setAutoCommit(false)} + {@code UPDATE} 后**不提交**，并在写方
      * 连接上确认该值确为在途（FROZEN），保证「确有未提交写」而非断言空转；② 未提交期间的 HTTP 读必须
      * 返回旧值（ACTIVE，非锁定读不吃未提交版本、也不阻塞）；③ 提交后新请求必须立即返回新值。
-     * 收尾把数据改回原值并提交，使用例可重复运行且不影响同类中其它用例（同类用例顺序执行、共享同一嵌入库）。</p>
+     * 收尾把数据改回原值（置于 {@code finally} 内，断言失败路径同样恢复），使用例可重复运行且不影响同类中其它用例
+     * （同类用例顺序执行、共享同一嵌入库）。</p>
      */
     @Test
     @DisplayName("3.8 未提交写隔离：外部未提交期间读请求只见已提交值，提交后立即可见")
@@ -418,14 +419,17 @@ class RealDbAssemblyTest {
                     .as("外部提交后，下一次读请求必须立即看到新值")
                     .contains("\"walletStatus\":\"FROZEN\"");
         } finally {
+            // 收尾恢复必须无条件执行（放在 finally 内，保证用例可重复运行）：
+            // 若在 external.commit() 之后的断言失败，收尾若不执行就会把 77004 以 FROZEN 留在库中，
+            // 重复运行时会先在前置断言（已提交态 ACTIVE）处失败，掩盖真实失败原因。
             // 放弃在途写（未提交则回滚；已提交亦为无害空操作，连接关闭时同样隐式回滚）
             if (!external.getAutoCommit()) {
                 external.rollback();
             }
             external.close();
+            restoreWalletStatusActive(UNCOMMITTED_WRITE_ACCOUNT_ID);
         }
 
-        restoreWalletStatusActive(UNCOMMITTED_WRITE_ACCOUNT_ID);
         assertThat(meBody(UNCOMMITTED_WRITE_ACCOUNT_ID))
                 .as("收尾后数据恢复为 ACTIVE（用例可重复运行）")
                 .contains("\"walletStatus\":\"ACTIVE\"");
