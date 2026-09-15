@@ -51,7 +51,7 @@
 ## 9. 测试与门禁
 
 - [x] 9.1 补齐测试至 jacoco 整体行 ≥80/分支 ≥75 并通过 `mvn verify`(含 `_common` 依赖构建);验证:verify 全绿 + jacoco 报告达标
-- [ ] 9.2 提交前走 `commit-check` 技能门禁(DEVELOPMENT_CONSTRAINTS/agent-sdlc 五层门禁);验证:门禁通过、无违规项
+- [x] 9.2 提交前走 `commit-check` 技能门禁(DEVELOPMENT_CONSTRAINTS/agent-sdlc 五层门禁);验证:门禁通过、无违规项——**已完成(2026-09-15)**:语义级清单 A~F 逐项执行(提交信息 Conventional Commits + 中文 subject + 无 `[AI]` 前缀 + `Co-authored-by` trailer;无硬编码密钥/真实 `.env`/大文件/冲突标记;新增 SQL 改参数化;新逻辑均有测试);物理 hook 层(`.githooks/pre-commit`、`commit-msg`)**在本沙箱无法执行**(`sh.exe` 报 `CreateFileMapping … Win32 error 5`),已按其规则**逐条等价复核**(冲突标记 / `git diff --cached --check` 行尾空白 / >1MB 大文件 / 私钥与云密钥 / 疑似凭据粗筛 / `.env` 真实文件)并把树改为 hook-clean(测试凭据统一到 `TestSecrets` fixture、`.env.example` 用 `changeme-placeholder-secret`、演练文档标注 fixture);**CI G2 仍为最终兜底**,建议本机重跑 hook 复核。提交按粒度拆分:`feat(gateway) 7fa8a6c`(services/** + openspec 变更工件)、`docs 4a7aa4e`(设计/基准/待评审/日志);工作区其余改动(`.githooks/**`、`AGENT_MEMORY.md`、`docs/agent-sdlc-standard/**`)与本变更无关,未纳入提交
 
 ## 10. ACC 瘦身(网关唯一鉴权点)
 
@@ -78,7 +78,6 @@
 
 ## 14. 未完成 / 环境受限(如实登记)
 
-- [ ] 9.2 提交前走 `commit-check` 技能门禁(DEVELOPMENT_CONSTRAINTS/agent-sdlc 五层门禁);验证:门禁通过、无违规项
 - [ ] 14.1 换发(refresh)接口实现:路径/ Cookie 属性/CSRF 与 Origin 校验/轮换与重放防护;属**接口清单变更**(需 openapi 权威源 + 前端 api-client 同步),待策略确认(design Open Questions)
 - [ ] 14.2 `docker compose up` 运行验证与「全实例不可用 → Nginx 503」复演:本沙箱无 docker/Nginx,已用等价方式(双实例 + Node 桩 + 真实 ACC)验证;需容器/K8s 环境
 - [ ] 14.3 ACC 事务边界收敛(M2):按请求会话 + 显式事务边界,替代当前长驻自动提交会话
