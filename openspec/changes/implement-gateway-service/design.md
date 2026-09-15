@@ -168,7 +168,7 @@ Redis+Lua 令牌桶,key = `rl:{ip|account|api}:{key}`,原子计数;超限 429 + 
 - **联调形态**:`services/acc/deploy/drill/AccDrill.java` 以嵌入式 MariaDB(mariaDB4j)+ Flyway + `@Primary` 真实 DataSource 启动**真实 ACC 进程**,与网关 fat jar 组成双进程,链路为 `curl → 网关(鉴权/限流/熔断/改写) → ACC → MyBatis → MariaDB`——此前 Node 下游桩只能证明转发,不能证明 SQL 与字段加解密。
 - **发现缺陷(ACC,非网关切面)**:6 个 Mapper Bean 原为 `factory.openSession().getMapper(...)`,会话长驻、`autoCommit=false`、事务永不提交,真实库下三症状:①读陈旧(外部已提交的 `wallet_status` 查不到)②写不落库(`POST /acc/account/close` 返 200 但 `closed_at` 仍 NULL)③持锁阻塞外部写入(`Lock wait timeout exceeded`,约 50s)。
 - **修复**:改为 `factory.openSession(true)`(自动提交,与 DAO 测试同口径),新增 `config.RealDbAssemblyTest`(真实库 + 真实 Tomcat + 真实 HTTP)锁死两条回归;反向验证:临时改回原实现,该测试立刻 1 Failure + 1 Error。
-- **残留限制(已登记)**:会话仍为长驻(非按请求),跨表写入无原子性、无事务边界,M2 收敛为「按请求会话 + 显式事务边界」;`services/acc/docs/README.md` 已记录。
+- **残留限制(已登记 → 已承接)**:会话仍为长驻(非按请求),跨表写入无原子性、无事务边界,原计划 M2 收敛为「按请求会话 + 显式事务边界」;`services/acc/docs/README.md` 已记录。**该三项残留已由 `fix-acc-transaction-boundary` 承接并于 2026-09-15 落地**(session-per-request + 请求级事务边界,提前至 M1,`implement-gateway-service` tasks §14.3 因此关闭)。
 - **依赖修正**:`services/acc/pom.xml` 钉 `jakarta.annotation-api:2.1.1`(test 作用域 mariaDB4j 传递 1.3.5 抢占调解 → Web 容器启动 `NoClassDefFoundError`)。
 
 ## Risks / Trade-offs
