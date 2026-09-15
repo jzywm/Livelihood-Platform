@@ -20,7 +20,7 @@
 | [`services`](services) | 后端 | Java 17 + Spring Boot 3.5 模块化单体 + 网关微服务 GATEWAY(Spring Cloud Gateway);AI 侧 Python 3.12 + FastAPI | 文档基线(代码待开发) |
 | [`docs`](docs) | 文档 | 需求调研 / 市场分析 / 设计 / SOP / 规范 | 文档 |
 
-> 说明:后端采用「**模块化单体先聚合,按业务域预留拆分**」策略;AI 能力(`aicore` / `assist`)为独立 Python 服务,经统一鉴权内部接口取数、不直连主站数据库;**网关层为独立微服务 `gateway`(GATEWAY,M1 后期独立部署,平台唯一统一入口)**,前端不直连 Python 服务。
+> 说明:后端采用「**模块化单体先聚合,按业务域预留拆分**」策略;AI 能力(`aicore` / `assist`)为独立 Python 服务,经统一鉴权内部接口取数、不直连主站数据库;**网关层为独立微服务 `gateway`(GATEWAY,M1 初期交付即接管,平台唯一统一入口与唯一鉴权点)**,前端不直连 Python 服务。
 
 ## 目录结构
 
@@ -57,7 +57,7 @@
 | [`dash`](services/dash) | 监管看板服务 | 三端看板 / 预警双向推送 / 费率公示 | Java |
 | [`delivery`](services/delivery) | 配送服务 | 本地配送下单 / 订单状态机 / 调度看板 / 运力管理与轨迹存证 | Java |
 | [`emp`](services/emp) | 用工服务 | 用工关系 / 入职年龄核验 / 劳务信用互评 | Java |
-| [`gateway`](services/gateway) | 网关服务 | 平台唯一统一入口:路由 / 鉴权 / 限流 / 灰度 / 超时熔断 / traceId / Envelope(M1 后期独立部署) | Java |
+| [`gateway`](services/gateway) | 网关服务 | 平台唯一统一入口与唯一鉴权点:路由 / 鉴权 / 限流 / 超时熔断 / traceId / Envelope / 运维接口(M1 初期交付即接管) | Java |
 | [`prod`](services/prod) | 商品服务 | 商品上架审核 / 选品广场 / 透明详情 | Java |
 | [`profile`](services/profile) | 画像服务 | 个人画像 / 画像四权 / 个性化推荐 | Java |
 | [`settle`](services/settle) | 结算服务 | 资金结算唯一执行层(只走第三方持牌通道) | Java |
@@ -91,13 +91,13 @@ pnpm build:mobile:mp-weixin    # 移动端微信小程序构建
 
 ### 后端
 
-后端业务域服务当前处于**设计基线 / 文档脚手架**阶段(尚无 `pom.xml` 与 Java 源码),待 M1 起以「模块化单体」落地;网关层为独立微服务 [`gateway`](services/gateway)(Spring Cloud Gateway,M1 后期独立部署)。开发规范与拆分策略见 [`DEVELOPMENT_CONSTRAINTS.md`](DEVELOPMENT_CONSTRAINTS.md) 与 [`docs/design/高并发架构演进设计.md`](docs/design/高并发架构演进设计.md)。
+后端业务域服务当前处于**设计基线 / 文档脚手架**阶段(尚无 `pom.xml` 与 Java 源码),待 M1 起以「模块化单体」落地;网关层为独立微服务 [`gateway`](services/gateway)(Spring Cloud Gateway,**M1 初期交付即接管**,代码已落地:105+ 用例、可执行 fat jar)。开发规范与拆分策略见 [`DEVELOPMENT_CONSTRAINTS.md`](DEVELOPMENT_CONSTRAINTS.md) 与 [`docs/design/高并发架构演进设计.md`](docs/design/高并发架构演进设计.md)。
 
 ## 开发规范与门禁
 
 - **全局约束**:[`DEVELOPMENT_CONSTRAINTS.md`](DEVELOPMENT_CONSTRAINTS.md)(技术栈版本 / 代码风格 / 测试覆盖率 ≥80% / 提交规范 / 安全红线)。
 - **流程门禁**:[`docs/agent-sdlc-standard/`](docs/agent-sdlc-standard)(五层门禁 G0~G4,含 PR 评审、安全评审清单与模板)。
-- **提交门禁**:本地 hook(`.githooks/pre-commit`、`.githooks/commit-msg`)+ `commit-check` 技能,任一不过不得提交;提交信息遵循 Conventional Commits(`feat/fix/docs/...`),AI 提交须带 `[AI]` 标记。
+- **提交门禁**:本地 hook(`.githooks/pre-commit`、`.githooks/commit-msg`)+ `commit-check` 技能,任一不过不得提交;提交信息遵循 Conventional Commits(`feat/fix/docs/...`),不带 `[AI]` 前缀,AI 提交需审计时用 `Co-authored-by` trailer 标注。
 - **行为规则**:[`AGENT_MEMORY.md`](AGENT_MEMORY.md)(执行前先给方案、收工总结等)。
 
 ## 文档导航

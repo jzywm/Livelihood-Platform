@@ -11,7 +11,7 @@
 
 ## 1. 技术栈与版本
 
-- MUST:PC 端 React 18 + Vite 5 + Electron 33 + TypeScript 5.6;移动端 uni-app(Vue 3,`@dcloudio/*` 锁定 `package.json` 内版本);后端 Java 17 + Spring Boot 3.5 + Maven(先单聚合 `server`,按业务域预留拆分);**网关层 = 独立微服务 GATEWAY**(`services/gateway`,Java 17 + Spring Cloud Gateway,M1 后期独立部署,平台唯一统一入口)。
+- MUST:PC 端 React 18 + Vite 5 + Electron 33 + TypeScript 5.6;移动端 uni-app(Vue 3,`@dcloudio/*` 锁定 `package.json` 内版本);后端 Java 17 + Spring Boot 3.5 + Maven(先单聚合 `server`,按业务域预留拆分);**网关层 = 独立微服务 GATEWAY**(`services/gateway`,Java 17 + Spring Cloud Gateway,**M1 初期交付即接管**,平台唯一统一入口与**唯一鉴权点**)。
 - MUST:包管理器统一 pnpm 9.14(`packageManager` 字段已锁定),禁止混用 npm / yarn;`pnpm-lock.yaml` 必须入库。
 - MUST:依赖版本锁定入库,不随意升级大版本;大版本 / 破坏性升级须走评审(对齐 G2 / G3 门禁)。
 
@@ -34,7 +34,7 @@
 ## 4. Git 提交 / 分支
 
 - MUST:遵循 `docs/agent-sdlc-standard/docs/01-开发与Git规范.md`;`main` 分支受保护,提交前过 G0(格式 / 密钥扫描)。
-- 提交信息:Conventional Commits,type 英文 + 描述中文。type 集合:feat / fix / docs / style / refactor / perf / test / chore。示例:`feat: 新增商品比价`、`fix: 修复登录超时`。Agent / AI 提交须在 subject 前打 `[AI]` 标记(标准 01 §2)。
+- 提交信息:Conventional Commits,type 英文 + 描述中文。type 集合:feat / fix / docs / style / refactor / perf / test / chore。示例:`feat: 新增商品比价`、`fix: 修复登录超时`。提交信息不带 `[AI]` 前缀;AI 参与生成、需要审计标注时,在提交信息尾部追加可选 `Co-authored-by: <Agent名称> <Agent邮箱>` trailer(标准 01 §2)。
 - 分支命名(带工单号,以标准 01 为准):`feature/<ticket>-<slug>`、`fix/<ticket>-<slug>`、`release/<version>`。
 - MUST:提交前必须通过本地门禁(`.githooks/pre-commit`、`.githooks/commit-msg`)与 AI 提交检查技能 `commit-check`,任一不过不得提交;`--no-verify` 不得作为绕过手段(真正兜底由 CI G2 复验)。
 
