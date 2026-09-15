@@ -23,10 +23,8 @@ import com.msz.acc.domain.service.MaskingPolicy;
 import com.msz.acc.domain.service.ReconcileDecision;
 import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.service.ShardingRouter;
-import com.msz.acc.infrastructure.auth.AuthFilter;
 import com.msz.acc.infrastructure.auth.JwtCodec;
-import com.msz.acc.infrastructure.auth.NoopRevocationStore;
-import com.msz.acc.infrastructure.auth.RevocationStore;
+import com.msz.acc.infrastructure.auth.TrustedHeaderAuthFilter;
 import com.msz.acc.infrastructure.captcha.CaptchaService;
 import com.msz.acc.infrastructure.crypto.AesGcmCipher;
 import com.msz.acc.infrastructure.crypto.FixedKeyProvider;
@@ -133,32 +131,47 @@ public class AccConfiguration {
 
     @Bean
     public AccountMapper accountMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(AccountMapper.class);
+        return mapper(factory, AccountMapper.class);
     }
 
     @Bean
     public RealnameRecordMapper realnameRecordMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(RealnameRecordMapper.class);
+        return mapper(factory, RealnameRecordMapper.class);
     }
 
     @Bean
     public WalletFlowMapper walletFlowMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(WalletFlowMapper.class);
+        return mapper(factory, WalletFlowMapper.class);
     }
 
     @Bean
     public WalletBindingMapper walletBindingMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(WalletBindingMapper.class);
+        return mapper(factory, WalletBindingMapper.class);
     }
 
     @Bean
     public ReconcileTaskMapper reconcileTaskMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(ReconcileTaskMapper.class);
+        return mapper(factory, ReconcileTaskMapper.class);
     }
 
     @Bean
     public IdempotencyRecordMapper idempotencyRecordMapper(SqlSessionFactory factory) {
-        return factory.openSession().getMapper(IdempotencyRecordMapper.class);
+        return mapper(factory, IdempotencyRecordMapper.class);
+    }
+
+    /**
+     * Mapper 装配：**自动提交会话**（{@code openSession(true)}，与 {@code repository} 层 DAO 测试同口径）。
+     *
+     * <p>2026-09-15 真机联调（任务组 10.2）修正：原实现为 {@code openSession()}——会话长驻且
+     * {@code autoCommit=false}、事务永不提交，真实库下出现「写不落库（接口返 200 但
+     * {@code closed_at} 仍为 NULL）」与「读陈旧（外部已提交的变更查不到）」两个缺陷
+     * （控制器测试全 mock Mapper、DAO 测试用自动提交，装配层会话语义此前无覆盖）。</p>
+     *
+     * <p><b>已知限制（登记待收敛）</b>：会话仍为长驻（非按请求），跨表写入无原子性；
+     * M2 收敛为按请求会话 + 显式事务边界（见 {@code services/acc/docs/README.md} 已知限制）。</p>
+     */
+    private static <T> T mapper(SqlSessionFactory factory, Class<T> type) {
+        return factory.openSession(true).getMapper(type);
     }
 
     // ---------- 公共组件 ----------
@@ -339,26 +352,23 @@ public class AccConfiguration {
         return new FundsAuditService(walletFlowMapper, reconcileTaskMapper, shardingRouter, clock);
     }
 
-    // ---------- 鉴权 ----------
+    // ---------- 鉴权(2026-09-15:网关为唯一鉴权点,服务内改为信任网关透传的身份头) ----------
 
-    @Bean
-    public RevocationStore revocationStore() {
-        return new NoopRevocationStore();
-    }
-
+    /** JWT 编解码器:仍用于**签发**(登录/注册签发 token);验签职责已移交网关。 */
     @Bean
     public JwtCodec jwtCodec() {
         return new JwtCodec();
     }
 
     @Bean
-    public AuthFilter authFilter(JwtCodec jwtCodec, AccProperties properties, RevocationStore revocationStore) {
-        return new AuthFilter(jwtCodec, properties.getJwtSecret(), revocationStore, NO_AUTH_PATHS);
+    public TrustedHeaderAuthFilter trustedHeaderAuthFilter() {
+        return new TrustedHeaderAuthFilter(NO_AUTH_PATHS);
     }
 
     @Bean
-    public FilterRegistrationBean<AuthFilter> authFilterRegistration(AuthFilter authFilter) {
-        FilterRegistrationBean<AuthFilter> registration = new FilterRegistrationBean<>(authFilter);
+    public FilterRegistrationBean<TrustedHeaderAuthFilter> trustedHeaderAuthFilterRegistration(
+            TrustedHeaderAuthFilter filter) {
+        FilterRegistrationBean<TrustedHeaderAuthFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(1);
         registration.addUrlPatterns("/acc/*");
         return registration;

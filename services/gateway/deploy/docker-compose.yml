@@ -1,0 +1,61 @@
+# 网关服务 GATEWAY · 本地一键起(M1 初期形态:Redis + 网关双实例 + ACC 占位)
+# 用法:docker compose -f services/gateway/deploy/docker-compose.yml up -d
+# 说明:生产部署用 K8s/裸机双实例 + Nginx upstream(见 nginx-gateway.conf.example);
+#      本文件用于开发/测试环境一键验证「Nginx → 网关双实例 → 应用」链路与降级行为。
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  gateway-a:
+    build:
+      context: ../../..
+      dockerfile: services/gateway/deploy/Dockerfile
+    image: msz/gateway:0.1.0-SNAPSHOT
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      GATEWAY_STORE: redis
+      GATEWAY_REDIS_HOST: redis
+      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:-dev-only-change-me}
+      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://host.docker.internal:8080}
+      GATEWAY_INSTANCE_ID: gateway-a
+      GATEWAY_VERSION: 0.1.0-SNAPSHOT
+    ports:
+      - "8081:8081"
+
+  gateway-b:
+    image: msz/gateway:0.1.0-SNAPSHOT
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      GATEWAY_STORE: redis
+      GATEWAY_REDIS_HOST: redis
+      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:-dev-only-change-me}
+      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://host.docker.internal:8080}
+      GATEWAY_INSTANCE_ID: gateway-b
+      GATEWAY_VERSION: 0.1.0-SNAPSHOT
+    ports:
+      - "8082:8081"
+
+  # 可选:入口 Nginx(LB + TLS 终结 + /gateway/** 不对外暴露),配置见 nginx-gateway.conf.example
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - gateway-a
+      - gateway-b
+    volumes:
+      - ./nginx-gateway.conf.example:/etc/nginx/conf.d/gateway.conf:ro
+    ports:
+      - "80:80"

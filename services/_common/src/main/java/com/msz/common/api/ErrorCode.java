@@ -21,6 +21,7 @@ public final class ErrorCode {
     public static final int UNAUTHORIZED = 2001;
     public static final int FORBIDDEN = 2002;
     public static final int MFA_REQUIRED = 2003;
+    public static final int RATE_LIMITED = 2004;
 
     // 3xxx 业务规则
     public static final int REALNAME_INCOMPLETE = 3001;
@@ -45,6 +46,7 @@ public final class ErrorCode {
     public static final int INTERNAL_ERROR = 5000;
     public static final int DB_ERROR = 5001;
     public static final int DEPENDENCY_TIMEOUT = 5002;
+    public static final int GATEWAY_UNAVAILABLE = 5003;
 
     /** 默认文案（取自 openapi.yaml 错误码 message 口径）。 */
     public static String message(int code) {
@@ -56,6 +58,7 @@ public final class ErrorCode {
             case UNAUTHORIZED -> "未登录 / Token 失效";
             case FORBIDDEN -> "无权限 / 越权";
             case MFA_REQUIRED -> "MFA 未通过";
+            case RATE_LIMITED -> "请求过于频繁";
             case REALNAME_INCOMPLETE -> "实名未完成";
             case REALNAME_MISMATCH -> "实名不匹配";
             case LICENSE_FAILED -> "证照核验不通过";
@@ -74,6 +77,7 @@ public final class ErrorCode {
             case INTERNAL_ERROR -> "内部错误";
             case DB_ERROR -> "数据库错误";
             case DEPENDENCY_TIMEOUT -> "依赖超时 / 熔断";
+            case GATEWAY_UNAVAILABLE -> "网关暂不可用";
             default -> "未知错误";
         };
     }

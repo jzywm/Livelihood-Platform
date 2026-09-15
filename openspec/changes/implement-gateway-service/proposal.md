@@ -25,7 +25,7 @@ GATEWAY 是平台唯一统一入口,但当前 `services/gateway/` 仅有文档�
 
 ## Impact
 
-- **代码**:新增 `services/gateway/`(pom.xml + src + docs/openapi.yaml);改造 `services/acc`(删除 auth Filter 三件套,新增身份头解析,调整 AuthMatrixTest 等鉴权相关测试);`services/_common` 不改(被网关引用)。
+- **代码**:新增 `services/gateway/`(pom.xml + src + docs/openapi.yaml);改造 `services/acc`(删除 auth Filter 三件套,新增身份头解析,调整 AuthMatrixTest 等鉴权相关测试);`services/_common` 仅增补 2004/5003 错误码(ErrorCode + openapi.yaml 同步),Envelope/traceId 口径不动。
 - **文档口径同步**(约 9 处):PDD v1.14→v1.15(§3.1/§5.16/版本史)、高并发 v0.5→v0.6(§1/§7/ADR-8/§10)、SSOT(§1/§2.15/§4-C14 追加变更记录)、DEVELOPMENT_CONSTRAINTS §1 MUST 句、根 README、部署图 03、GATEWAY README 升级、ACC docs README 鉴权口径、待评审事项汇总 G-01/G-02 状态更新。
 - **外部依赖**:Redis(JWT 黑名单 + 限流计数,M1 地基已有)、KMS(JWT 签名密钥注入,密钥不出网关);Nacos 不提前(M1 后期)。
 - **验证门禁**:单测覆盖率 ≥80%(DEVELOPMENT_CONSTRAINTS MUST);路由/鉴权/限流/超时/降级五用例演练 + ACC 联调;提交前走 commit-check 门禁。

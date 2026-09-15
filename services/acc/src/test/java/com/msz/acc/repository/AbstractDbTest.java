@@ -1,18 +1,14 @@
 package com.msz.acc.repository;
 
-import ch.vorburger.mariadb4j.DB;
-import ch.vorburger.mariadb4j.DBConfigurationBuilder;
-import org.apache.ibatis.datasource.unpooled.UnpooledDataSource;
+import com.msz.acc.testsupport.EmbeddedMariaDb;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.function.Executable;
 
 import javax.sql.DataSource;
-import java.io.File;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -39,44 +35,17 @@ abstract class AbstractDbTest {
     protected static SqlSessionFactory sqlSessionFactory;
     protected static String accUrl;
 
-    private static DB db;
+    private static EmbeddedMariaDb embedded;
 
     @BeforeAll
     static synchronized void startDatabase() throws Exception {
-        if (db != null) {
+        if (embedded != null) {
             return;
         }
-        DBConfigurationBuilder builder = DBConfigurationBuilder.newBuilder();
-        builder.setPort(0);
-        // 关闭 --skip-grant-tables：V2 需要真实执行 CREATE USER / GRANT（最小权限账号），
-        // 否则 GRANT 报 1290（服务器以 skip-grant-tables 运行）。
-        builder.setSecurityDisabled(false);
-        // Windows 下 java.io.tmpdir 含非 ASCII（用户名）会令 MariaDB 二进制解析参数失败，
-        // 故强制 base/data/tmp 落到 ASCII 的工作区 target 目录（每 JVM 唯一后缀避免脏数据）。
-        String root = System.getProperty("user.dir") + File.separator + "target"
-                + File.separator + "mariadb4j-" + System.nanoTime();
-        builder.setBaseDir(root + File.separator + "base");
-        builder.setDataDir(root + File.separator + "data");
-        db = DB.newEmbeddedDB(builder.build());
-        db.start();
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                db.stop();
-            } catch (Exception ignored) {
-                // JVM 退出阶段清理，忽略
-            }
-        }));
-
-        int port = db.getConfiguration().getPort();
-        String bootstrapUrl = "jdbc:mariadb://localhost:" + port + "/mysql";
-        try (Connection c = DriverManager.getConnection(bootstrapUrl, "root", "");
-             Statement s = c.createStatement()) {
-            s.executeUpdate("CREATE DATABASE IF NOT EXISTS acc DEFAULT CHARACTER SET utf8mb4");
-        }
-
-        accUrl = "jdbc:mariadb://localhost:" + port + "/acc";
-        dataSource = new UnpooledDataSource("org.mariadb.jdbc.Driver", accUrl, "root", "");
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        // 库启动逻辑与真实库装配层测试共用 testsupport.EmbeddedMariaDb（避免两处漂移）
+        embedded = EmbeddedMariaDb.start();
+        dataSource = embedded.dataSource();
+        accUrl = embedded.url();
         sqlSessionFactory = new DaoSupport().factory(dataSource);
     }
 

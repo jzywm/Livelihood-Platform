@@ -27,6 +27,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
@@ -59,7 +60,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class WireMockChannelTest {
 
     private static final String INTERNAL_TOKEN = "acc-internal-test-token";
-    private static final String CONSUMER = "Bearer " + TestJwt.token("1002", "CONSUMER", true);
+    private static final RequestPostProcessor CONSUMER = TestIdentity.of("1002", "CONSUMER", true);
 
     private static WireMockServer wireMockServer;
 
@@ -158,7 +159,7 @@ class WireMockChannelTest {
 
         // ④ me（脱敏）
         when(accountMapper.selectById(1002L)).thenReturn(account(1002L));
-        mockMvc.perform(get("/acc/me").header("Authorization", CONSUMER))
+        mockMvc.perform(get("/acc/me").with(CONSUMER))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.accountId").value("acc_1002"))
@@ -230,7 +231,7 @@ class WireMockChannelTest {
         when(walletBindingMapper.selectById("bnd_1001")).thenReturn(binding("bnd_1001", 1002L));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-wm-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -251,7 +252,7 @@ class WireMockChannelTest {
         when(accountMapper.selectById(1002L)).thenReturn(account(1002L));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-wm-2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))

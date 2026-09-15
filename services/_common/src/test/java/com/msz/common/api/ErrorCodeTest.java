@@ -38,6 +38,8 @@ class ErrorCodeTest {
         assertThat(ErrorCode.INTERNAL_ERROR).isEqualTo(5000);
         assertThat(ErrorCode.DB_ERROR).isEqualTo(5001);
         assertThat(ErrorCode.DEPENDENCY_TIMEOUT).isEqualTo(5002);
+        assertThat(ErrorCode.RATE_LIMITED).isEqualTo(2004);
+        assertThat(ErrorCode.GATEWAY_UNAVAILABLE).isEqualTo(5003);
     }
 
     @Test
@@ -55,6 +57,8 @@ class ErrorCodeTest {
         assertThat(ErrorCode.message(ErrorCode.INTERNAL_ERROR)).isEqualTo("内部错误");
         assertThat(ErrorCode.message(ErrorCode.DB_ERROR)).isEqualTo("数据库错误");
         assertThat(ErrorCode.message(ErrorCode.DEPENDENCY_TIMEOUT)).isEqualTo("依赖超时 / 熔断");
+        assertThat(ErrorCode.message(ErrorCode.RATE_LIMITED)).isEqualTo("请求过于频繁");
+        assertThat(ErrorCode.message(ErrorCode.GATEWAY_UNAVAILABLE)).isEqualTo("网关暂不可用");
     }
 
     @Test

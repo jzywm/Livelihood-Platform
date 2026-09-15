@@ -1,0 +1,168 @@
+openapi: 3.0.3
+
+info:
+  title: 网关服务 GATEWAY · 运维接口
+  version: 0.1.0
+  description: |
+    网关服务 GATEWAY 的**运维接口**(健康检查 / 路由状态查询)。
+
+    口径说明:
+    - GATEWAY 为接入层基础设施服务,**无前端业务接口、无业务数据库**,故不设业务 openapi
+      (业务接口 14 份以 `services/*/docs/openapi.yaml` 为唯一可手改源,SSOT C08 例外注);
+      本文件即该例外接口的权威口径(任务 G-02 遗留项,M1 初期随交付补齐)。
+    - 统一响应包络 Envelope、错误码引用 `services/_common/openapi.yaml`(权威源),勿复制内联。
+    - 部署口径:`/gateway/**` 仅供内网健康探测与运维(对外入口 Nginx 不暴露该前缀);
+      health 供 LB 摘除实例,routes 供运维核对当前路由表(URI 已脱敏)。
+    - **访问控制**:来源网段白名单 `gateway.ops.allowed-networks`(默认回环 + 私有网段),
+      非内网来源统一返回 **404**;运维接口不经网关过滤器链(不由网关路由转发),故不列入鉴权白名单。
+    - 错误响应统一使用 `_common` 的 Envelope 结构(见下方 components)。
+  contact:
+    name: 平台架构组
+
+servers:
+  - url: http://gateway:8081
+    description: 网关服务(M1 初期双实例,内网)
+
+tags:
+  - name: ops
+    description: 运维接口(内网)
+
+paths:
+  /gateway/health:
+    get:
+      tags: [ops]
+      summary: 健康检查(liveness + Redis 依赖状态)
+      description: |
+        返回网关实例存活状态与 Redis 依赖连通性。
+        Redis 不可用(或依赖 DOWN)时返回 **HTTP 503**,供负载均衡摘除实例;
+        `gateway.store=memory`(开发兜底,M1 无 Redis 部署)时 `redis=memory` 且状态 UP。
+      operationId: gatewayHealth
+      security: []
+      responses:
+        '200':
+          description: 实例健康
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResult'
+              examples:
+                healthyRedis:
+                  value: { status: UP, redis: up, version: 0.1.0-SNAPSHOT, instanceId: gateway-a }
+                healthyMemory:
+                  value: { status: UP, redis: memory, version: 0.1.0-SNAPSHOT, instanceId: local }
+        '503':
+          description: 实例不健康(Redis 依赖不可用)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResult'
+              examples:
+                redisDown:
+                  value: { status: DOWN, redis: down, version: 0.1.0-SNAPSHOT, instanceId: gateway-a }
+
+  /gateway/routes:
+    get:
+      tags: [ops]
+      summary: 路由状态查询(当前路由表摘要)
+      description: |
+        返回当前生效的路由表摘要:id / order / uri(脱敏,剥离账号口令) / predicates /
+        timeout(路由级超时毫秒) / weight(灰度权重)。仅运维核对用,不含任何业务数据。
+      operationId: gatewayRoutes
+      security: []
+      responses:
+        '200':
+          description: 路由表摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteListResult'
+              examples:
+                m1Initial:
+                  value:
+                    routes:
+                      - id: acc
+                        order: 0
+                        uri: http://acc:8080
+                        predicates: ['Path=/api/v1/acc/**']
+                        timeout: 1000
+                        weight: 100
+
+components:
+  schemas:
+    Envelope:
+      $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+    ErrorCode:
+      type: integer
+      format: int32
+      description: |
+        网关相关平台错误码（错误码权威源 `services/_common/openapi.yaml`）：
+        2001 未登录/Token 失效（鉴权链）· 2004 请求过于频繁（网关级限流）·
+        3006 对象不存在（内部接口拦截 / 路径混淆 / 运维接口非内网来源）·
+        5002 依赖超时或熔断（路由超时、R4J 熔断降级）· 5003 网关暂不可用（Redis 不可用 fail-closed）· 5000 内部错误
+      enum: [2001, 2004, 3006, 5000, 5002, 5003]
+    HealthResult:
+      type: object
+      description: 实例健康状态
+      required: [status, redis, version, instanceId]
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN]
+          description: 实例整体状态(UP=健康;DOWN=依赖不可用,HTTP 返回 503)
+        redis:
+          type: string
+          enum: [up, down, memory]
+          description: Redis 依赖状态(up=连通;down=不可用;memory=开发兜底内存实现)
+        version:
+          type: string
+          description: 服务版本(gateway.version)
+          example: 0.1.0-SNAPSHOT
+        instanceId:
+          type: string
+          description: 实例标识(gateway.instance-id,双实例部署时用于区分)
+          example: gateway-a
+
+    RouteListResult:
+      type: object
+      description: 路由表摘要
+      required: [routes]
+      properties:
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteSummary'
+
+    RouteSummary:
+      type: object
+      description: 单条路由摘要(uri 已脱敏,不输出内网明文凭据)
+      required: [id, order, uri]
+      properties:
+        id:
+          type: string
+          description: 路由 ID(如 acc)
+          example: acc
+        order:
+          type: integer
+          format: int32
+          description: 路由优先级
+          example: 0
+        uri:
+          type: string
+          description: 目标地址(账号口令等 userInfo 已剥离)
+          example: http://acc:8080
+        predicates:
+          type: array
+          description: 谓词摘要(单参数渲染为快捷式)
+          items:
+            type: string
+          example: ['Path=/api/v1/acc/**']
+        timeout:
+          type: integer
+          format: int64
+          description: 路由级超时(毫秒,metadata.timeout;缺省用网关默认 1000)
+          example: 1000
+        weight:
+          type: integer
+          format: int32
+          description: 灰度权重(metadata.weight,默认全量 100)
+          example: 100

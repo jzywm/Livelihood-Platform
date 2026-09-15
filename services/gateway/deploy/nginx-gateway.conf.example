@@ -1,0 +1,43 @@
+# 入口 Nginx 样例:LB → GATEWAY 双实例(平台唯一统一入口,网关为唯一鉴权点)
+#
+# 关键约定:
+#   1. 上游只指向网关(不直连应用):网关是唯一鉴权点,直连应用 = 绕过鉴权;
+#   2. /gateway/** 运维接口不对外暴露(仅内网探测),此处显式 404;
+#   3. X-Forwarded-For 用 $proxy_add_x_forwarded_for 追加真实客户端 IP 到链尾
+#      (网关取链尾作为客户端 IP,防伪造);TLS 在本层终结;
+#   4. 网关全实例不可用时返回 503(LB 层快速失败),不做「直连单体」降级。
+
+upstream gateway_cluster {
+    # M1 初期双实例;生产按实例清单替换
+    server gateway-a:8081 max_fails=2 fail_timeout=5s;
+    server gateway-b:8081 max_fails=2 fail_timeout=5s;
+    keepalive 64;
+}
+
+server {
+    listen 80;
+    server_name api.example.com;
+
+    # 运维接口仅内网可达:对外入口一律 404(网关侧另有 gateway.ops.allowed-networks 兜底)
+    location /gateway/ {
+        return 404;
+    }
+
+    # 灰度分流(M1 初期):按 header/cookie/百分比把流量导向灰度实例组
+    # (网关侧 metadata.weight 已预留,M1 后期改为网关路由权重)
+    location /api/ {
+        proxy_pass http://gateway_cluster;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 1s;
+        proxy_send_timeout 10s;
+        proxy_read_timeout 10s;
+        # 网关自身快速失败(503)时保留其响应,便于前端展示统一错误
+        proxy_next_upstream error timeout http_502 http_503;
+        proxy_intercept_errors off;
+    }
+}

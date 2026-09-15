@@ -1,0 +1,143 @@
+# 网关服务 GATEWAY · 基线配置
+# 说明:路由表沿用 Spring Cloud Gateway 原生键位(spring.cloud.gateway.server.webflux.routes),
+#     业务键位收敛在 gateway.*(F8 配置总表);密钥一律环境变量注入(生产 KMS,密钥不出网关)。
+server:
+  port: 8081
+
+spring:
+  application:
+    name: gateway
+  # 排除 Redis starter 自动装配:连接工厂/模板/健康指示器由网关按 gateway.store=redis 条件自建
+  # (memory 模式 = M1 无 Redis 部署的开发兜底,不应尝试连接;F7 运维接口自报 redis 状态)
+  # 同时排除 SCG 自带的 Redis 限流自动装配(它需要名为 redisTemplate 的 Bean;网关限流用自研 Lua 实现)
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+      - org.springframework.boot.actuate.autoconfigure.redis.RedisReactiveHealthContributorAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+      - org.springframework.cloud.gateway.config.GatewayRedisAutoConfiguration
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            # 业务域:M1 初期唯一已实现服务 ACC;路径重写 /api/v1/{svc}/** → /{svc}/**(D11)
+            - id: acc
+              uri: ${GATEWAY_ACC_URI:http://localhost:8080}
+              predicates:
+                - Path=/api/v1/acc/**
+              # 过滤器:路径重写 + 熔断实例按路由命名(审查 I3:任一后端劣化不应打开全路由熔断)
+              filters:
+                - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
+                - name: CircuitBreaker
+                  args:
+                    name: accCircuitBreaker
+                    fallbackUri: forward:/gateway-fallback
+              metadata:
+                timeout: 1000        # 路由级超时:内部服务 1s(F4)
+                weight: 100          # 灰度权重预留,默认全量(F6,M1 后期启用)
+            # M1 初期预留(Python 服务就绪后启用;超时 5000 对齐 AI 分级;熔断实例各自命名):
+            # - id: assist
+            #   uri: http://localhost:8082
+            #   predicates:
+            #     - Path=/api/v1/assist/**
+            #   filters:
+            #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
+            #     - name: CircuitBreaker
+            #       args: { name: assistCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
+            #   metadata: { timeout: 5000, weight: 100 }
+            # - id: aicore
+            #   uri: http://localhost:8083
+            #   predicates:
+            #     - Path=/api/v1/aicore/**
+            #   filters:
+            #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
+            #     - name: CircuitBreaker
+            #       args: { name: aicoreCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
+            #   metadata: { timeout: 5000, weight: 100 }
+            # 支付/结算域路由位(M1 后期 settle 就绪后启用,超时 3s 对齐第三方支付分级):
+            # - id: settle
+            #   uri: http://localhost:8084
+            #   predicates:
+            #     - Path=/api/v1/settle/**
+            #   filters:
+            #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
+            #     - name: CircuitBreaker
+            #       args: { name: settleCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
+            #   metadata: { timeout: 3000, weight: 100 }
+  data:
+    redis:
+      # REDIS 模式使用(生产开 AUTH 时填 username/password);超时有界,依赖故障快速 fail-closed
+      host: ${GATEWAY_REDIS_HOST:localhost}
+      port: ${GATEWAY_REDIS_PORT:6379}
+      username: ${GATEWAY_REDIS_USERNAME:}
+      password: ${GATEWAY_REDIS_PASSWORD:}
+      timeout: 2000ms
+      connect-timeout: 1000ms
+
+gateway:
+  store: ${GATEWAY_STORE:redis}   # redis=生产;memory=开发兜底(M1 无 Redis 部署,同 acc 惯例)
+  # 内部 Token 鉴权的服务端间接口不暴露于网关:命中前缀直接 404+3006(InternalPathGuardFilter)
+  internal-paths:
+    - /api/v1/acc/internal/
+    - /api/v1/acc/realname/callback
+  auth:
+    # 白名单 = 公开接口(无 token 放行);callback/internal 不配路由(网关不可达),不进白名单
+    # 注:运维接口 /gateway/** 不经网关过滤器链(由网关自身 Controller 处理),故不列入白名单;
+    #     其访问控制见 gateway.ops.allowed-networks(仅内网)
+    whitelist:
+      - /api/v1/acc/captcha
+      - /api/v1/acc/register
+      - /api/v1/acc/realname/status
+    # HS256 签名密钥:env 注入;生产 KMS;REDIS 模式下为空则启动 fail-fast
+    jwt-secret: ${GATEWAY_JWT_SECRET:}
+    # 令牌策略(2026-09-15 审查 I9 + 用户裁决「双 token」):网关只认**短 token**,
+    # exp 必须存在且不超过本上限+容差,超长有效期一律拒绝(密钥泄漏爆炸半径受控);
+    # 短 token 15 分钟经 Authorization: Bearer 走业务链路;长 token(refresh,7 天)存
+    # HttpOnly+Secure+SameSite Cookie,仅用于换发短 token,**不经网关业务链路**。
+    access-token-max-ttl: ${GATEWAY_ACCESS_TOKEN_MAX_TTL:15m}
+    clock-skew: ${GATEWAY_CLOCK_SKEW:60s}
+  # 运维接口访问控制(审查 I8):仅允许内网来源;留空 = 不限制(由网络层保证)
+  ops:
+    allowed-networks:
+      - 127.0.0.1/32
+      - ::1/128
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+  rate-limit:
+    # 三级初值(TBD-3 定档,★压测标定):IP 200/s、读 1000/s/账号、写 100/s/账号、
+    # AI 10/min/账号(路径前缀 /api/v1/assist /api/v1/aicore)、资金 100/s(/api/v1/settle /api/v1/acc/funds)
+    ip: { capacity: 200, window-seconds: 1 }
+    read: { capacity: 1000, window-seconds: 1 }
+    write: { capacity: 100, window-seconds: 1 }
+    ai: { capacity: 10, window-seconds: 60 }
+    funds: { capacity: 100, window-seconds: 1 }
+    # 客户端 IP 信任边界(审查 I13):仅当入口只有可信代理(Nginx)时保持 true;
+    # 网关可能被内网直连的场景置 false(改用 TCP 对端地址,防止伪造 X-Forwarded-For 绕过 IP 限流)
+    trust-forwarded-for: ${GATEWAY_TRUST_XFF:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+
+# 网关级熔断参数(F4,ADR-5:接口级 Redis+Lua 起步 → Sentinel 全量,M1 用 R4J)
+# 滑动窗口 10s / 失败率 ≥50% 打开 / 半开 5 次试探 / 恢复探测 12s;minimumNumberOfCalls 必须显式配置
+# (R4J 默认 100,低流量下将永不熔断)。
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowType: TIME_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 4
+        failureRateThreshold: 50
+        waitDurationInOpenState: 12s
+        permittedNumberOfCallsInHalfOpenState: 5
+        registerHealthIndicator: false

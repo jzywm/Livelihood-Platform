@@ -25,6 +25,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -52,7 +53,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class ErrorMatrixTest {
 
-    private static final String CONSUMER = "Bearer " + TestJwt.token("1001", "CONSUMER", true);
+    private static final RequestPostProcessor CONSUMER = TestIdentity.of("1001", "CONSUMER", true);
 
     @Autowired
     private MockMvc mockMvc;
@@ -109,13 +110,8 @@ class ErrorMatrixTest {
                 .andExpect(jsonPath("$.message").value("未登录 / Token 失效"))
                 .andExpect(jsonPath("$.traceId").isString());
 
-        String token = TestJwt.token("1001", "CONSUMER", true);
-        String[] parts = token.split("\\.");
-        char c = parts[1].charAt(parts[1].length() / 2);
-        String tampered = parts[0] + "." + parts[1].substring(0, parts[1].length() / 2)
-                + (c == 'A' ? 'B' : 'A') + parts[1].substring(parts[1].length() / 2 + 1) + "." + parts[2];
-
-        mockMvc.perform(get("/acc/me").header("Authorization", "Bearer " + tampered))
+        // 网关唯一鉴权点后:空白身份头同样视为未认证(fail-closed)
+        mockMvc.perform(get("/acc/me").header("X-User-Id", " "))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(2001));
     }
@@ -126,7 +122,7 @@ class ErrorMatrixTest {
         when(walletFlowMapper.selectByAccountAndRange(anyString(), anyLong(), any(), any(), anyInt(), anyInt(), any()))
                 .thenThrow(new AccBusinessException(2002, "越权访问他人流水"));
         mockMvc.perform(get("/acc/wallet/flows")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(2002))
@@ -139,7 +135,7 @@ class ErrorMatrixTest {
         others.setChannel("WECHAT");
         when(walletBindingMapper.selectById("bnd_b")).thenReturn(others);
         mockMvc.perform(put("/acc/wallet/bindings/bnd_b")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-x")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"ALIPAY\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -151,7 +147,7 @@ class ErrorMatrixTest {
     @DisplayName("2003：MFA 检查点（AuthContext.mfa=false 访问 export）→ 403 + code 2003")
     void error2003MfaRequired() throws Exception {
         mockMvc.perform(get("/acc/wallet/flows/export")
-                        .header("Authorization", "Bearer " + TestJwt.token("1001", "CONSUMER", false)))
+                        .with(TestIdentity.of("1001", "CONSUMER", false)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(2003))
                 .andExpect(jsonPath("$.message").value("MFA 未通过"));
@@ -163,7 +159,7 @@ class ErrorMatrixTest {
         when(accountMapper.selectById(1001L)).thenReturn(account(1001L, "REALNAMING"));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-3001")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -180,7 +176,7 @@ class ErrorMatrixTest {
                 .when(paymentChannelPort).verifyPayee(anyLong(), anyString(), anyString(), anyString());
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-3002")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -209,7 +205,7 @@ class ErrorMatrixTest {
                 .thenThrow(new DuplicateKeyException("uk_idempotency_key 冲突"));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-dup")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -221,13 +217,13 @@ class ErrorMatrixTest {
     @Test
     @DisplayName("3009：对账 diff（fake ChannelStatementSource 注入 diff）→ Envelope code 0 + data.status=DIFF")
     void error3009ReconcileDiff() throws Exception {
-        String regulator = "Bearer " + TestJwt.token("9001", "REGULATOR", true);
+        RequestPostProcessor regulator = TestIdentity.of("9001", "REGULATOR", true);
         when(idempotencyRecordMapper.insertIgnore(anyString(), anyString(), anyInt(), anyString())).thenReturn(1);
         when(channelStatementSource.statements(any(), any())).thenReturn(List.of(
                 new ChannelStatement("wx-only-channel", "3200.00", Instant.parse("2026-01-15T10:30:00Z"))));
 
         mockMvc.perform(post("/acc/funds/reconcile")
-                        .header("Authorization", regulator)
+                        .with(regulator)
                         .header("Idempotency-Key", "k-3009")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"from\":\"2026-01-01\",\"to\":\"2026-01-31\"}"))
@@ -259,7 +255,7 @@ class ErrorMatrixTest {
                 .when(paymentChannelPort).verifyPayee(anyLong(), anyString(), anyString(), anyString());
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", CONSUMER)
+                        .with(CONSUMER)
                         .header("Idempotency-Key", "k-4002")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -274,7 +270,7 @@ class ErrorMatrixTest {
         when(walletFlowMapper.selectByAccountAndRange(anyString(), anyLong(), any(), any(), anyInt(), anyInt(), any()))
                 .thenThrow(new IllegalStateException("boom"));
 
-        mockMvc.perform(get("/acc/wallet/summary").header("Authorization", CONSUMER))
+        mockMvc.perform(get("/acc/wallet/summary").with(CONSUMER))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.code").value(5000))
                 .andExpect(jsonPath("$.message").value("内部错误"))
@@ -287,7 +283,7 @@ class ErrorMatrixTest {
         when(accountMapper.selectById(anyLong())).thenThrow(new DataAccessException("db down") {
         });
 
-        mockMvc.perform(get("/acc/me").header("Authorization", CONSUMER))
+        mockMvc.perform(get("/acc/me").with(CONSUMER))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.code").value(5001))
                 .andExpect(jsonPath("$.message").value("数据库错误"));

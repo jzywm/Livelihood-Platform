@@ -90,7 +90,7 @@ class AuthMatrixTest {
     void sixRolesCanAccessMe() throws Exception {
         for (String role : ROLES) {
             when(accountMapper.selectById(anyLong())).thenReturn(account(1001L, role));
-            mockMvc.perform(get("/acc/me").header("Authorization", "Bearer " + TestJwt.token("1001", role, true)))
+            mockMvc.perform(get("/acc/me").with(TestIdentity.of("1001", role, true)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(0))
                     .andExpect(jsonPath("$.data.accountId").value("acc_1001"))
@@ -103,7 +103,7 @@ class AuthMatrixTest {
     void onlyRegulatorCanAudit() throws Exception {
         for (String role : ROLES) {
             mockMvc.perform(get("/acc/funds/audit")
-                            .header("Authorization", "Bearer " + TestJwt.token("9001", role, true)))
+                            .with(TestIdentity.of("9001", role, true)))
                     .andExpect("REGULATOR".equals(role) ? status().isOk() : status().isForbidden())
                     .andExpect(jsonPath("$.code").value("REGULATOR".equals(role) ? 0 : 2002));
         }
@@ -114,7 +114,7 @@ class AuthMatrixTest {
     void onlyRegulatorCanReconcile() throws Exception {
         for (String role : ROLES) {
             mockMvc.perform(post("/acc/funds/reconcile")
-                            .header("Authorization", "Bearer " + TestJwt.token("9001", role, true))
+                            .with(TestIdentity.of("9001", role, true))
                             .header("Idempotency-Key", "k-" + role)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"from\":\"2026-01-01\",\"to\":\"2026-01-31\"}"))

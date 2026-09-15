@@ -26,6 +26,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayInputStream;
@@ -60,7 +61,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class ContractTest {
 
-    private static final String TOKEN = "Bearer " + TestJwt.token("1001", "CONSUMER", true);
+    private static final RequestPostProcessor TOKEN = TestIdentity.of("1001", "CONSUMER", true);
     private static final Instant NOW = Instant.parse("2026-01-15T10:30:00Z");
 
     @Autowired
@@ -283,7 +284,7 @@ class ContractTest {
         when(accountMapper.selectById(1001L)).thenReturn(account(1001L, "REALNAMED"));
 
         mockMvc.perform(post("/acc/realname/nfc")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"idCard\":\"130123199001011234\",\"faceToken\":\"ft_1\"}"))
                 .andExpect(status().isOk())
@@ -296,14 +297,14 @@ class ContractTest {
     void nfcNotRealnamedAndMissingBody() throws Exception {
         when(accountMapper.selectById(1001L)).thenReturn(account(1001L, "REALNAMING"));
         mockMvc.perform(post("/acc/realname/nfc")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"idCard\":\"130123199001011234\",\"faceToken\":\"ft_1\"}"))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value(3001));
 
         mockMvc.perform(post("/acc/realname/nfc")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
@@ -319,7 +320,7 @@ class ContractTest {
         account.setMobile("13800138000");
         when(accountMapper.selectById(1001L)).thenReturn(account);
 
-        mockMvc.perform(get("/acc/me").header("Authorization", TOKEN))
+        mockMvc.perform(get("/acc/me").with(TOKEN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.accountId").value("acc_1001"))
@@ -341,7 +342,7 @@ class ContractTest {
                 .thenReturn(List.of(flow(1L, 1001L)));
 
         mockMvc.perform(get("/acc/wallet/flows")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
@@ -362,15 +363,15 @@ class ContractTest {
     @Test
     @DisplayName("GET /acc/wallet/flows：type 枚举非法 1003 / page 非数字 1002 / 日期非法 1002")
     void walletFlowsParamValidation() throws Exception {
-        mockMvc.perform(get("/acc/wallet/flows").header("Authorization", TOKEN).param("type", "BOGUS"))
+        mockMvc.perform(get("/acc/wallet/flows").with(TOKEN).param("type", "BOGUS"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(1003));
 
-        mockMvc.perform(get("/acc/wallet/flows").header("Authorization", TOKEN).param("page", "abc"))
+        mockMvc.perform(get("/acc/wallet/flows").with(TOKEN).param("page", "abc"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(1002));
 
-        mockMvc.perform(get("/acc/wallet/flows").header("Authorization", TOKEN).param("from", "2026-13-99"))
+        mockMvc.perform(get("/acc/wallet/flows").with(TOKEN).param("from", "2026-13-99"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(1002));
     }
@@ -378,7 +379,7 @@ class ContractTest {
     @Test
     @DisplayName("GET /acc/wallet/summary：{totalIn,totalOut,byType[]}")
     void walletSummaryContract() throws Exception {
-        mockMvc.perform(get("/acc/wallet/summary").header("Authorization", TOKEN))
+        mockMvc.perform(get("/acc/wallet/summary").with(TOKEN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.totalIn").value("0"))
@@ -394,7 +395,7 @@ class ContractTest {
                 .thenReturn(List.of(flow(1L, 1001L)));
 
         byte[] bytes = mockMvc.perform(get("/acc/wallet/flows/export")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type",
@@ -413,7 +414,7 @@ class ContractTest {
     @DisplayName("GET /acc/wallet/flows/export：mfa=false → 403/2003")
     void exportMfaRequired() throws Exception {
         mockMvc.perform(get("/acc/wallet/flows/export")
-                        .header("Authorization", "Bearer " + TestJwt.token("1001", "CONSUMER", false)))
+                        .with(TestIdentity.of("1001", "CONSUMER", false)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(2003));
     }
@@ -429,7 +430,7 @@ class ContractTest {
         when(walletBindingMapper.selectById("bnd_1001")).thenReturn(binding("bnd_1001", 1001L, "WECHAT"));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .header("Idempotency-Key", "k-bind-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -449,14 +450,14 @@ class ContractTest {
         when(accountMapper.selectById(1001L)).thenReturn(account(1001L, "REALNAMED"));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"WECHAT\",\"payeeAccount\":\"6222021234567890\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(1001));
 
         mockMvc.perform(post("/acc/wallet/bind")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .header("Idempotency-Key", "k-bind-2")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"CASH\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -470,7 +471,7 @@ class ContractTest {
         when(walletBindingMapper.listByAccount(1001L))
                 .thenReturn(List.of(binding("bnd_1", 1001L, "WECHAT"), binding("bnd_2", 1001L, "ALIPAY")));
 
-        mockMvc.perform(get("/acc/wallet/bindings").header("Authorization", TOKEN))
+        mockMvc.perform(get("/acc/wallet/bindings").with(TOKEN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.length()").value(2))
@@ -488,7 +489,7 @@ class ContractTest {
         when(walletBindingMapper.selectById("bnd_1001")).thenReturn(binding("bnd_1001", 1001L, "ALIPAY"));
 
         mockMvc.perform(put("/acc/wallet/bindings/bnd_old")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .header("Idempotency-Key", "k-replace")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"channel\":\"ALIPAY\",\"payeeAccount\":\"6222021234567890\"}"))
@@ -504,7 +505,7 @@ class ContractTest {
     void bindingUnbind() throws Exception {
         when(walletBindingMapper.selectById("bnd_1")).thenReturn(binding("bnd_1", 1001L, "WECHAT"));
 
-        mockMvc.perform(delete("/acc/wallet/bindings/bnd_1").header("Authorization", TOKEN))
+        mockMvc.perform(delete("/acc/wallet/bindings/bnd_1").with(TOKEN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.bindingId").value("bnd_1"))
@@ -516,13 +517,13 @@ class ContractTest {
     @Test
     @DisplayName("GET /acc/funds/audit：REGULATOR 可见 FundsAuditFlow 字段（含 reconcileStatus）")
     void auditRegulatorContract() throws Exception {
-        String regulatorToken = "Bearer " + TestJwt.token("9001", "REGULATOR", true);
+        RequestPostProcessor regulatorToken = TestIdentity.of("9001", "REGULATOR", true);
         when(walletFlowMapper.selectAllByRange(anyString(), any(), any(), anyInt(), anyInt()))
                 .thenReturn(List.of(flow(1L, 1001L)));
         when(reconcileTaskMapper.selectAllByRange(any(), any())).thenReturn(List.of());
 
         mockMvc.perform(get("/acc/funds/audit")
-                        .header("Authorization", regulatorToken)
+                        .with(regulatorToken)
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
@@ -535,13 +536,13 @@ class ContractTest {
     @Test
     @DisplayName("GET /acc/funds/audit：非监管 → 403/2002；reconcileStatus 枚举非法 → 1003")
     void auditForbiddenAndEnumValidation() throws Exception {
-        mockMvc.perform(get("/acc/funds/audit").header("Authorization", TOKEN))
+        mockMvc.perform(get("/acc/funds/audit").with(TOKEN))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(2002));
 
-        String regulatorToken = "Bearer " + TestJwt.token("9001", "REGULATOR", true);
+        RequestPostProcessor regulatorToken = TestIdentity.of("9001", "REGULATOR", true);
         mockMvc.perform(get("/acc/funds/audit")
-                        .header("Authorization", regulatorToken)
+                        .with(regulatorToken)
                         .param("reconcileStatus", "BOGUS"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(1003));
@@ -550,11 +551,11 @@ class ContractTest {
     @Test
     @DisplayName("POST /acc/funds/reconcile：无差异 → {reconcileId,status:DONE,diffCount:0}")
     void reconcileDone() throws Exception {
-        String regulatorToken = "Bearer " + TestJwt.token("9001", "REGULATOR", true);
+        RequestPostProcessor regulatorToken = TestIdentity.of("9001", "REGULATOR", true);
         when(idempotencyRecordMapper.insertIgnore(anyString(), anyString(), anyInt(), anyString())).thenReturn(1);
 
         mockMvc.perform(post("/acc/funds/reconcile")
-                        .header("Authorization", regulatorToken)
+                        .with(regulatorToken)
                         .header("Idempotency-Key", "k-rec-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"from\":\"2026-01-01\",\"to\":\"2026-01-31\"}"))
@@ -568,9 +569,9 @@ class ContractTest {
     @Test
     @DisplayName("POST /acc/funds/reconcile：Idempotency-Key 缺失 → 1001")
     void reconcileMissingKey() throws Exception {
-        String regulatorToken = "Bearer " + TestJwt.token("9001", "REGULATOR", true);
+        RequestPostProcessor regulatorToken = TestIdentity.of("9001", "REGULATOR", true);
         mockMvc.perform(post("/acc/funds/reconcile")
-                        .header("Authorization", regulatorToken)
+                        .with(regulatorToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"from\":\"2026-01-01\",\"to\":\"2026-01-31\"}"))
                 .andExpect(status().isBadRequest())
@@ -586,7 +587,7 @@ class ContractTest {
         when(realnameRecordMapper.selectByAccountIdAndStatus(1001L, "REALNAMING")).thenReturn(List.of());
 
         mockMvc.perform(post("/acc/account/close")
-                        .header("Authorization", TOKEN)
+                        .with(TOKEN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reason\":\"不再使用\"}"))
                 .andExpect(status().isOk())

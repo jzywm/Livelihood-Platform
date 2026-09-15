@@ -72,3 +72,15 @@
 - 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/acc/docs/er.md`（6 实体：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)；口径对齐 openapi.yaml v1.1.0 与《高并发架构演进设计》v1.0 §2）
 - Apifox 导入产物（**自动生成，禁止手改**）：`services/acc/docs/openapi.apifox.json`
 - 流程时序：`docs/design/diagrams/05-实名认证流程-I1.md`
+
+## 6. 已知限制与实现要点（2026-09-15 真机联调补录）
+
+- **数据层会话语义（已修 + 残余限制）**：`AccConfiguration` 的 Mapper Bean 原为 `factory.openSession().getMapper(...)`——会话长驻、`autoCommit=false`、**事务永不提交**。真实数据库下出现三个症状：
+  1. **读陈旧**：外部连接已提交 `wallet_status='FROZEN'`，接口仍返回 `ACTIVE`（REPEATABLE READ 长事务快照）；
+  2. **写不落库**：`POST /acc/account/close` 返回 200，但外部 `SELECT` 得到 `closed_at` 仍为 `NULL`——接口报成功而数据丢失；
+  3. **持锁阻塞外部写入**：外部 `UPDATE` 撞上未提交事务持有的行锁，报 `Lock wait timeout exceeded`（约 50s）。
+  **已修复**：改为 `factory.openSession(true)`（自动提交，与 `repository` 层 DAO 测试同口径）；修复后实测外部提交后接口读到 `FROZEN`，`close` 后外部 `SELECT` 得到 `closed_at=2026-09-15 19:52:29.212, close_reason=drill-fixed`。
+- **残余限制（M2 收敛方向）**：会话仍为**长驻（非按请求）**——**跨表写入无原子性、无事务边界**；同一 `SqlSession`/`Connection` 在并发下存在串行化风险。M2 收敛为「**按请求会话 + 显式事务边界**」。
+- **回归防线**：新增 `services/acc/src/test/java/com/msz/acc/config/RealDbAssemblyTest.java`（真实库 + 真实 Tomcat + 真实 HTTP，2 用例，分别拦「读陈旧」与「写不落库」）。反向验证：把修复临时改回原实现，该测试立刻 **1 Failure**（`closed_at` 为 NULL）+ **1 Error**（`Lock wait timeout exceeded`）→ 证明能拦住回归。ACC `mvn verify` = **253 用例 0 失败**（原 251）。
+- **`jakarta.annotation-api` 钉版缘由**：`services/acc/pom.xml` 显式钉 `jakarta.annotation:jakarta.annotation-api:2.1.1`——test 作用域的 mariaDB4j 会传递 javax 时代的 `1.3.5` 抢占依赖调解，令 Web 容器启动抛 `NoClassDefFoundError: jakarta/annotation/PostConstruct`（真机联调发现；真实库装配层测试与演练桩均依赖该钉版）。
+- **真机联调桩入口**：`services/acc/deploy/drill/README.md`（嵌入式 MariaDB（mariaDB4j，test 作用域）+ Flyway V1/V2 + `@Primary` 真实 DataSource 覆盖 M1 占位数据源 + 真实 `AccApplication` 进程；夹具账户 `account_id=1001`，`token` 模式用 ACC 自身 `JwtCodec` 签发演练 token；**非生产代码、不参与构建**）。
