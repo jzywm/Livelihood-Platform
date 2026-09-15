@@ -28,7 +28,8 @@ import static org.mockito.Mockito.when;
  * TransactionBoundaryFilterTest（tasks 1.3）：请求级事务边界（design D1/D4/D5/D6）。
  *
  * <p>覆盖：成功路径提交并关闭；未捕获 {@link RuntimeException}/{@link Error} 回滚并原样抛出；
- * 未触库的请求不开启会话（D4 硬约束）；受检异常按 D6 口径提交（已在过滤器注释中写明）；
+ * 未触库的请求不开启会话（D4 硬约束，{@code openSession} 零调用的 mock 断言即其判据）；
+ * 未捕获受检异常同样回滚（design D6 实施期修订 R-7 的已生效口径）；
  * 回滚失败或关闭前异常都不改变「请求结束必清理作用域」这一事实。</p>
  */
 class TransactionBoundaryFilterTest {
@@ -138,7 +139,7 @@ class TransactionBoundaryFilterTest {
     }
 
     @Test
-    @DisplayName("1.3 受检异常同样回滚：spec「未捕获异常 → 不得留下部分写入」优先于 D6 书面口径")
+    @DisplayName("1.3 受检异常同样回滚：design D6 实施期修订（R-7）「未捕获异常含受检一律回滚」")
     void checkedExceptionAlsoRollsBack() throws Exception {
         SqlSessionFactory factory = mock(SqlSessionFactory.class);
         SqlSession session = mock(SqlSession.class);

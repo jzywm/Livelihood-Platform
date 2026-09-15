@@ -12,7 +12,14 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>惰性开启（硬约束，design D4）</b>：作用域标记本身**不获取数据库连接**，会话在「本请求第一次真正
  * 访问数据库」时才 {@code openSession(false)} 并绑定；因此不触库的请求（如 {@code /acc/captcha}）在
- * 占位/不可用数据源下仍可正常服务，控制器测试（{@code @MockBean} 替换 Mapper）也不会因占位数据源变红。</p>
+ * 占位/不可用数据源下仍可正常服务。</p>
+ *
+ * <p><b>该硬约束的判据（评审 F2 更正，2026-09-15）</b>：判据是**单测对 {@code SqlSessionFactory} 的
+ * mock 断言「未触库时 {@code openSession} 零调用」**（{@code RequestSqlSessionHolderTest} 与
+ * {@code TransactionBoundaryFilterTest} 各一条）加代码核对——**6 个 {@code @MockBean} 控制器测试不构成
+ * 判据**：MyBatis 的 {@code openSession()} 本身不取连接（{@code JdbcTransaction} 构造只赋字段，
+ * {@code getConnection()} 才建连，未用时 {@code commit()} 在 {@code connection == null} 时直接返回），
+ * 故「入口急切开启会话」不会让那些用例变红；它们只能证明过滤链在占位数据源下可正常工作。</p>
  *
  * <p><b>绑定与清理（design D2）</b>：{@link ThreadLocal} 保证同一 {@link SqlSession} 只被一个请求线程使用；
  * 请求结束必须调用 {@link #endRequest()}——关闭会话（归还连接）并 {@code remove()}，
