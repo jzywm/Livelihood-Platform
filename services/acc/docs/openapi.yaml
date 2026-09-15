@@ -1,12 +1,14 @@
 openapi: 3.0.3
 info:
   title: 账户服务 ACC · 接口文档
-  version: 1.1.0
+  version: 1.2.0
   description: |
     账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（= 功能点 I-01；含 I-06 强实名增强、
     登录页人机验证——页面码 G-01，与 TICKET 功能点 G-01 群众热线无关）。
     口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。
-    - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
+    - 本文件 paths 仅含前端可调接口（共 19 个），可直接喂 packages/api-client 生成 TS 类型。
+    - 会话凭据（/acc/auth/*，v1.2.0 新增）：短 token 走响应体 + `Authorization: Bearer`；长 token 只走
+      `Set-Cookie`（`HttpOnly; Secure; SameSite=Lax; Path=/api/v1/acc/auth`），前端不得读取或落 localStorage。
     - 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
 servers:
@@ -27,6 +29,8 @@ tags:
     description: 监管端资金流水审计（I-01）
   - name: account
     description: 账号与安全（I-01）
+  - name: session
+    description: 会话凭据生命周期（登录签发 / 换发轮换 / 登出吊销；双 token 口径见 PDD §8.4.1）
 
 security:
   - bearerAuth: []
@@ -200,6 +204,179 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/BadRequest'
         '422':
           description: 业务规则不满足（如基础实名未完成 3001）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+  /acc/auth/login:
+    post:
+      tags: [session]
+      summary: 免密登录（手机号 + 人机验证票据，签发双 token）
+      description: |
+        免密登录（M2 短信验证码登录为后续扩展）：手机号 + 人机验证一次性票据（POST /acc/captcha/verify 下发的
+        verifyToken）校验通过后建立**会话族**并签发两个 token：
+
+        - **短 token（access，15 分钟）**：仅经**响应体**返回，客户端放 `Authorization: Bearer` 使用；
+          **不得**写入 Cookie（业务接口因此不进入 CSRF 范围）。
+        - **长 token（refresh，7 天）**：**仅**经 `Set-Cookie` 下发，属性
+          `HttpOnly; Secure; SameSite=Lax; Path=/api/v1/acc/auth`，**绝不出现在响应体或日志中**；
+          浏览器自动携带，仅用于换发短 token。
+
+        登录失败（手机号无账户 / 账户已注销 / 已冻结 / 票据无效或已消费）统一 **401 + 2001**
+        （不区分失败原因，避免泄露账户是否存在）；网关侧 `/api/v1/acc/auth/login` 在无短 token 白名单内。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功，返回短 token（长 token 见 Set-Cookie）
+          headers:
+            Set-Cookie:
+              description: |
+                长 token（refresh）Cookie，7 天有效：
+                `refresh_token=<jwt>; Max-Age=604800; Path=/api/v1/acc/auth; HttpOnly; Secure; SameSite=Lax`。
+                登出/换发成功时以同一属性覆盖（登出为 Max-Age=0 清除）。
+              schema:
+                type: string
+                example: refresh_token=***; Max-Age=604800; Path=/api/v1/acc/auth; HttpOnly; Secure; SameSite=Lax
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionView'
+        '401':
+          description: 登录因子错误（票据无效/已消费、账户不存在、账户已注销或冻结），统一 2001
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '429':
+          description: 触发限流（网关级 IP 限流，2004）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '503':
+          description: 会话存储（Redis）不可用，快速失败且不签发任何 token（5003）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+  /acc/auth/refresh:
+    post:
+      tags: [session]
+      summary: 换发 token 对（refresh 单次使用 + 轮换）
+      description: |
+        以 Cookie 中的长 token 换发新的一对 token：**旧 refresh 立即失效**（单次使用），新的 refresh 经
+        `Set-Cookie` 覆盖下发，新的 access 在响应体返回。
+
+        **会话族与重用检测**：登录建立会话族，族内所有 token 可一起吊销。重放一个**已轮换**的 refresh
+        视为泄露信号 → 吊销整族（含族内所有未过期 access 的 `jti`，写入网关共享的 `revoked:jti:{jti}`）
+        并记安全审计事件；并发换发在轮换后 5 秒宽限窗口内不判泄露。
+
+        **CSRF**：本端点依赖 Cookie 自动携带，故校验 `Origin`/`Referer` 属于 `acc.session.allowed-origins`；
+        带来源头且不在允许列表 → 401 + 2001 且**不轮换任何 token**；不带来源头（非浏览器客户端）放行。
+        除轮换与签发外无其他副作用。
+
+        refresh 缺失/过期/签名非法/未知/族已吊销 → 统一 401 + 2001；网关侧 `/api/v1/acc/auth/refresh`
+        在无短 token 白名单内。
+      security: []
+      parameters:
+        - name: Cookie
+          in: header
+          required: false
+          description: 浏览器自动携带的 `refresh_token=<jwt>`（服务端不解析其他 Cookie）
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 换发成功，返回新短 token（新长 token 见 Set-Cookie）
+          headers:
+            Set-Cookie:
+              description: 新的长 token Cookie，属性与登录一致（覆盖旧值）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionView'
+        '401':
+          description: refresh 缺失/过期/非法/未知/族已吊销，或来源不在允许列表（统一 2001，不轮换）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '429':
+          description: 触发限流（网关级 IP 限流，2004）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '503':
+          description: 会话存储（Redis）不可用，快速失败（5003）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+  /acc/auth/logout:
+    post:
+      tags: [session]
+      summary: 登出（吊销当前会话族）
+      description: |
+        吊销当前会话族：当前短 token 的 `jti` 立即进网关可读的吊销名单
+        `revoked:jti:{jti}`（TTL = 该 token 剩余有效期），族内长 token 立即失效；
+        经 `Set-Cookie`（`Max-Age=0`）清除客户端 Cookie。**幂等**：重复登出仍返回成功。
+
+        两种凭据**任一**有效即可登出：① 有效短 token（`Authorization: Bearer`，网关放行后透传身份头）；
+        ② 仅凭 Cookie 中的长 token（短 token 已过期时的兜底）——**仅凭 Cookie 时必须校验
+        `Origin`/`Referer`**（与换发同口径：带来源头且不在允许列表 → 401 + 2001）。
+
+        本端点**不在网关白名单**（需有效短 token 或有效长 token Cookie，故不经白名单放行）。
+      parameters:
+        - name: Cookie
+          in: header
+          required: false
+          description: 仅凭 Cookie 登出时携带的 `refresh_token=<jwt>`
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 登出成功（幂等；无有效凭据时同样不泄露内部状态）
+          headers:
+            Set-Cookie:
+              description: 清除长 token Cookie：`refresh_token=; Max-Age=0; Path=/api/v1/acc/auth; HttpOnly; Secure; SameSite=Lax`
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LogoutResult'
+        '401':
+          description: 无有效短 token 且无有效长 token Cookie，或来源不在允许列表（2001）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '503':
+          description: 会话存储（Redis）不可用，快速失败（5003）
           content:
             application/json:
               schema:
@@ -892,6 +1069,58 @@ components:
           type: string
           description: 注销原因（可选，留痕）
           example: 不再使用
+    LoginRequest:
+      type: object
+      required: [mobile, captchaToken]
+      properties:
+        mobile:
+          type: string
+          pattern: '^1[3-9]\d{9}$'
+          description: 手机号（免密登录因子，M2 起叠加短信验证码）
+          example: '13800138000'
+        captchaToken:
+          type: string
+          description: |
+            POST /acc/captcha/verify 下发的一次性凭证（verifyToken）；**一次性消费**，
+            重复提交或已过期一律 401 + 2001。
+          example: ct_1827364512
+    SessionView:
+      type: object
+      required: [accessToken, tokenType, expiresIn, accountId, role]
+      description: 会话凭据视图；**长 token（refresh）不在本 schema 内**，仅经 Set-Cookie 下发。
+      properties:
+        accessToken:
+          type: string
+          description: 短 token（HS256 JWT，`sub`/`role`/`mfa`/`jti`/`iat`/`exp`），有效期 15 分钟
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.***
+        tokenType:
+          type: string
+          enum: [Bearer]
+          description: 固定 Bearer，客户端拼 `Authorization&#58; Bearer <accessToken>`
+        expiresIn:
+          type: integer
+          description: 短 token 剩余有效期（秒），固定 900
+          example: 900
+        accountId:
+          type: string
+          description: 账户 ID（= `acc_<account_id>`，与 /acc/me 口径一致）
+          example: acc_1001
+        role:
+          type: string
+          description: 六方角色（CONSUMER/MERCHANT/SUPPLIER/WORKER/REGULATOR/OPERATOR）
+          example: CONSUMER
+        mfa:
+          type: boolean
+          description: 是否已完成 MFA（敏感操作二次鉴权标记）
+          example: false
+    LogoutResult:
+      type: object
+      required: [revoked]
+      properties:
+        revoked:
+          type: boolean
+          description: 本次调用是否实际吊销了会话（重复登出为 false，仍返回成功；幂等口径）
+          example: true
 
 x-external-interfaces:
   description: 服务端间接口（外部回调/内部，**仅内网**），前端勿调，不在上方 paths 中。
