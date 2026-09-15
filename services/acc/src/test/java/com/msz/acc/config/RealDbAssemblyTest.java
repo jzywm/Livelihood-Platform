@@ -60,8 +60,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  *
  * <p>本测试以「真实库 + 真实 Web 容器 + 真实 HTTP」装配 ACC，从**应用外部视角**核验读写语义与事务边界：
- * 用例 1/2 防既有缺陷回归；用例 3.1~3.7 覆盖 {@code fix-acc-transaction-boundary} 的行为契约
- * （跨表回滚 / 并发隔离 / 提交可见 / 幂等槽位释放 / 读路径契约 / 连接释放 / 并发同 key 竞态）。
+ * 用例 1/2 防既有缺陷回归；用例 3.1~3.8 覆盖 {@code fix-acc-transaction-boundary} 的行为契约
+ * （跨表回滚 / 并发隔离 / 提交可见 / 幂等槽位释放 / 读路径契约 / 连接释放 / 并发同 key 竞态 /
+ * 未提交写对其它请求不可见）。
  * 失败的注入一律走真实 HTTP 入口与真实库约束（唯一键冲突、通道不可用），不新增测试专用端点；
  * 造数据用的自动提交会话（{@link #seedAccount} / {@link #seedRealnameRecord}）只用于准备夹具，
  * **不作为事务语义证据**（design D10）。</p>
@@ -71,6 +72,7 @@ class RealDbAssemblyTest {
     private static final long ACCOUNT_ID = 77001L;
     private static final long CONCURRENT_ACCOUNT_ID = 77002L;
     private static final long COMMIT_VISIBILITY_ACCOUNT_ID = 77003L;
+    private static final long UNCOMMITTED_WRITE_ACCOUNT_ID = 77004L;
     private static final long UNKNOWN_ACCOUNT_ID = 77999L;
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
@@ -373,13 +375,70 @@ class RealDbAssemblyTest {
         assertThat(countRows("reconcile_task")).isEqualTo(tasksBefore + 1);
     }
 
+    /**
+     * 3.8 未提交写隔离（spec「Uncommitted work of one request is invisible to another」）：
+     * 外部连接显式构造「在途未提交写」，其未提交期间发起一次真实 HTTP 读请求，断言读请求只看到
+     * **已提交状态**；随后外部提交，再读一次断言看到新值。
+     *
+     * <p><b>守卫用例声明</b>：本条为守卫用例，<b>未观测到 RED</b>——当前实现（请求级会话 + 请求级
+     * 事务边界）本身已满足该契约，故它不能像 3.1 那样反向验证出旧缺陷。其判别力在于锁定
+     * 「未提交写对其它请求不可见」这一隔离语义：若将来出现「多请求共享同一会话/连接」「读请求挂到
+     * 外部写事务上」或退回长驻会话导致读路径复用未提交写会话等回归，本条即会变红。</p>
+     *
+     * <p>观测口径：① 外部连接 {@code setAutoCommit(false)} + {@code UPDATE} 后**不提交**，并在写方
+     * 连接上确认该值确为在途（FROZEN），保证「确有未提交写」而非断言空转；② 未提交期间的 HTTP 读必须
+     * 返回旧值（ACTIVE，非锁定读不吃未提交版本、也不阻塞）；③ 提交后新请求必须立即返回新值。
+     * 收尾把数据改回原值并提交，使用例可重复运行且不影响同类中其它用例（同类用例顺序执行、共享同一嵌入库）。</p>
+     */
+    @Test
+    @DisplayName("3.8 未提交写隔离：外部未提交期间读请求只见已提交值，提交后立即可见")
+    void uncommittedExternalWriteStaysInvisibleToConcurrentRead() throws Exception {
+        assertThat(meBody(UNCOMMITTED_WRITE_ACCOUNT_ID))
+                .as("前置：夹具账户的已提交状态为 ACTIVE")
+                .contains("\"accountId\":\"acc_" + UNCOMMITTED_WRITE_ACCOUNT_ID + "\"")
+                .contains("\"walletStatus\":\"ACTIVE\"");
+
+        Connection external = db.openExternalConnection();
+        try {
+            external.setAutoCommit(false);
+            updateWalletStatus(external, UNCOMMITTED_WRITE_ACCOUNT_ID, "FROZEN");
+            assertThat(walletStatusOf(external, UNCOMMITTED_WRITE_ACCOUNT_ID))
+                    .as("写方自身可见未提交值（确认确有在途未提交写，避免断言空转）")
+                    .isEqualTo("FROZEN");
+
+            // 未提交期间的真实 HTTP 读请求：必须只看到已提交状态（旧值）
+            assertThat(meBody(UNCOMMITTED_WRITE_ACCOUNT_ID))
+                    .as("未提交写对其它请求必须不可见：读请求只见已提交状态")
+                    .contains("\"walletStatus\":\"ACTIVE\"")
+                    .doesNotContain("FROZEN");
+
+            external.commit();
+
+            assertThat(meBody(UNCOMMITTED_WRITE_ACCOUNT_ID))
+                    .as("外部提交后，下一次读请求必须立即看到新值")
+                    .contains("\"walletStatus\":\"FROZEN\"");
+        } finally {
+            // 放弃在途写（未提交则回滚；已提交亦为无害空操作，连接关闭时同样隐式回滚）
+            if (!external.getAutoCommit()) {
+                external.rollback();
+            }
+            external.close();
+        }
+
+        restoreWalletStatusActive(UNCOMMITTED_WRITE_ACCOUNT_ID);
+        assertThat(meBody(UNCOMMITTED_WRITE_ACCOUNT_ID))
+                .as("收尾后数据恢复为 ACTIVE（用例可重复运行）")
+                .contains("\"walletStatus\":\"ACTIVE\"");
+    }
+
     // ---------- 支撑：夹具 ----------
 
-    /** 灌入夹具：三个账户（既有回归 / 并发 / 提交可见）+ 两张实名业务单（3.1 唯一键冲突注入）。 */
+    /** 灌入夹具：四个账户（既有回归 / 并发 / 提交可见 / 未提交写隔离）+ 两张实名业务单（3.1 唯一键冲突注入）。 */
     private static void seedFixtures() {
         seedAccount(ACCOUNT_ID);
         seedAccount(CONCURRENT_ACCOUNT_ID);
         seedAccount(COMMIT_VISIBILITY_ACCOUNT_ID);
+        seedAccount(UNCOMMITTED_WRITE_ACCOUNT_ID);
         seedRealnameRecord("rz_rollback_1", "openid-rollback-1");
         seedRealnameRecord("rz_rollback_2", "openid-dup-1");
     }
@@ -433,6 +492,13 @@ class RealDbAssemblyTest {
     private static String get(String path) throws Exception {
         HttpResponse<String> response = getRaw(path, ACCOUNT_ID);
         assertThat(response.statusCode()).as("GET %s 应 200", path).isEqualTo(200);
+        return response.body();
+    }
+
+    /** 指定账户的真实 HTTP 读请求（GET /acc/me，断言 200），返回响应体。 */
+    private static String meBody(long accountId) throws Exception {
+        HttpResponse<String> response = getRaw("/acc/me", accountId);
+        assertThat(response.statusCode()).as("GET /acc/me 应 200").isEqualTo(200);
         return response.body();
     }
 
@@ -512,6 +578,35 @@ class RealDbAssemblyTest {
                 assertThat(rs.next()).isTrue();
                 return rs.getLong(1);
             }
+        }
+    }
+
+    /** 在给定连接上更新钱包状态（是否提交由调用方决定：3.8 用它显式控制事务边界）。 */
+    private static void updateWalletStatus(Connection c, long accountId, String status) throws Exception {
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE account SET wallet_status = ? WHERE account_id = ?")) {
+            ps.setString(1, status);
+            ps.setLong(2, accountId);
+            assertThat(ps.executeUpdate()).as("钱包状态更新必须命中夹具账户").isEqualTo(1);
+        }
+    }
+
+    /** 在给定连接上读取钱包状态（3.8 用它确认写方自身可见的未提交值）。 */
+    private static String walletStatusOf(Connection c, long accountId) throws Exception {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT wallet_status FROM account WHERE account_id = ?")) {
+            ps.setLong(1, accountId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                return rs.getString("wallet_status");
+            }
+        }
+    }
+
+    /** 用独立自动提交连接把夹具账户钱包状态改回 ACTIVE（3.8 收尾，保证用例可重复运行）。 */
+    private static void restoreWalletStatusActive(long accountId) throws Exception {
+        try (Connection c = db.openExternalConnection()) {
+            updateWalletStatus(c, accountId, "ACTIVE");
         }
     }
 
