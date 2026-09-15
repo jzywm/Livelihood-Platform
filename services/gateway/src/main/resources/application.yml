@@ -86,10 +86,20 @@ gateway:
     # 白名单 = 公开接口(无 token 放行);callback/internal 不配路由(网关不可达),不进白名单
     # 注:运维接口 /gateway/** 不经网关过滤器链(由网关自身 Controller 处理),故不列入白名单;
     #     其访问控制见 gateway.ops.allowed-networks(仅内网)
+    # 2026-09-15 会话端点增量(PDD v1.18 §8.4.1、spec platform-gateway):
+    #   - login/refresh 是「无短 token 时的必经入口」→ 必须放行,否则拿不到凭据;
+    #   - **logout 不进白名单**(需有效短 token,白名单化只会削弱保护);
+    #   - 匹配按**改写前原始路径 + 路径段边界**(JwtAuthFilter + RequestPaths.matchesPrefix),
+    #     故 /api/v1/acc/auth/loginAny 之类近似路径不会被放行;
+    #   - 网关**不解析 Cookie**:refresh 存 Cookie 由浏览器自动携带、原样透传,
+    #     鉴权一律只看 Authorization: Bearer(仅 Cookie 不构成认证);
+    #   - 会话端点**不获限流豁免**:POST 落 WRITE 档,超限 429 + 2004 且不到下游。
     whitelist:
       - /api/v1/acc/captcha
       - /api/v1/acc/register
       - /api/v1/acc/realname/status
+      - /api/v1/acc/auth/login
+      - /api/v1/acc/auth/refresh
     # HS256 签名密钥:env 注入;生产 KMS;REDIS 模式下为空则启动 fail-fast
     jwt-secret: ${GATEWAY_JWT_SECRET:}
     # 令牌策略(2026-09-15 审查 I9 + 用户裁决「双 token」):网关只认**短 token**,
