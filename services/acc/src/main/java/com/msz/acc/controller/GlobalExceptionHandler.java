@@ -5,6 +5,7 @@ import com.msz.acc.infrastructure.auth.AccessDeniedException;
 import com.msz.acc.infrastructure.auth.AuthException;
 import com.msz.acc.infrastructure.gateway.ChannelTimeoutException;
 import com.msz.acc.infrastructure.gateway.ChannelUnavailableException;
+import com.msz.acc.infrastructure.tx.TransactionBoundaryFilter;
 import com.msz.acc.infrastructure.web.TraceIds;
 import com.msz.common.api.Envelope;
 import com.msz.common.api.ErrorCode;
@@ -107,6 +108,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Envelope<Void>> handleUnexpected(Exception e, HttpServletRequest request) {
+        // 失败信号：异常已被本处理器转为错误 Envelope，事务边界须据此回滚（否则失败请求会提交半成品）
+        TransactionBoundaryFilter.markRollbackOnly(request);
         String traceId = TraceIds.of(request);
         log.error("未捕获异常 [traceId={}]", traceId, e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -115,6 +118,8 @@ public class GlobalExceptionHandler {
 
     private ResponseEntity<Envelope<Void>> fail(int code, String message, HttpStatus status,
                                                 HttpServletRequest request, Exception e) {
+        // 失败信号：同上——错误 Envelope 一经产出，本请求的事务边界必须回滚而非提交
+        TransactionBoundaryFilter.markRollbackOnly(request);
         String traceId = TraceIds.of(request);
         if (code >= 5000) {
             log.error("映射 5xxx [traceId={}] code={} message={}", traceId, code, e.getMessage(), e);

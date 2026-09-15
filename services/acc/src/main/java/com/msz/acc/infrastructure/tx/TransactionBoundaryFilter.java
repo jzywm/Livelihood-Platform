@@ -25,6 +25,12 @@ import java.io.IOException;
  *       并清理 ThreadLocal——成功与失败路径同等对待。</li>
  * </ul>
  *
+ * <p><b>失败信号口径（实施期发现，补 design D5/D6 未覆盖的一环）</b>：Spring MVC 的
+ * {@code @RestControllerAdvice}（{@code GlobalExceptionHandler}）会把控制器抛出的异常转换成
+ * 错误 Envelope 返回，异常**不会**抵达过滤器——若只看 {@code catch} 分支，失败请求会被当成正常返回提交，
+ * 半成品与幂等占位都会留存。故本过滤器额外承认一个显式失败信号：{@link #markRollbackOnly} 置位的请求属性
+ * （由 {@code GlobalExceptionHandler} 在产出错误 Envelope 时调用），边界见属性即回滚而不提交。</p>
+ *
  * <p><b>受检异常口径（与 design D6 的差异，已登记实施报告）</b>：D6 的书面口径是「受检异常
  * （{@code Exception} 非 {@code RuntimeException}）视为正常返回并**提交**」，并自陈「不得默默提交半成品」的
  * 隐患；而行为契约（spec「Request-scoped transaction boundary」）要求「请求因**未捕获异常**失败时必须回滚，
@@ -33,10 +39,21 @@ import java.io.IOException;
  */
 public final class TransactionBoundaryFilter implements Filter {
 
+    /** 失败信号：置位即表示本请求以错误 Envelope 结束，边界必须回滚。 */
+    public static final String ROLLBACK_ONLY_ATTRIBUTE = "acc.transaction.rollbackOnly";
+
     private final RequestSqlSessionHolder holder;
 
     public TransactionBoundaryFilter(RequestSqlSessionHolder holder) {
         this.holder = holder;
+    }
+
+    /**
+     * 标记「本请求失败，禁止提交」：由错误 Envelope 的产出方
+     * （{@code com.msz.acc.controller.GlobalExceptionHandler}）调用。
+     */
+    public static void markRollbackOnly(ServletRequest request) {
+        request.setAttribute(ROLLBACK_ONLY_ATTRIBUTE, Boolean.TRUE);
     }
 
     @Override
@@ -45,7 +62,11 @@ public final class TransactionBoundaryFilter implements Filter {
         holder.beginRequest();
         try {
             chain.doFilter(request, response);
-            holder.commit();
+            if (isRollbackOnly(request)) {
+                holder.rollback();
+            } else {
+                holder.commit();
+            }
         } catch (RuntimeException | Error e) {
             holder.rollback();
             throw e;
@@ -55,5 +76,9 @@ public final class TransactionBoundaryFilter implements Filter {
         } finally {
             holder.endRequest();
         }
+    }
+
+    private static boolean isRollbackOnly(ServletRequest request) {
+        return Boolean.TRUE.equals(request.getAttribute(ROLLBACK_ONLY_ATTRIBUTE));
     }
 }

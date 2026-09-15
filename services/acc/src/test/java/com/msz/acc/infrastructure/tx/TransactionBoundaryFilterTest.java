@@ -9,6 +9,8 @@ import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -94,6 +96,30 @@ class TransactionBoundaryFilterTest {
                 .isSameAs(failure);
         verify(session).rollback();
         verify(session).close();
+    }
+
+    @Test
+    @DisplayName("1.3/2.1 显式失败信号：错误 Envelope 置位 rollbackOnly → 边界回滚而非提交")
+    void rollbackOnlyMarkerRollsBackInsteadOfCommitting() throws Exception {
+        SqlSessionFactory factory = mock(SqlSessionFactory.class);
+        SqlSession session = mock(SqlSession.class);
+        when(factory.openSession(false)).thenReturn(session);
+        RequestSqlSessionHolder holder = new RequestSqlSessionHolder(factory);
+        TransactionBoundaryFilter filter = new TransactionBoundaryFilter(holder);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> {
+            holder.currentSession();
+            assertThat(servletRequest.getAttribute(TransactionBoundaryFilter.ROLLBACK_ONLY_ATTRIBUTE))
+                    .as("正常路径不得带失败信号").isNull();
+            // 模拟 GlobalExceptionHandler 产出错误 Envelope 时的标记
+            TransactionBoundaryFilter.markRollbackOnly(servletRequest);
+        });
+
+        verify(session).rollback();
+        verify(session, never()).commit();
+        verify(session).close();
+        assertThat(holder.isRequestActive()).isFalse();
     }
 
     @Test

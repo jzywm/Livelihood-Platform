@@ -39,11 +39,14 @@ import com.msz.acc.infrastructure.logging.LogMasker;
 import com.msz.acc.infrastructure.redis.HashTailStore;
 import com.msz.acc.infrastructure.redis.InMemoryStringRedisOps;
 import com.msz.acc.infrastructure.redis.RedisHashTailStore;
+import com.msz.acc.infrastructure.tx.TransactionBoundaryFilter;
+import com.msz.acc.infrastructure.tx.TransactionalMapperProxy;
 import com.msz.acc.repository.AccountMapper;
 import com.msz.acc.repository.DaoSupport;
 import com.msz.acc.repository.IdempotencyRecordMapper;
 import com.msz.acc.repository.RealnameRecordMapper;
 import com.msz.acc.repository.ReconcileTaskMapper;
+import com.msz.acc.repository.RequestSqlSessionHolder;
 import com.msz.acc.repository.WalletBindingMapper;
 import com.msz.acc.repository.WalletFlowMapper;
 import com.msz.common.idgen.DefaultIdGenMetrics;
@@ -73,7 +76,8 @@ import java.util.logging.Logger;
 
 /**
  * ACC 接口层装配（S5）：端口适配（Captcha/实名通道/支付通道/账单/验签）、
- * 数据层（DaoSupport.SqlSessionFactory + 各 Mapper）、各 Flow、鉴权 Filter（order 1，/acc/**）。
+ * 数据层（DaoSupport.SqlSessionFactory + 事务感知 Mapper 代理）、各 Flow、
+ * 鉴权 Filter（order 1，/acc/*）与事务边界 Filter（order 2，/acc/*）。
  *
  * <p>测试凭据口径：KeyProvider/JWT/回调验签/指纹均为固定测试凭据（生产经 KMS/配置注入）；
  * Redis 用 {@link InMemoryStringRedisOps} 兜底（M1 无 Redis 部署）；数据源为占位实现
@@ -129,49 +133,67 @@ public class AccConfiguration {
         return daoSupport.factory(dataSource);
     }
 
+    /** 请求级会话持有器：ThreadLocal 绑定 + 首次触库惰性开启 + 无请求上下文降级（design D2/D4/D7）。 */
     @Bean
-    public AccountMapper accountMapper(SqlSessionFactory factory) {
-        return mapper(factory, AccountMapper.class);
+    public RequestSqlSessionHolder requestSqlSessionHolder(SqlSessionFactory factory) {
+        return new RequestSqlSessionHolder(factory);
+    }
+
+    /** Mapper 事务感知代理工厂：每次调用转发到当前请求会话的 Mapper（design D3）。 */
+    @Bean
+    public TransactionalMapperProxy transactionalMapperProxy(RequestSqlSessionHolder holder) {
+        return new TransactionalMapperProxy(holder);
     }
 
     @Bean
-    public RealnameRecordMapper realnameRecordMapper(SqlSessionFactory factory) {
-        return mapper(factory, RealnameRecordMapper.class);
+    public AccountMapper accountMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, AccountMapper.class);
     }
 
     @Bean
-    public WalletFlowMapper walletFlowMapper(SqlSessionFactory factory) {
-        return mapper(factory, WalletFlowMapper.class);
+    public RealnameRecordMapper realnameRecordMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, RealnameRecordMapper.class);
     }
 
     @Bean
-    public WalletBindingMapper walletBindingMapper(SqlSessionFactory factory) {
-        return mapper(factory, WalletBindingMapper.class);
+    public WalletFlowMapper walletFlowMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, WalletFlowMapper.class);
     }
 
     @Bean
-    public ReconcileTaskMapper reconcileTaskMapper(SqlSessionFactory factory) {
-        return mapper(factory, ReconcileTaskMapper.class);
+    public WalletBindingMapper walletBindingMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, WalletBindingMapper.class);
     }
 
     @Bean
-    public IdempotencyRecordMapper idempotencyRecordMapper(SqlSessionFactory factory) {
-        return mapper(factory, IdempotencyRecordMapper.class);
+    public ReconcileTaskMapper reconcileTaskMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, ReconcileTaskMapper.class);
+    }
+
+    @Bean
+    public IdempotencyRecordMapper idempotencyRecordMapper(TransactionalMapperProxy mapperProxy) {
+        return mapper(mapperProxy, IdempotencyRecordMapper.class);
     }
 
     /**
-     * Mapper 装配：**自动提交会话**（{@code openSession(true)}，与 {@code repository} 层 DAO 测试同口径）。
+     * Mapper 装配：**事务感知动态代理**（{@link TransactionalMapperProxy}，design D3）。
      *
-     * <p>2026-09-15 真机联调（任务组 10.2）修正：原实现为 {@code openSession()}——会话长驻且
-     * {@code autoCommit=false}、事务永不提交，真实库下出现「写不落库（接口返 200 但
-     * {@code closed_at} 仍为 NULL）」与「读陈旧（外部已提交的变更查不到）」两个缺陷
-     * （控制器测试全 mock Mapper、DAO 测试用自动提交，装配层会话语义此前无覆盖）。</p>
+     * <p>每个 Mapper Bean 仍是单例（名称/返回类型/全部构造注入点不变），但不再持有固定会话：
+     * 每次方法调用向 {@link RequestSqlSessionHolder} 索取**当前请求会话**上的真实 Mapper，一个请求内
+     * 的所有数据访问因此落在同一会话/连接上，由请求级事务边界统一提交或回滚
+     * （{@link TransactionBoundaryFilter}：正常返回提交、未捕获异常回滚、{@code finally} 关闭会话并归还连接）。
+     * 会话在请求**首次真正访问数据库**时才惰性开启，不触库的请求不占用连接；非 Web 调用路径
+     * （测试夹具/脚本/将来的定时任务）退化为「单次自动提交会话 + 调用后关闭」。</p>
      *
-     * <p><b>已知限制（登记待收敛）</b>：会话仍为长驻（非按请求），跨表写入无原子性；
-     * M2 收敛为按请求会话 + 显式事务边界（见 {@code services/acc/docs/README.md} 已知限制）。</p>
+     * <p><b>历史缺陷记录（2026-09-15 真机联调，任务组 10.2，不得改写）</b>：原实现为
+     * {@code factory.openSession()}——会话长驻且 {@code autoCommit=false}、事务永不提交，真实库下出现
+     * 「写不落库（接口返 200 但 {@code closed_at} 仍为 NULL）」与「读陈旧（外部已提交的变更查不到）」
+     * 两个缺陷（控制器测试全 mock Mapper、DAO 测试用自动提交，装配层会话语义此前无覆盖）。
+     * 当时以「自动提交 + 长驻会话」止血，残留跨表无原子性、无事务边界、并发共享会话三项风险；
+     * 该三项已由本装配切换（{@code fix-acc-transaction-boundary}）收敛为请求级会话 + 请求级事务边界。</p>
      */
-    private static <T> T mapper(SqlSessionFactory factory, Class<T> type) {
-        return factory.openSession(true).getMapper(type);
+    private static <T> T mapper(TransactionalMapperProxy mapperProxy, Class<T> type) {
+        return mapperProxy.create(type);
     }
 
     // ---------- 公共组件 ----------
@@ -352,7 +374,7 @@ public class AccConfiguration {
         return new FundsAuditService(walletFlowMapper, reconcileTaskMapper, shardingRouter, clock);
     }
 
-    // ---------- 鉴权(2026-09-15:网关为唯一鉴权点,服务内改为信任网关透传的身份头) ----------
+    // ---------- 鉴权与事务边界(2026-09-15:网关为唯一鉴权点,服务内改为信任网关透传的身份头) ----------
 
     /** JWT 编解码器:仍用于**签发**(登录/注册签发 token);验签职责已移交网关。 */
     @Bean
@@ -370,6 +392,24 @@ public class AccConfiguration {
             TrustedHeaderAuthFilter filter) {
         FilterRegistrationBean<TrustedHeaderAuthFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(1);
+        registration.addUrlPatterns("/acc/*");
+        return registration;
+    }
+
+    @Bean
+    public TransactionBoundaryFilter transactionBoundaryFilter(RequestSqlSessionHolder holder) {
+        return new TransactionBoundaryFilter(holder);
+    }
+
+    /**
+     * 事务边界过滤器注册（design D5）：order 2 —— 紧随鉴权过滤器（order 1）之后、控制器之前，
+     * 同一个 {@code /acc/*} 口径；进入请求只标记作用域（不取连接），结束提交/回滚并关闭会话。
+     */
+    @Bean
+    public FilterRegistrationBean<TransactionBoundaryFilter> transactionBoundaryFilterRegistration(
+            TransactionBoundaryFilter filter) {
+        FilterRegistrationBean<TransactionBoundaryFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(2);
         registration.addUrlPatterns("/acc/*");
         return registration;
     }
