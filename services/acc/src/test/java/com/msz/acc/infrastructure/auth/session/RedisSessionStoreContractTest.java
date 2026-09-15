@@ -53,7 +53,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
         redis.clearCalls();
 
         FamilyRecord family = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
-                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of());
+                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of());
         store.issue(family, "rf-1", 604_800L);
 
         FakeRedis.Call call = redis.lastOf("ISSUE");
@@ -71,7 +71,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
         redis.clearCalls();
 
         FamilyRecord expired = new FamilyRecord("fam_old", 1001L, "CONSUMER", false, T0 - 1_000_000L,
-                T0 - 500_000L, FamilyRecord.STATUS_ACTIVE, "rf-old", null, 0L, Map.of());
+                T0 - 500_000L, FamilyRecord.STATUS_ACTIVE, "rf-old", null, 0L, Map.of(), Map.of());
         store.issue(expired, "rf-old", 604_800L);
 
         assertThat(redis.lastOf("ISSUE").arg(1)).isEqualTo("1");
@@ -84,7 +84,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
         redis.clearCalls();
 
         FamilyRecord almost = new FamilyRecord("fam_near", 1001L, "CONSUMER", false, T0,
-                T0 + 400L, FamilyRecord.STATUS_ACTIVE, "rf-near", null, 0L, Map.of());
+                T0 + 400L, FamilyRecord.STATUS_ACTIVE, "rf-near", null, 0L, Map.of(), Map.of());
         store.issue(almost, "rf-near", 604_800L);
 
         assertThat(redis.lastOf("ISSUE").arg(1)).isEqualTo("1");
@@ -95,13 +95,13 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
     void rotateScriptIsAtomic() {
         SessionStore store = new RedisSessionStore(redis.ops(), clock);
         FamilyRecord family = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
-                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of());
+                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of());
         store.issue(family, "rf-1", 604_800L);
         redis.clearCalls();
 
         FamilyRecord rotated = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
                 T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1", T0 + 5_000L,
-                Map.of("rf-1", T0 + 604_800_000L));
+                Map.of("rf-1", T0 + 604_800_000L), Map.of());
         store.rotate(rotated, "rf-2", 604_800L, "rf-1");
 
         assertThat(redis.calls()).hasSize(1);
@@ -116,7 +116,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
     void consumeScriptIsAtomicSingleUse() {
         SessionStore store = new RedisSessionStore(redis.ops(), clock);
         store.issue(new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0, T0 + 604_800_000L,
-                FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of()), "rf-1", 604_800L);
+                FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of()), "rf-1", 604_800L);
         redis.clearCalls();
 
         assertThat(store.consume("rf-1")).isTrue();
@@ -145,7 +145,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
     void familyRecordRoundTripsThroughRedisValue() {
         SessionStore store = new RedisSessionStore(redis.ops(), clock);
         FamilyRecord family = new FamilyRecord("fam_a", 1001L, "MERCHANT", true, T0,
-                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of("rf-0", T0 + 1000L));
+                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of("rf-0", T0 + 1000L), Map.of());
         store.issue(family, "rf-1", 604_800L);
 
         FamilyRecord back = store.find("fam_a");
@@ -158,7 +158,7 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
     void redisFailureFailsFast() {
         SessionStore store = new RedisSessionStore(new BrokenOps(), clock);
         FamilyRecord family = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
-                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of());
+                T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of());
 
         assertThatThrownBy(store::ping).isInstanceOf(SessionStoreUnavailableException.class);
         assertThatThrownBy(() -> store.find("fam_a")).isInstanceOf(SessionStoreUnavailableException.class);

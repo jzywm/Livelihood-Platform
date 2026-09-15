@@ -38,15 +38,17 @@ public final class RefreshTokenStore {
     private final String secret;
     private final long refreshTtlSeconds;
     private final long rotationGraceSeconds;
+    private final long accessTtlSeconds;
     private final LongSupplier clockMillis;
 
     public RefreshTokenStore(SessionStore store, JwtCodec jwtCodec, String secret, long refreshTtlSeconds,
-                             long rotationGraceSeconds, LongSupplier clockMillis) {
+                             long rotationGraceSeconds, long accessTtlSeconds, LongSupplier clockMillis) {
         this.store = store;
         this.jwtCodec = jwtCodec;
         this.secret = secret;
         this.refreshTtlSeconds = refreshTtlSeconds;
         this.rotationGraceSeconds = rotationGraceSeconds;
+        this.accessTtlSeconds = accessTtlSeconds;
         this.clockMillis = clockMillis;
     }
 
@@ -56,9 +58,45 @@ public final class RefreshTokenStore {
         String familyId = "fam_" + java.util.UUID.randomUUID().toString().replace("-", "");
         String jti = newJti();
         FamilyRecord family = new FamilyRecord(familyId, accountId, role, mfa, now,
-                now + refreshTtlSeconds * 1000L, FamilyRecord.STATUS_ACTIVE, jti, null, 0L, Map.of());
+                now + refreshTtlSeconds * 1000L, FamilyRecord.STATUS_ACTIVE, jti, null, 0L, Map.of(), Map.of());
         store.issue(family, jti, refreshTtlSeconds);
         return sign(accountId, role, mfa, familyId, jti);
+    }
+
+    /**
+     * 把一条已签发短 token 的 jti 归属到族（整族吊销的依据）。
+     *
+     * <p><b>调用顺序约定</b>：先绑定、后签发——绑定失败即不返回 token，避免「客户端拿到一个
+     * 族不知道的短 token」（登出/重放时将无法吊销它）。</p>
+     */
+    public void bindAccessJti(String familyId, String accessJti) {
+        store.bindAccessJti(familyId, accessJti, clockMillis.getAsLong() + accessTtlSeconds * 1000L);
+    }
+
+    /**
+     * 族内所有**未过期**短 token 的 jti 与剩余有效期（整族吊销入参）。
+     *
+     * @param extraJti               当前请求携带的短 token jti（其剩余有效期由请求方精确知道，
+     *                               优先于族记录的近似值）；无则传 null
+     * @param extraRemainingSeconds  当前请求短 token 的剩余有效期（秒）
+     */
+    public java.util.List<AccessJti> liveAccessJtis(FamilyRecord family, String extraJti,
+                                                    long extraRemainingSeconds) {
+        long now = clockMillis.getAsLong();
+        java.util.List<AccessJti> result = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        boolean externalJtiKnown = extraJti != null && !extraJti.isBlank();
+        if (externalJtiKnown) {
+            result.add(new AccessJti(extraJti, Math.max(extraRemainingSeconds, 1L)));
+            seen.add(extraJti);
+        }
+        for (Map.Entry<String, Long> entry : family.accessJtis().entrySet()) {
+            long remaining = (entry.getValue() - now) / 1000L;
+            if (remaining >= 0 && seen.add(entry.getKey())) {
+                result.add(new AccessJti(entry.getKey(), Math.max(remaining, 1L)));
+            }
+        }
+        return result;
     }
 
     /**
@@ -135,7 +173,8 @@ public final class RefreshTokenStore {
         markers.put(consumedJti, rotated.expiresAtMillis());
         FamilyRecord updated = new FamilyRecord(rotated.familyId(), rotated.accountId(), rotated.role(),
                 rotated.mfa(), rotated.createdAtMillis(), now + refreshTtlSeconds * 1000L,
-                FamilyRecord.STATUS_ACTIVE, newJti, consumedJti, now + rotationGraceSeconds * 1000L, markers);
+                FamilyRecord.STATUS_ACTIVE, newJti, consumedJti, now + rotationGraceSeconds * 1000L, markers,
+                rotated.accessJtis());
         store.rotate(updated, newJti, refreshTtlSeconds, consumedJti);
         return sign(updated.accountId(), updated.role(), updated.mfa(), updated.familyId(), newJti);
     }
@@ -143,6 +182,22 @@ public final class RefreshTokenStore {
     /** 复用当前 refresh（并发重试分支：返回当前 jti 的 token，不再签发新值）。 */
     public String current(FamilyRecord family) {
         return sign(family.accountId(), family.role(), family.mfa(), family.familyId(), family.currentJti());
+    }
+
+    /**
+     * 解析 refresh 并返回其会话族 ID（登出用：仅凭 Cookie 时需先定位族）。
+     *
+     * @return familyId；token 缺失/签名非法/类型不符/已过期 一律 null（调用方按 2001 处置）
+     */
+    public String familyIdOf(String refreshToken) {
+        Map<String, Object> claims = verifyOrNull(refreshToken);
+        return claims == null ? null : stringClaim(claims, CLAIM_FAMILY);
+    }
+
+    /** 解析 refresh 的 {@code jti}（审计日志用，不含 token 原文）。 */
+    public String jtiOf(String refreshToken) {
+        Map<String, Object> claims = verifyOrNull(refreshToken);
+        return claims == null ? null : stringClaim(claims, "jti");
     }
 
     /** refresh 有效期（秒），供接口返回与文档口径对齐。 */

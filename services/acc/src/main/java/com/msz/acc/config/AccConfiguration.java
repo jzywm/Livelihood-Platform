@@ -8,6 +8,7 @@ import com.msz.acc.application.RecordFlowService;
 import com.msz.acc.application.ReconcileFlow;
 import com.msz.acc.application.RealnameCallbackFlow;
 import com.msz.acc.application.RegisterFlow;
+import com.msz.acc.application.SessionFlow;
 import com.msz.acc.application.WalletFlowQueryService;
 import com.msz.acc.application.port.CaptchaPort;
 import com.msz.acc.application.port.ChannelStatementSource;
@@ -26,8 +27,10 @@ import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.service.ShardingRouter;
 import com.msz.acc.infrastructure.auth.JwtCodec;
 import com.msz.acc.infrastructure.auth.TrustedHeaderAuthFilter;
+import com.msz.acc.infrastructure.auth.session.AccessTokenIssuer;
 import com.msz.acc.infrastructure.auth.session.InMemorySessionStore;
 import com.msz.acc.infrastructure.auth.session.RedisSessionStore;
+import com.msz.acc.infrastructure.auth.session.RefreshTokenStore;
 import com.msz.acc.infrastructure.captcha.CaptchaService;
 import com.msz.acc.infrastructure.crypto.AesGcmCipher;
 import com.msz.acc.infrastructure.crypto.FixedKeyProvider;
@@ -427,12 +430,56 @@ public class AccConfiguration {
         return new FundsAuditService(walletFlowMapper, reconcileTaskMapper, shardingRouter, clock);
     }
 
+    /** 会话凭据生命周期流程（登录签发 / 换发轮换 / 重用检测 / 登出吊销）。 */
+    @Bean
+    public SessionFlow sessionFlow(SessionStore sessionStore, AccountMapper accountMapper,
+                                   CaptchaPort captchaPort, HmacFingerprint hmacFingerprint,
+                                   AccessTokenIssuer accessTokenIssuer, RefreshTokenStore refreshTokenStore,
+                                   Logger sessionAuditLogger) {
+        return new SessionFlow(sessionStore, accountMapper, captchaPort, hmacFingerprint,
+                accessTokenIssuer, refreshTokenStore, sessionAuditLogger);
+    }
+
     // ---------- 鉴权与事务边界(2026-09-15:网关为唯一鉴权点,服务内改为信任网关透传的身份头) ----------
 
     /** JWT 编解码器:仍用于**签发**(登录/注册签发 token);验签职责已移交网关。 */
     @Bean
-    public JwtCodec jwtCodec() {
-        return new JwtCodec();
+    public JwtCodec jwtCodec(Clock clock) {
+        return new JwtCodec(clock);
+    }
+
+    /**
+     * 短 token 签发器（任务 3.6）：有效期**常量 900s**（PDD v1.18 §8.4.1 定档），
+     * 同时读取 {@code acc.session.access-token-ttl-seconds} 以便部署侧核对——
+     * 配置值超过 15 分钟会启动即告警（网关按 15m+60s 上限拒绝，签了也没用）。
+     */
+    @Bean
+    public AccessTokenIssuer accessTokenIssuer(JwtCodec jwtCodec, AccProperties properties, Clock clock) {
+        long configured = properties.getSession().getAccessTokenTtlSeconds();
+        if (configured > AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS) {
+            log.error("acc.session.access-token-ttl-seconds={} 超过网关上限 {}s："
+                            + "网关会以「有效期超出上限」拒绝，实际仍按 {}s 签发（请改回 900）",
+                    configured, AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS,
+                    AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS);
+        }
+        return new AccessTokenIssuer(jwtCodec, properties.getJwtSecret(),
+                AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS, clock);
+    }
+
+    /** refresh 签发/判定/轮换（design D2/D6）：TTL 与宽限窗口来自 {@code acc.session.*}。 */
+    @Bean
+    public RefreshTokenStore refreshTokenStore(SessionStore sessionStore, JwtCodec jwtCodec,
+                                               AccProperties properties, Clock clock) {
+        return new RefreshTokenStore(sessionStore, jwtCodec, properties.getJwtSecret(),
+                properties.getSession().getRefreshTokenTtlSeconds(),
+                properties.getSession().getRotationGraceSeconds(),
+                AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS, clock::millis);
+    }
+
+    /** 安全审计日志（重放/登出事件）：独立 logger 名，便于接入安全告警与日志留存口径。 */
+    @Bean
+    public Logger sessionAuditLogger() {
+        return LoggerFactory.getLogger("acc.session.audit");
     }
 
     @Bean

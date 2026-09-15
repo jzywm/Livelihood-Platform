@@ -3,6 +3,7 @@ package com.msz.acc.controller;
 import com.msz.acc.domain.support.AccBusinessException;
 import com.msz.acc.infrastructure.auth.AccessDeniedException;
 import com.msz.acc.infrastructure.auth.AuthException;
+import com.msz.acc.infrastructure.auth.session.SessionStoreUnavailableException;
 import com.msz.acc.infrastructure.gateway.ChannelTimeoutException;
 import com.msz.acc.infrastructure.gateway.ChannelUnavailableException;
 import com.msz.acc.infrastructure.tx.TransactionBoundaryFilter;
@@ -104,6 +105,20 @@ public class GlobalExceptionHandler {
                                                                    HttpServletRequest request) {
         return fail(ErrorCode.CHANNEL_FAILED, ErrorCode.message(ErrorCode.CHANNEL_FAILED), HttpStatus.BAD_GATEWAY,
                 request, e);
+    }
+
+    /**
+     * 会话存储不可用（spec「Session store unavailable fails fast」）：**503 + 5003**，
+     * 登录/换发/登出快速失败且未签发任何 token（不降级为无法吊销的本地兜底）。
+     *
+     * <p>复用「依赖不可用」码 5003（不新增错误码，与 PDD v1.18 §6.2 注一致）；细节只进日志，
+     * 响应 message 统一口径。</p>
+     */
+    @ExceptionHandler(SessionStoreUnavailableException.class)
+    public ResponseEntity<Envelope<Void>> handleSessionStoreUnavailable(SessionStoreUnavailableException e,
+                                                                       HttpServletRequest request) {
+        return fail(ErrorCode.GATEWAY_UNAVAILABLE, ErrorCode.message(ErrorCode.GATEWAY_UNAVAILABLE),
+                HttpStatus.SERVICE_UNAVAILABLE, request, e);
     }
 
     @ExceptionHandler(Exception.class)

@@ -108,9 +108,20 @@ public final class RedisSessionStore implements SessionStore {
         FamilyRecord revoked = new FamilyRecord(family.familyId(), family.accountId(), family.role(),
                 family.mfa(), family.createdAtMillis(), family.expiresAtMillis(), FamilyRecord.STATUS_REVOKED,
                 family.currentJti(), family.previousJti(), family.previousValidUntilMillis(),
-                family.rotatedJtis());
+                family.rotatedJtis(), family.accessJtis());
         call(SET_SCRIPT, List.of(familyKey(familyId)),
                 List.of(FamilyRecordJson.encode(revoked), String.valueOf(ttlSeconds(family.expiresAtMillis()))));
+    }
+
+    @Override
+    public void bindAccessJti(String familyId, String accessJti, long expiresAtMillis) {
+        FamilyRecord family = find(familyId);
+        if (family == null) {
+            return;
+        }
+        FamilyRecord updated = family.pruned(clockMillis.getAsLong()).withAccessJti(accessJti, expiresAtMillis);
+        call(SET_SCRIPT, List.of(familyKey(familyId)),
+                List.of(FamilyRecordJson.encode(updated), String.valueOf(ttlSeconds(family.expiresAtMillis()))));
     }
 
     @Override

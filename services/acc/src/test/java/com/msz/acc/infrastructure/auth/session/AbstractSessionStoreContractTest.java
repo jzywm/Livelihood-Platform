@@ -45,7 +45,8 @@ abstract class AbstractSessionStoreContractTest {
 
     private FamilyRecord family(String familyId, String jti) {
         return new FamilyRecord(familyId, 1001L, "CONSUMER", false, clock.now(),
-                clock.now() + REFRESH_TTL_SECONDS * 1000L, FamilyRecord.STATUS_ACTIVE, jti, null, 0L, Map.of());
+                clock.now() + REFRESH_TTL_SECONDS * 1000L, FamilyRecord.STATUS_ACTIVE, jti, null, 0L, Map.of(),
+                Map.of());
     }
 
     @Test
@@ -103,7 +104,7 @@ abstract class AbstractSessionStoreContractTest {
         clock.advanceSeconds(100);
         FamilyRecord rotated = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
                 clock.now() + REFRESH_TTL_SECONDS * 1000L, FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1",
-                clock.now() + 5_000L, Map.of("rf-1", clock.now() + REFRESH_TTL_SECONDS * 1000L));
+                clock.now() + 5_000L, Map.of("rf-1", clock.now() + REFRESH_TTL_SECONDS * 1000L), Map.of());
         store.rotate(rotated, "rf-2", REFRESH_TTL_SECONDS, "rf-1");
 
         FamilyRecord back = store.find("fam_a");

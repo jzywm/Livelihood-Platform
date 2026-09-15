@@ -14,6 +14,7 @@ import java.util.Map;
 final class FamilyRecordJson {
 
     private static final String ROTATED_PREFIX = "rotated.";
+    private static final String ACCESS_PREFIX = "access.";
 
     private FamilyRecordJson() {
     }
@@ -33,21 +34,27 @@ final class FamilyRecordJson {
         for (Map.Entry<String, Long> entry : record.rotatedJtis().entrySet()) {
             map.put(ROTATED_PREFIX + entry.getKey(), entry.getValue());
         }
+        for (Map.Entry<String, Long> entry : record.accessJtis().entrySet()) {
+            map.put(ACCESS_PREFIX + entry.getKey(), entry.getValue());
+        }
         return Json.toJson(map);
     }
 
     static FamilyRecord decode(String json) {
         Map<String, Object> map = Json.parseObject(json);
         Map<String, Long> rotated = new LinkedHashMap<>();
+        Map<String, Long> access = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : map.entrySet()) {
             if (entry.getKey().startsWith(ROTATED_PREFIX)) {
                 rotated.put(entry.getKey().substring(ROTATED_PREFIX.length()), asLong(entry.getValue()));
+            } else if (entry.getKey().startsWith(ACCESS_PREFIX)) {
+                access.put(entry.getKey().substring(ACCESS_PREFIX.length()), asLong(entry.getValue()));
             }
         }
         return new FamilyRecord(string(map, "familyId"), asLong(map.get("accountId")), string(map, "role"),
                 Boolean.TRUE.equals(map.get("mfa")), asLong(map.get("createdAtMillis")),
                 asLong(map.get("expiresAtMillis")), string(map, "status"), string(map, "currentJti"),
-                string(map, "previousJti"), asLong(map.get("previousValidUntilMillis")), rotated);
+                string(map, "previousJti"), asLong(map.get("previousValidUntilMillis")), rotated, access);
     }
 
     private static String string(Map<String, Object> map, String key) {

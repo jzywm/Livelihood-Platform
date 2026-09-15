@@ -58,6 +58,16 @@ public interface SessionStore {
     /** 标记族已吊销（记录保留至到期，使重放被识别为「已吊销族」而非「未知 token」）。 */
     void markRevoked(String familyId);
 
+    /**
+     * 把一条**已签发短 token** 的 jti 归属到会话族（整族吊销时按此逐条写 `revoked:jti:{jti}`，
+     * spec「revoke every access token of the family including unexpired ones」）。
+     *
+     * <p>调用时机在「签发前」：绑定失败即不签发，避免出现族不知道的短 token（无法吊销）。</p>
+     *
+     * @param expiresAtMillis 该短 token 的到期时刻（epoch 毫秒）
+     */
+    void bindAccessJti(String familyId, String accessJti, long expiresAtMillis);
+
     /** 写网关共享吊销名单：逐条 `revoked:jti:{jti}` 占位值 + 剩余有效期 TTL（秒，≥1）。 */
     void revoke(List<AccessJti> accessJtis);
 

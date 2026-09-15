@@ -21,7 +21,7 @@ class FamilyRecordJsonTest {
     void roundTrip() {
         FamilyRecord record = new FamilyRecord("fam_1", 1001L, "CONSUMER", true, T0, T0 + 604_800_000L,
                 FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1", T0 + 5_000L,
-                Map.of("rf-0", T0 + 604_800_000L));
+                Map.of("rf-0", T0 + 604_800_000L), Map.of());
 
         FamilyRecord back = FamilyRecordJson.decode(FamilyRecordJson.encode(record));
 
@@ -32,7 +32,7 @@ class FamilyRecordJsonTest {
     @DisplayName("编码为扁平对象（无嵌套数组/对象），值为原始类型 + rotated.<jti> 前缀键")
     void encodedShapeIsFlat() {
         FamilyRecord record = new FamilyRecord("fam_1", 1001L, "MERCHANT", false, T0, T0 + 1000L,
-                FamilyRecord.STATUS_REVOKED, "rf-1", null, 0L, Map.of("rf-0", T0 + 1000L));
+                FamilyRecord.STATUS_REVOKED, "rf-1", null, 0L, Map.of("rf-0", T0 + 1000L), Map.of());
 
         String json = FamilyRecordJson.encode(record);
 
@@ -48,7 +48,7 @@ class FamilyRecordJsonTest {
     void prunedDropsExpiredMarkers() {
         FamilyRecord record = new FamilyRecord("fam_1", 1001L, "CONSUMER", false, T0, T0 + 1000L,
                 FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1", T0 + 5_000L,
-                Map.of("rf-old", T0 - 1L, "rf-keep", T0 + 604_800_000L));
+                Map.of("rf-old", T0 - 1L, "rf-keep", T0 + 604_800_000L), Map.of());
 
         FamilyRecord pruned = record.pruned(T0);
 

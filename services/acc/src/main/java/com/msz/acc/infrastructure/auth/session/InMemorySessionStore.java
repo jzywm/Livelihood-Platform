@@ -63,8 +63,18 @@ public final class InMemorySessionStore implements SessionStore {
         FamilyRecord revoked = new FamilyRecord(family.familyId(), family.accountId(), family.role(),
                 family.mfa(), family.createdAtMillis(), family.expiresAtMillis(), FamilyRecord.STATUS_REVOKED,
                 family.currentJti(), family.previousJti(), family.previousValidUntilMillis(),
-                family.rotatedJtis());
+                family.rotatedJtis(), family.accessJtis());
         store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(revoked), family.expiresAtMillis()));
+    }
+
+    @Override
+    public void bindAccessJti(String familyId, String accessJti, long expiresAtMillis) {
+        FamilyRecord family = find(familyId);
+        if (family == null) {
+            return;
+        }
+        FamilyRecord updated = family.pruned(clockMillis.getAsLong()).withAccessJti(accessJti, expiresAtMillis);
+        store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(updated), family.expiresAtMillis()));
     }
 
     @Override
