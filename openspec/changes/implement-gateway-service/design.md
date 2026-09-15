@@ -160,7 +160,7 @@ Redis+Lua 令牌桶,key = `rl:{ip|account|api}:{key}`,原子计数;超限 429 + 
 
 - **短 token(access)= 15 分钟**:`Authorization: Bearer` 走业务链路,由网关校验。网关新增两条硬校验:① `sub` 必须存在且非空白(否则下游收到空身份、鉴权点失守);② `exp` 必须存在、未过期,**且不超过 `access-token-max-ttl`(15m)+ `clock-skew`(60s)**——超出即 401+2001。意义:签名密钥泄漏时爆炸半径受 clock-skew 上限约束,而不是"签发方自律";容差只用于放宽上限判定,**过期判定保持严格**(不给过期 token 额外存活期)。
 - **长 token(refresh)= 7 天**:存 **HttpOnly + Secure + SameSite** Cookie,**不经网关业务链路**,只用于换发短 token。网关侧因此不解析 Cookie、不为其开放业务白名单位。
-- **落地边界(重要)**:本次只落地**校验侧**(网关策略 + 配置键 + 用例 + 真机实证)。**换发(refresh)接口尚未实现**——M1 尚无登录接口,新增 `/acc/auth/**` 属**接口清单变更**(需 openapi 权威源 + 前端 api-client 同步),已登记 `docs/待评审事项汇总.md`;换发端点将来需要:白名单位(无有效短 token 时仍可通过网关)、HttpOnly Cookie 属性、CSRF/Origin 校验(敏感写请求非 Cookie 鉴权)。
+- **落地边界(重要)**:本次只落地**校验侧**(网关策略 + 配置键 + 用例 + 真机实证)。**换发(refresh)接口尚未实现**——M1 尚无登录接口,新增 `/acc/auth/**` 属**接口清单变更**(需 openapi 权威源 + 前端 api-client 同步),已登记 `docs/待评审事项汇总.md`;换发端点将来需要:白名单位(无有效短 token 时仍可通过网关)、HttpOnly Cookie 属性、CSRF/Origin 校验(敏感写请求非 Cookie 鉴权)。**承接注记(2026-09-15)**:换发(refresh)接口的落地**已由 `add-refresh-token-rotation` 承接**(登录签发 / 单次使用轮换 / 重用检测 / 登出吊销 + 网关白名单与 Cookie 透传增量,见该变更 `tasks.md` §1~§8);此处**只追加承接说明**,本节既有落地边界与结论不变。
 - **配置绑定陷阱(实现期踩坑,已固化)**:`@ConfigurationProperties` 的记录绑定**只允许唯一构造器**;给嵌套记录 `Auth` 加第二构造器会让 Spring 找不到绑定入口,实测 `gateway.auth` 整段绑定为 `null`(12 个上下文用例同时变红)。缺省值改用**静态工厂** `Auth.of(whitelist, jwtSecret)` + 紧凑构造器归一 null。
 
 ### D16 真机联调(任务组 10.2)发现并修复 ACC 数据层缺陷
@@ -168,7 +168,7 @@ Redis+Lua 令牌桶,key = `rl:{ip|account|api}:{key}`,原子计数;超限 429 + 
 - **联调形态**:`services/acc/deploy/drill/AccDrill.java` 以嵌入式 MariaDB(mariaDB4j)+ Flyway + `@Primary` 真实 DataSource 启动**真实 ACC 进程**,与网关 fat jar 组成双进程,链路为 `curl → 网关(鉴权/限流/熔断/改写) → ACC → MyBatis → MariaDB`——此前 Node 下游桩只能证明转发,不能证明 SQL 与字段加解密。
 - **发现缺陷(ACC,非网关切面)**:6 个 Mapper Bean 原为 `factory.openSession().getMapper(...)`,会话长驻、`autoCommit=false`、事务永不提交,真实库下三症状:①读陈旧(外部已提交的 `wallet_status` 查不到)②写不落库(`POST /acc/account/close` 返 200 但 `closed_at` 仍 NULL)③持锁阻塞外部写入(`Lock wait timeout exceeded`,约 50s)。
 - **修复**:改为 `factory.openSession(true)`(自动提交,与 DAO 测试同口径),新增 `config.RealDbAssemblyTest`(真实库 + 真实 Tomcat + 真实 HTTP)锁死两条回归;反向验证:临时改回原实现,该测试立刻 1 Failure + 1 Error。
-- **残留限制(已登记 → 已承接)**:会话仍为长驻(非按请求),跨表写入无原子性、无事务边界,原计划 M2 收敛为「按请求会话 + 显式事务边界」;`services/acc/docs/README.md` 已记录。**该三项残留已由 `fix-acc-transaction-boundary` 承接并于 2026-09-15 落地**(session-per-request + 请求级事务边界,提前至 M1,`implement-gateway-service` tasks §14.3 因此关闭)。
+- **残留限制(已登记 → 已承接)**:会话仍为长驻(非按请求),跨表写入无原子性、无事务边界,原计划 M2 收敛为「按请求会话 + 显式事务边界」;`services/acc/docs/README.md` 已记录。**交付内容已由 `fix-acc-transaction-boundary` 承接落地**(2026-09-15:session-per-request + 请求级事务边界,提前至 M1);`implement-gateway-service` tasks §14.3 **该行状态保持不变**(仅加承接注记,与 `add-refresh-token-rotation` tasks §1.6「原变更任务清单状态不变(除标注)」同口径,**不宣告任何任务状态变更**)。
 - **依赖修正**:`services/acc/pom.xml` 钉 `jakarta.annotation-api:2.1.1`(test 作用域 mariaDB4j 传递 1.3.5 抢占调解 → Web 容器启动 `NoClassDefFoundError`)。
 
 ## Risks / Trade-offs

@@ -13,3 +13,7 @@ indent_size = 4
 
 [*.md]
 trim_trailing_whitespace = false
+
+# 例外：Windows PowerShell 5.1 需 BOM 才能正确解析含非 ASCII（中文）的脚本，无 BOM 的 UTF-8 会被按 ANSI 解码而报语法错误；仓库另有存量 BOM 文件，故在此显式登记该例外（不改 `[*]` 的 utf-8 默认）
+[*.ps1]
+charset = utf-8-bom

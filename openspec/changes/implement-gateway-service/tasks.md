@@ -78,6 +78,6 @@
 
 ## 14. 未完成 / 环境受限(如实登记)
 
-- [ ] 14.1 换发(refresh)接口实现:路径/ Cookie 属性/CSRF 与 Origin 校验/轮换与重放防护;属**接口清单变更**(需 openapi 权威源 + 前端 api-client 同步),待策略确认(design Open Questions)
+- [ ] 14.1 换发(refresh)接口实现:路径/ Cookie 属性/CSRF 与 Origin 校验/轮换与重放防护;属**接口清单变更**(需 openapi 权威源 + 前端 api-client 同步),待策略确认(design Open Questions) —— **已由 `add-refresh-token-rotation` 承接(2026-09-15)**:该变更已落地登录签发/换发轮换/重用检测/登出吊销与网关白名单 + Cookie 透传增量,交付清单见其 `tasks.md` §1~§8;本行状态按 `add-refresh-token-rotation` tasks §1.6 同口径**保持不变**(仅加承接注记)
 - [ ] 14.2 `docker compose up` 运行验证与「全实例不可用 → Nginx 503」复演:本沙箱无 docker/Nginx,已用等价方式(双实例 + Node 桩 + 真实 ACC)验证;需容器/K8s 环境
-- [ ] 14.3 ACC 事务边界收敛(M2):按请求会话 + 显式事务边界,替代当前长驻自动提交会话 —— **已由 `fix-acc-transaction-boundary` 承接并落地(2026-09-15)**:`repository/RequestSqlSessionHolder`(ThreadLocal 请求级会话,首次触库惰性开启、结束关闭并清理)+ `infrastructure/tx/TransactionalMapperProxy`(6 个 Mapper Bean 的名称/类型/注入点不变)+ `infrastructure/tx/TransactionBoundaryFilter`(order 2、`/acc/*`;成功提交 / 未捕获异常含受检回滚 / `GlobalExceptionHandler` 置位的 `rollbackOnly` 标记回滚);ACC `mvn -f services/acc/pom.xml verify -nsu` = **279 用例 0 失败**,真机双进程联调复跑无回归;本行状态按 `add-refresh-token-rotation` tasks §1.6 同口径**保持不变**(仅加承接注记)
+- [ ] 14.3 ACC 事务边界收敛(M2):按请求会话 + 显式事务边界,替代当前长驻自动提交会话 —— **已由 `fix-acc-transaction-boundary` 承接并落地(2026-09-15)**:`repository/RequestSqlSessionHolder`(ThreadLocal 请求级会话,首次触库惰性开启、结束关闭并清理)+ `infrastructure/tx/TransactionalMapperProxy`(6 个 Mapper Bean 的名称/类型/注入点不变)+ `infrastructure/tx/TransactionBoundaryFilter`(order 2、`/acc/*`;成功提交 / 未捕获异常含受检回滚 / `GlobalExceptionHandler` 置位的 `rollbackOnly` 标记回滚);ACC `mvn -f services/acc/pom.xml verify -nsu` = **280 用例 0 失败**,真机双进程联调复跑无回归;本行状态按 `add-refresh-token-rotation` tasks §1.6 同口径**保持不变**(仅加承接注记)
