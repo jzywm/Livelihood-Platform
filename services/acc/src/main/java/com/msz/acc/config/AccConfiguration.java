@@ -15,6 +15,7 @@ import com.msz.acc.application.port.FlowStatementReader;
 import com.msz.acc.application.port.PaymentChannelPort;
 import com.msz.acc.application.port.RealnameChannelPort;
 import com.msz.acc.application.port.ReconcileExecutor;
+import com.msz.acc.application.port.SessionStore;
 import com.msz.acc.application.port.SignatureVerifier;
 import com.msz.acc.application.support.HmacFingerprint;
 import com.msz.acc.domain.service.AmountPolicy;
@@ -25,6 +26,8 @@ import com.msz.acc.domain.service.RealnameStatusMachine;
 import com.msz.acc.domain.service.ShardingRouter;
 import com.msz.acc.infrastructure.auth.JwtCodec;
 import com.msz.acc.infrastructure.auth.TrustedHeaderAuthFilter;
+import com.msz.acc.infrastructure.auth.session.InMemorySessionStore;
+import com.msz.acc.infrastructure.auth.session.RedisSessionStore;
 import com.msz.acc.infrastructure.captcha.CaptchaService;
 import com.msz.acc.infrastructure.crypto.AesGcmCipher;
 import com.msz.acc.infrastructure.crypto.FixedKeyProvider;
@@ -36,6 +39,7 @@ import com.msz.acc.infrastructure.gateway.MapperFlowStatementReader;
 import com.msz.acc.infrastructure.gateway.PaymentChannelGateway;
 import com.msz.acc.infrastructure.gateway.RealnameChannelGateway;
 import com.msz.acc.infrastructure.logging.LogMasker;
+import com.msz.acc.infrastructure.redis.AccLettuceStringRedisOps;
 import com.msz.acc.infrastructure.redis.HashTailStore;
 import com.msz.acc.infrastructure.redis.InMemoryStringRedisOps;
 import com.msz.acc.infrastructure.redis.RedisHashTailStore;
@@ -56,6 +60,8 @@ import com.msz.common.idgen.SnowflakeIdGenerator;
 import com.msz.common.redis.StringRedisOps;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.session.SqlSessionFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -72,7 +78,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.time.Clock;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Logger;
+import java.util.function.LongSupplier;
 
 /**
  * ACC 接口层装配（S5）：端口适配（Captcha/实名通道/支付通道/账单/验签）、
@@ -94,6 +100,8 @@ public class AccConfiguration {
 
     private static final String KEY_ID = "k1";
     private static final String FINGERPRINT_SECRET = "acc-fingerprint-test-secret";
+
+    private static final Logger log = LoggerFactory.getLogger(AccConfiguration.class);
 
     // ---------- 加密 ----------
 
@@ -215,9 +223,54 @@ public class AccConfiguration {
         return Clock.systemUTC();
     }
 
+    /** 秒级时钟（毫秒）：会话 TTL / 宽限窗口判定用，与 {@link Clock} 分离以便测试注入固定时刻。 */
     @Bean
-    public StringRedisOps stringRedisOps() {
-        return new InMemoryStringRedisOps();
+    public LongSupplier sessionEpochMillis(Clock clock) {
+        return clock::millis;
+    }
+
+    /**
+     * Redis 端口（S5 既有端口，**2026-09-15 扩展为「由配置决定实现」**）：配置了
+     * {@code acc.redis.host} → {@link AccLettuceStringRedisOps}（生产，Lettuce 直接依赖 + 可选 AUTH +
+     * 有界超时 2s/1s）；未配置 → {@link InMemoryStringRedisOps}（单测/演练兜底）。
+     *
+     * <p><b>口径（用户裁决 R-A6）</b>：不引 spring-data-redis 全家桶；生产**必须**配置 Redis 且与网关
+     * 同实例，否则会话族与吊销名单不共享 ⇒ 登出/踢人失效——{@link SessionStore} 的选型会打印告警，
+     * 该限制同时写入 PDD v1.18 / 高并发 v0.9 / 边界基准 v1.9 与两份服务基线。</p>
+     *
+     * <p>销毁：不显式声明 {@code destroyMethod}——Spring 会按「返回类型可达的 public close()/shutdown()」
+     * 自动推断（Lettuce 实现是 {@code AutoCloseable}，内存实现没有该方法，框架会自行跳过），
+     * 显式写死 {@code close} 会在内存实现上校验失败（真实缺陷，2026-09-15 由全量测试发现）。</p>
+     */
+    @Bean
+    public StringRedisOps stringRedisOps(AccProperties properties) {
+        String host = properties.getRedis().getHost();
+        if (host == null || host.isBlank()) {
+            log.warn("acc.redis.host 未配置：会话存储使用进程内兜底实现——"
+                    + "仅限单元测试/演练，生产部署必须配置 Redis（否则登出与踢人无效）");
+            return new InMemoryStringRedisOps();
+        }
+        return new AccLettuceStringRedisOps(host.trim(), properties.getRedis().getPort(),
+                properties.getRedis().getUsername(), properties.getRedis().getPassword());
+    }
+
+    /**
+     * 会话存储端口（design D2/D3/D8）：{@code acc.redis.host} 配置了 → {@link RedisSessionStore}
+     * （Lua 原子写入 + fail-closed），未配置 → {@link InMemorySessionStore}（测试/演练兜底）。
+     *
+     * <p>存储不可用时实现抛 {@link SessionStoreUnavailableException}，经
+     * {@link com.msz.acc.controller.GlobalExceptionHandler} 统一映射 **503 + 5003**：
+     * 登录/换发/登出**快速失败**，绝不签发无法吊销的 token。</p>
+     */
+    @Bean
+    public SessionStore sessionStore(AccProperties properties, StringRedisOps stringRedisOps,
+                                     Clock clock) {
+        String host = properties.getRedis().getHost();
+        LongSupplier sessionClock = clock::millis;
+        if (host == null || host.isBlank()) {
+            return new InMemorySessionStore(sessionClock);
+        }
+        return new RedisSessionStore(stringRedisOps, sessionClock);
     }
 
     @Bean
@@ -458,7 +511,7 @@ public class AccConfiguration {
         }
 
         @Override
-        public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+        public java.util.logging.Logger getParentLogger() throws SQLFeatureNotSupportedException {
             throw new SQLFeatureNotSupportedException("M1 占位数据源");
         }
 

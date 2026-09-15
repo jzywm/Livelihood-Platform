@@ -8,21 +8,27 @@ import java.util.Map;
  *
  * <p>S2 不引入 JWT/JSON 库（YAGNI），auth 包内 JwtCodec（claims 序列化）与
  * AuthFilter（Envelope JSON 输出）共用此工具。仅支持：null / Boolean / Number /
- * String / Map&lt;String,Object&gt;，值均为原始类型（不嵌套对象/数组）。
+ * String / Map&lt;String,Object&gt;，值均为原始类型（不嵌套对象/数组）。</p>
+ *
+ * <p>2026-09-15 由包内可见提升为 public：会话族记录（{@code acc:session:{familyId}} 的值）落在
+ * {@code infrastructure.auth.session} 子包，需要复用同一套手写编解码——子包与父包在 Java 中不共享
+ * 包级私有访问，故提升可见性而非复制一份实现。<b>刻意保持「扁平对象」限制</b>：会话族记录因此用
+ * {@code rotated.<jti>} 前缀键表达「已轮换标记」映射，而不是 JSON 数组/嵌套对象
+ * （见 {@code com.msz.acc.infrastructure.auth.session.FamilyRecordJson}）。</p>
  */
-final class Json {
+public final class Json {
 
     private Json() {
     }
 
-    static String toJson(Object value) {
+    public static String toJson(Object value) {
         StringBuilder sb = new StringBuilder();
         write(sb, value);
         return sb.toString();
     }
 
     /** 解析扁平 JSON 对象为 Map（键为字符串，值为 String/Long/Double/Boolean/null）。 */
-    static Map<String, Object> parseObject(String json) {
+    public static Map<String, Object> parseObject(String json) {
         Parser p = new Parser(json);
         Object result = p.parseValue();
         p.skipWhitespace();
