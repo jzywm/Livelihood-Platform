@@ -1,87 +1,87 @@
-# ACC Transactional Data Access Specification
+# ACC 事务性数据访问规范
 
 ## Purpose
 
-Defines how the ACC service accesses its database: one transaction per request, atomic multi-table writes, cross-connection visibility of committed data, per-request connection isolation under concurrency, and release of idempotency claims when a request fails. It covers the persistence behavior that the account, real-name, wallet, binding, reconcile and idempotency flows rely on.
+定义 ACC 服务访问其数据库的方式：一次请求一个事务、跨表写入原子、跨连接可见已提交数据、并发下连接按请求隔离，以及请求失败时释放幂等占用。它覆盖账户、实名、钱包、绑定、对账与幂等各链路所依赖的持久化行为。
 
 ## ADDED Requirements
 
-### Requirement: Request-scoped transaction boundary
+### Requirement: 请求级事务边界
 
-Each ACC request that performs data access SHALL run inside exactly one database transaction for the whole request. The transaction MUST be committed when the request completes successfully and MUST be rolled back when the request fails with an unhandled exception, so that a failed request leaves no partial changes visible to other connections. The database connection MUST be released when the request ends, on the success path and on the failure path alike. Requests that perform no data access MUST NOT acquire a database connection, so endpoints served without persistence keep working even when the configured datasource cannot hand out connections.
+每个执行数据访问的 ACC 请求 SHALL 在整个请求期间运行于且仅运行于一个数据库事务内。请求成功完成时该事务 MUST 提交；请求因未处理异常失败时 MUST 回滚，使失败请求不留下对其他连接可见的部分变更。数据库连接 MUST 在请求结束时释放，成功路径与失败路径同样如此。不执行数据访问的请求 MUST NOT 获取数据库连接，以便不依赖持久化的端点即使在配置的数据源无法提供连接时仍可正常工作。
 
-#### Scenario: Successful write request is committed and externally visible
-- **WHEN** a request performs one or more writes and returns a successful response
-- **THEN** the changes are committed, and a separate connection opened afterwards observes the new state immediately
+#### Scenario: 成功的写请求被提交且对外可见
+- **WHEN** 请求执行一次或多次写入并返回成功响应
+- **THEN** 变更被提交，之后另开一个连接能立即观察到新状态
 
-#### Scenario: Failed request leaves no partial writes
-- **WHEN** a request performs a write and then fails with an unhandled exception before returning
-- **THEN** every write of that request is rolled back, and no partial row is visible to other connections
+#### Scenario: 失败的请求不留下部分写入
+- **WHEN** 请求执行一次写入后、在返回前因未处理异常失败
+- **THEN** 该请求的全部写入被回滚，其他连接看不到任何部分写入的行
 
-#### Scenario: Connections are released after repeated failures
-- **WHEN** a client repeats a failing request many times in a row
-- **THEN** each failure releases its connection, so subsequent requests are still served successfully instead of failing on connection exhaustion
+#### Scenario: 反复失败后连接仍被释放
+- **WHEN** 客户端连续多次重复一个失败的请求
+- **THEN** 每次失败都释放其连接，后续请求仍能正常提供服务，而不是因连接耗尽而失败
 
-#### Scenario: Non-persistent requests do not need a database connection
-- **WHEN** a request is handled without touching the database (for example an endpoint whose collaborators do not query it)
-- **THEN** it completes successfully even if the configured datasource cannot provide connections
+#### Scenario: 非持久化请求不需要数据库连接
+- **WHEN** 请求的处理过程完全不触碰数据库（例如其协作者都不查询数据库的端点）
+- **THEN** 即使配置的数据源无法提供连接，该请求也能成功完成
 
-### Requirement: Cross-table atomicity within a request
+### Requirement: 单请求内的跨表原子性
 
-All writes performed while handling one request SHALL form a single atomic unit, regardless of how many tables or mappers they touch. If any part fails, none of the writes of that request may take effect.
+处理一个请求期间执行的全部写入 SHALL 构成一个原子单元，无论它们触及多少张表或多少个 mapper。任一部分失败时，该请求的任何写入都不得生效。
 
-#### Scenario: Account creation and business-record update roll back together
-- **WHEN** a real-name callback creates an account and then fails while updating the corresponding real-name business record
-- **THEN** neither the new account row nor the business-record change is persisted, so no account exists without its matching record
+#### Scenario: 建户与业务记录更新一起回滚
+- **WHEN** 实名回调创建账户后，在更新对应实名业务记录时失败
+- **THEN** 新账户行与业务记录变更都不落库，因此不会存在没有匹配记录的账户
 
-#### Scenario: Duplicate-key conflict does not leave a half-written aggregate
-- **WHEN** a write inside a request violates a unique constraint after an earlier write of the same request already succeeded
-- **THEN** the earlier write is rolled back together with the failing one, so no partially written aggregate remains visible to other connections
+#### Scenario: 唯一键冲突不留下半写的聚合
+- **WHEN** 请求内的一次写入在同一请求先前写入已成功后违反唯一约束
+- **THEN** 先前写入与失败写入一起回滚，其他连接看不到任何部分写入的聚合
 
-### Requirement: Idempotency claims follow transaction outcome
+### Requirement: 幂等占用随事务结果收敛
 
-A request that claims an idempotency key SHALL keep that claim only if the request succeeds. When a request that claimed a key fails, the claim MUST be released, so a client retrying with the same key executes the operation again instead of receiving a pending or empty prior result. A successful first execution MUST remain replayable: repeating the same key after success returns the stored result of the first execution without re-executing it.
+占用幂等键的请求 SHALL 仅在该请求成功时保留该占用。占用键的请求失败时，该占用 MUST 被释放，使客户端以同一幂等键重试时重新执行该操作，而不是收到一个处理中或空的先前结果。首次执行成功 MUST 保持可重放：成功后再以同一幂等键提交，返回首次执行已存储的结果，且不重复执行。
 
-#### Scenario: Failed first attempt releases the key
-- **WHEN** a request claims an idempotency key, fails downstream, and the client retries with the same key
-- **THEN** the retry performs the operation (it is not treated as a duplicate) and its outcome is returned to the client
+#### Scenario: 首次尝试失败释放幂等键
+- **WHEN** 请求占用一个幂等键后在下游失败，客户端以同一幂等键重试
+- **THEN** 该重试会真正执行操作（不被当作重复请求），并把其结果返回客户端
 
-#### Scenario: Successful first execution stays replayable
-- **WHEN** a request claims an idempotency key, succeeds, and the same key is submitted again
-- **THEN** the second submission returns the stored result of the first execution and does not execute the operation a second time
+#### Scenario: 首次执行成功后保持可重放
+- **WHEN** 请求占用一个幂等键并成功，随后同一幂等键被再次提交
+- **THEN** 第二次提交返回首次执行已存储的结果，且不会第二次执行该操作
 
-### Requirement: Read behavior across transaction boundaries
+### Requirement: 跨事务边界的读行为
 
-Reads SHALL observe data that other connections committed before the request started; a request MUST NOT serve a snapshot frozen at an earlier request. A read request that ends with a documented business error MUST still return that documented error to the client rather than failing because of transaction handling.
+读操作 SHALL 观察到其他连接在本请求开始前已提交的数据；请求 MUST NOT 返回某个更早请求所冻结的快照。以既定业务错误结束的读请求 MUST 仍把该既定业务错误返回客户端，而不是因事务处理而失败。
 
-#### Scenario: Committed external change is visible to the next request
-- **WHEN** another connection commits a change to a row and a new ACC request then reads that row
-- **THEN** the response reflects the committed change (no stale value from a previous request)
+#### Scenario: 外部已提交变更对下一个请求可见
+- **WHEN** 另一个连接提交了对某行的变更，随后一个新的 ACC 请求读取该行
+- **THEN** 响应反映已提交的变更（没有来自先前请求的陈旧值）
 
-#### Scenario: Read request failing with a business error keeps its contract
-- **WHEN** a read request targets a record that does not exist
-- **THEN** the client receives the documented "object not found" business error with its usual HTTP status and envelope, exactly as before this change
+#### Scenario: 以业务错误结束的读请求保持其契约
+- **WHEN** 读请求指向一条不存在的记录
+- **THEN** 客户端收到既定的「对象不存在」业务错误，其 HTTP 状态与 Envelope 与本次变更之前完全一致
 
-### Requirement: Per-request connection isolation under concurrency
+### Requirement: 并发下的按请求连接隔离
 
-Concurrent requests SHALL NOT share a database session or connection. A database session MUST be usable by a single request thread only, so simultaneous requests cannot interleave statements on one connection or observe each other's uncommitted work.
+并发请求 SHALL NOT 共享同一个数据库会话或连接。一个数据库会话 MUST 只能被单个请求线程使用，使同时进行的请求无法在同一连接上交错执行语句，也看不到彼此未提交的写入。
 
-#### Scenario: Concurrent read and write requests all succeed
-- **WHEN** many requests are issued in parallel against the same service instance, mixing reads and writes
-- **THEN** every request completes with its own correct result, with no serialization, interleaving or cross-talk errors
+#### Scenario: 并发的读请求与写请求全部成功
+- **WHEN** 针对同一服务实例并行发起大量请求，读写混合
+- **THEN** 每个请求都以各自正确的结果完成，没有串行化、交错或串扰错误
 
-#### Scenario: Uncommitted work of one request is invisible to another
-- **WHEN** a request is still in flight with uncommitted changes and another request reads the same rows
-- **THEN** the second request sees the previously committed state only
+#### Scenario: 一个请求未提交的写入对另一个请求不可见
+- **WHEN** 一个请求仍在进行且存在未提交变更，同时另一个请求读取相同的行
+- **THEN** 第二个请求只看到此前已提交的状态
 
-### Requirement: Preservation of existing external contracts
+### Requirement: 保持既有对外契约
 
-The change SHALL NOT alter externally observable contracts: request paths, response envelope shape, documented error codes (including authentication, validation, duplicate and not-found errors), and the documented idempotent outcome for repeated keys MUST stay as they are. Existing behavior verified by the service's test suite MUST remain green.
+本变更 SHALL NOT 改变对外可观测的契约：请求路径、响应 Envelope 形状、既定错误码（含鉴权、校验、重复与未找到错误），以及重复幂等键的既定幂等结果，MUST 全部保持原样。由该服务测试套件验证的既有行为 MUST 保持全绿。
 
-#### Scenario: Existing suite stays green
-- **WHEN** the service test suite is executed after the change
-- **THEN** all previously passing cases still pass, including the controller contract, error-matrix, authentication-matrix and DAO cases
+#### Scenario: 既有测试套件保持全绿
+- **WHEN** 在本次变更之后执行该服务的测试套件
+- **THEN** 此前通过的全部用例仍然通过，包括 controller 契约、错误矩阵、鉴权矩阵与 DAO 用例
 
-#### Scenario: Documented error codes are unchanged
-- **WHEN** a request triggers a documented failure (unauthorized, validation, duplicate key, not found, rate limited)
-- **THEN** the response carries the same HTTP status and error code as before the change
+#### Scenario: 既定错误码保持不变
+- **WHEN** 请求触发一个既定失败（未鉴权、校验失败、重复键、未找到、触发限流）
+- **THEN** 响应携带与本次变更之前相同的 HTTP 状态与错误码

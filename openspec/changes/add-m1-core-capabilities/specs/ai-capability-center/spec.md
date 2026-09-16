@@ -1,44 +1,111 @@
-# AI Capability Center Specification
+# AI 能力中心能力规范
 
 ## Purpose
 
-Defines the M1 AI capability center: license OCR auto-verification and the AI gateway with governance foundation (PRD v2.3 K-01/K-02). All AI capabilities obey the boundary that AI marks but never decides; enforcement, penalties, and public announcements always require human confirmation (C8).
+定义 M1 的 AI 能力中心：证照 OCR 自动核验，以及带治理底座的 AI 网关（PRD v2.3 K-01/K-02）。全部 AI 能力遵守「只标记、不决策」边界——执法、处罚与公示动作一律须经人工确认（C8）。
 
 ## ADDED Requirements
 
-### Requirement: License OCR auto-verification
-When a license is uploaded, the system SHALL automatically extract fields and compare validity period and category, serving both the merchant-end pre-check and the regulator end. OCR results MUST be traceable. When OCR fails or the image is unreadable, the flow MUST fall back to manual verification.
+### Requirement: 证照 OCR 自动核验
 
-#### Scenario: OCR extracts and compares
-- **WHEN** a merchant or regulator uploads a license (business license / permit / inspection report)
-- **THEN** the system extracts the fields, compares validity period and category, and returns the verification result with traceability
+证照上传后，系统 SHALL 自动提取字段并比对有效期与经营类目，同时服务经营端预审与监管端核验。OCR 结果 MUST 可追溯。当 OCR 失败或图像不可识别时，流程 MUST 回退人工核验。
 
-#### Scenario: OCR failure falls back to manual verification
-- **WHEN** OCR recognition fails or the image is blurry
-- **THEN** the system routes the license to manual verification and prompts re-upload where applicable; the pre-check never blocks on OCR alone
+#### Scenario: OCR 完成字段提取与比对
 
-### Requirement: AI gateway and governance foundation
-The platform SHALL provide a unified AI gateway with model routing (text / vision cloud API / OCR / platform self-built prediction channel), a unified entry with authentication, rate limiting, routing, and auditing, a task queue with result receipts, confidence-tiered outputs, and full-chain auditing. The vision cloud API MUST be covered by a data-compliance agreement (not used for training), and images MUST be desensitized before external calls.
+- **WHEN** 商户或监管人员上传证照（营业执照 / 许可证 / 检测报告）
+- **THEN** 系统提取字段、比对有效期与经营类目，并返回可追溯的核验结果
 
-#### Scenario: Unified routing with audit
-- **WHEN** any platform component initiates an AI call
-- **THEN** the call passes the unified gateway (authenticated, rate-limited, routed) and every call is recorded in the audit chain
+#### Scenario: OCR 失败回退人工核验
 
-#### Scenario: External AI failure degrades gracefully
-- **WHEN** the text or vision model API fails
-- **THEN** the gateway returns the failure code and the calling flow degrades (FAQ/rule base for assistant, manual review queue for vision) without blocking core business
+- **WHEN** OCR 识别失败或图像模糊
+- **THEN** 系统将该证照转入人工核验，并在适用时提示重新上传；预审流程绝不因 OCR 单点失败而阻塞
 
-#### Scenario: Vision cloud covered by compliance agreement
-- **WHEN** images are sent to the vision cloud API
-- **THEN** the images are desensitized first and the service operates under the signed data-compliance agreement (no training use)
+### Requirement: AI 网关与治理底座
 
-### Requirement: AI marks but never decides
-AI outputs MUST remain marks and suggestions only. Any enforcement, penalty, or public announcement action MUST require human confirmation, and review outcomes MUST NOT flow back to third-party model training (C8).
+平台 SHALL 提供统一的 AI 网关，具备模型路由（文本 / 云视觉 API / OCR / 平台自建预测通道）、统一的鉴权限流路由审计入口、带结果回执的任务队列、置信度分级输出与全链路审计。云视觉 API MUST 纳入数据合规协议（不用于训练），且图像 MUST 脱敏后方可对外调用。
 
-#### Scenario: AI output requires human confirmation
-- **WHEN** an AI mark or risk suggestion is produced
-- **THEN** no enforcement or public announcement occurs until a human confirms; the confirmation is audited
+#### Scenario: 统一路由与全链路审计
 
-#### Scenario: Review results never flow back
-- **WHEN** human review results are recorded
-- **THEN** they are used only for platform tuning and are never returned to third-party model training
+- **WHEN** 平台任一组件发起 AI 调用
+- **THEN** 该调用经统一网关完成鉴权、限流与路由，且每次调用均记录进审计链路
+
+#### Scenario: 外部 AI 失败时优雅降级
+
+- **WHEN** 文本或视觉模型 API 失败
+- **THEN** 网关返回失败码，调用方流程相应降级（助手回退 FAQ / 规则库，视觉转人工复核队列），不阻塞核心业务
+
+#### Scenario: 云视觉纳入数据合规协议
+
+- **WHEN** 图像被送往云视觉 API
+- **THEN** 图像先完成脱敏，且该调用处于已签署的数据合规协议之下（不用于训练）
+
+### Requirement: AI 只标记、不决策
+
+AI 输出 MUST 仅为标记与建议。任何执法、处罚或公示动作 MUST 经人工确认，且复核结论 MUST NOT 回流至第三方模型训练（C8）。
+
+#### Scenario: AI 输出须经人工确认
+
+- **WHEN** AI 产出标记或风险建议
+- **THEN** 在人工确认前不发生任何执法或公示动作；该确认过程全程留痕审计
+
+#### Scenario: 复核结果绝不回流第三方
+
+- **WHEN** 人工复核结论被记录
+- **THEN** 该结论仅用于平台自调优，绝不回流至第三方模型训练
+
+### Requirement: 习惯权重无状态计算
+
+AI 能力中心 SHALL 提供习惯与购买影响因素的无状态计算接口（服务端间调用），按滚动窗口与时序衰减，依据行为日聚合输出习惯结论与购买影响因素权重。该服务 MUST 只算不存，MUST NOT 建立任何长期记忆表，MUST NOT 存储用户画像或其对话原文；入参 MUST 为已脱敏的聚合数据。当样本不足时 MUST 返回空结论与置信度示弱，MUST NOT 臆造。算法迭代 MUST NOT 触发用户数据迁移。
+
+#### Scenario: 输出习惯与因素权重
+
+- **WHEN** 画像服务以行为日聚合数据发起计算请求
+- **THEN** 该服务返回习惯结论与购买影响因素权重，并回执算法血缘以供追溯
+
+#### Scenario: 只算不存
+
+- **WHEN** 计算完成
+- **THEN** 该服务不落库、不建记忆表，权威存储由画像服务承担
+
+#### Scenario: 样本不足如实返回
+
+- **WHEN** 入参聚合数据为空或样本量不足
+- **THEN** 该服务返回空结论与置信度示弱，不报错、不硬凑
+
+### Requirement: 人工复核驱动的准确率闭环
+
+平台 SHALL 将人工核验的字段级纠正回流为结构化留痕（AI 原值、人工真值、当时置信度），并据此统计字段级准确率以支撑置信度阈值调整与识别优化。系统 MUST 维护固定评估集，模型、提示词或阈值的变更 MUST 在评估集上做前后回归。复核结论 MUST 只用于平台自调优，MUST NOT 回流第三方模型训练。人工复核只能发现误标、无法发现漏检，故系统 MUST 定期从未被标记的样本中抽样复核以发现漏检。
+
+#### Scenario: 字段纠错回流留痕
+
+- **WHEN** 人工核验修正了 OCR 提取的某字段
+- **THEN** 系统以一行一字段记录 AI 原值、人工真值与当时置信度，形成可统计的纠错语料
+
+#### Scenario: 变更前先跑评估集
+
+- **WHEN** 模型、提示词或置信度阈值发生变更
+- **THEN** 变更前后在固定评估集上运行回归并对比结果，无对照不得上线
+
+#### Scenario: 抽样复核发现漏检
+
+- **WHEN** 到达定期抽检周期
+- **THEN** 系统从未被 AI 标记的样本中随机抽样交人工复核，以发现漏检并修正准确率统计口径
+
+### Requirement: 权威数据回写须经人工确认
+
+平台 MUST 以留痕状态强制「AI 只标记不决策」：权威数据的回写（商户档案、信用分、监管预警）MUST 以存在人工复核结论为前提，MUST NOT 由 AI 输出直接触发；每次回写 MUST 记录事件标识以支持幂等与每日对账。模型与提示词版本 MUST 随任务留痕，以支持「依据什么模型」的可追溯。
+
+#### Scenario: 无人工结论不得回写
+
+- **WHEN** 某 AI 标记尚无人工作出复核结论
+- **THEN** 系统不触发任何权威数据回写，且回写状态保持未回写
+
+#### Scenario: 回写可幂等可对账
+
+- **WHEN** 人工复核确认后触发权威数据回写
+- **THEN** 系统记录事件标识，消费方据此幂等处理，每日对账可发现差异并补发或告警
+
+#### Scenario: 模型与提示词可追溯
+
+- **WHEN** 查询任一 AI 任务的判定依据
+- **THEN** 系统可返回该任务使用的通道、模型版本、提示词版本与置信度阈值快照

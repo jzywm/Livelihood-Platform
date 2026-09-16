@@ -1,63 +1,78 @@
-# Supplier and Traceability Specification
+# 供应商与溯源能力规范
 
 ## Purpose
 
-Defines the M1 supplier and traceability foundation: supplier onboarding with per-category qualification verification, the supplier credit archive baseline, traceability batch-code generation with event reporting, and scan verification with full-chain transparent display and explicit broken-link annotation (PRD v2.3 T-01, T-05 baseline, T-08, T-09).
+定义 M1 供应商与溯源底座：供应商入驻与分品类资质核验、供应商信用档案基础版、溯源批次码生成与环节上报，以及扫码验真的全链透明展示与断链显式标注（PRD v2.3 T-01、T-05 基础版、T-08、T-09）。
 
 ## ADDED Requirements
 
-### Requirement: Supplier onboarding with category qualification verification
-A supplier SHALL complete real-name verification (no manual fallback) and pass per-category qualification verification before onboarding: agri-input = business license + operation/production permit + registration batch number; food ingredients = business license + operation permit + inspection report (mandatory). The platform MUST only verify information and keep records — it MUST NOT substitute administrative licensing (R-09). Qualification failure MUST return a rejection with reasons.
+### Requirement: 供应商入驻与分品类资质核验
 
-#### Scenario: Category threshold verified for agri-input
-- **WHEN** an agri-input supplier submits licenses, operation/production permit, and registration batch number
-- **THEN** the system verifies them against the category threshold and creates the supplier record on success
+供应商 SHALL 完成实名核验（不接受人工降级）并通过分品类资质核验后方可入驻：农资 = 营业执照 + 经营/生产许可 + 登记批号；食材 = 营业执照 + 经营许可 + 检测报告（必备）。平台 MUST 只做信息核验与留存留痕——MUST NOT 替代行政许可（R-09）。资质核验失败 MUST 返回带原因的驳回。
 
-#### Scenario: Food ingredient inspection report mandatory
-- **WHEN** a food ingredient supplier lacks a valid inspection report
-- **THEN** the system rejects onboarding with reasons; the inspection report is mandatory for this category
+#### Scenario: 农资品类门槛核验
 
-#### Scenario: No administrative licensing substitution
-- **WHEN** the platform verifies strongly regulated categories (e.g., agri-input)
-- **THEN** the platform only performs information verification and traceability checks; it never issues or substitutes administrative licensing, and pages display this boundary prominently
+- **WHEN** 农资供应商提交营业执照、经营/生产许可与登记批号
+- **THEN** 系统按该品类门槛核验，通过后创建供应商记录
 
-### Requirement: Supplier credit archive baseline
-The supplier credit score SHALL be computed with confirmed weights (2026-09-11): qualification compliance 30 + transaction fulfillment 30 + quality reputation 30 + positive contribution 10. The archive MUST be created upon onboarding. The supplier credit MUST integrate with the global credit system (A-07) — the same subject holds one archive across the platform.
+#### Scenario: 食材检测报告为必备
 
-#### Scenario: Score computed with confirmed weights
-- **WHEN** a supplier credit score is computed
-- **THEN** the score uses the confirmed four-dimension weights and the dimension breakdown is queryable
+- **WHEN** 食材供应商缺少有效检测报告
+- **THEN** 系统带原因驳回入驻；该品类下检测报告为必备材料
 
-#### Scenario: Same subject shares one archive
-- **WHEN** a supplier also exists as a merchant subject
-- **THEN** their credit archives integrate under the global credit system with a single source of truth
+#### Scenario: 不替代行政许可
 
-### Requirement: Traceability batch code and event reporting
-Creating a batch SHALL generate a unique traceability code (one code per item or per batch). Suppliers MUST report events per batch across production/inspection, circulation/temperature, and terminal registration. M1 covers agri-input and food ingredients first.
+- **WHEN** 平台核验强监管品类（如农资）
+- **THEN** 平台只做信息核验与溯源核验，绝不颁发或替代行政许可，且页面显著展示该边界
 
-#### Scenario: Batch created with unique code
-- **WHEN** a supplier creates a batch with batch number and category
-- **THEN** the system generates the unique traceability code and returns the batch id and code
+### Requirement: 供应商信用档案基础版
 
-#### Scenario: Events reported per batch
-- **WHEN** the supplier reports an event (production/inspection, circulation/temperature, terminal) for a batch
-- **THEN** the system records the event on the batch's chain with timestamp + hash (P-02)
+供应商信用分 SHALL 按已确认权重计算（2026-09-11）：资质合规 30 + 交易履约 30 + 质量口碑 30 + 正向贡献 10。档案 MUST 在入驻时即建立。供应商信用 MUST 并入全域信用体系（A-07）——同一主体在全平台只有一份档案。
 
-### Requirement: Scan verification with full-chain display
-Scanning a traceability code SHALL display the full chain on a timeline: batch number → inspection → temperature control → terminal. Any missing link MUST be explicitly annotated as "missing / broken link". Scan counts MUST be recorded as anti-counterfeit corroboration.
+#### Scenario: 按已确认权重计分
 
-#### Scenario: Full chain displayed on timeline
-- **WHEN** a user scans a valid traceability code
-- **THEN** the system displays the full chain on a timeline with the events recorded for that batch
+- **WHEN** 计算供应商信用分
+- **THEN** 使用已确认的四维权重，且维度构成可查询
 
-#### Scenario: Missing link explicitly annotated
-- **WHEN** a chain link is missing
-- **THEN** the system explicitly annotates that link as "missing / broken link" instead of silently skipping it
+#### Scenario: 同一主体共用一份档案
 
-#### Scenario: Invalid code rejected
-- **WHEN** a user scans an invalid or unknown traceability code
-- **THEN** the system returns a not-found prompt
+- **WHEN** 某供应商同时作为商户主体存在
+- **THEN** 其信用档案在统一信用体系下整合，保持单一事实来源
 
-#### Scenario: Scan count recorded
-- **WHEN** a code is scanned
-- **THEN** the system increments the scan record for that code as anti-counterfeit corroboration
+### Requirement: 溯源批次码与环节上报
+
+创建批次 SHALL 生成唯一溯源码（一品一码或一批一码）。供应商 MUST 按批次上报环节事件，覆盖生产/检测、流通/温控与终端登记。M1 先覆盖农资与食材。
+
+#### Scenario: 创建批次并生成唯一码
+
+- **WHEN** 供应商以批号与品类创建批次
+- **THEN** 系统生成唯一溯源码并返回批次标识与溯源码
+
+#### Scenario: 按批次上报环节事件
+
+- **WHEN** 供应商为某批次上报环节事件（生产/检测、流通/温控、终端）
+- **THEN** 系统以时间戳 + 哈希将该事件记录到该批次的链路中（P-02）
+
+### Requirement: 扫码验真与全链展示
+
+扫描溯源码 SHALL 以时间轴展示完整链路：批号 → 检测 → 温控 → 终端。任何缺失环节 MUST 显式标注为「缺失 / 断链」。扫码次数 MUST 被记录，作为防伪佐证。
+
+#### Scenario: 时间轴展示完整链路
+
+- **WHEN** 用户扫描有效的溯源码
+- **THEN** 系统以时间轴展示完整链路及该批次已记录的环节事件
+
+#### Scenario: 缺失环节显式标注
+
+- **WHEN** 链路中某个环节缺失
+- **THEN** 系统将该环节显式标注为「缺失 / 断链」，而不是静默跳过
+
+#### Scenario: 无效码被拒绝
+
+- **WHEN** 用户扫描无效或未知的溯源码
+- **THEN** 系统返回未找到提示
+
+#### Scenario: 记录扫码次数
+
+- **WHEN** 某溯源码被扫描
+- **THEN** 系统为该码累加扫码记录，作为防伪佐证

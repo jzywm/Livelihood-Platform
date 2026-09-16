@@ -1,63 +1,78 @@
-# Account and Funds Specification
+# 账户与资金能力规范
 
 ## Purpose
 
-Defines the M1 account and funds capability: real-name accounts with a pure-ledger wallet (bookkeeping separated from payment), two-way labor credit reviews, and wage-guaranteed disbursement through licensed third-party channels with arrears warnings and evidence certification (PRD v2.3 I-01/I-02/I-03). The platform never holds funds.
+定义 M1 账户与资金能力：实名账户与纯记账簿钱包（记账与支付分离）、劳务信用双向互评，以及经持牌第三方通道完成工资保障代付（含欠薪预警与证据出证）（PRD v2.3 I-01/I-02/I-03）。平台不碰钱。
 
 ## ADDED Requirements
 
-### Requirement: Real-name account with pure-ledger wallet
-The platform SHALL create typed accounts (individual / merchant owner / supplier / platform settlement channel) after WeChat/Alipay real-name relay. The wallet MUST be a pure ledger: no fund balance is held, no real funds are stored, and all real funds remain in licensed institution accounts. Every fund operation MUST generate a platform ledger flow containing the channel transaction number, timestamp, and evidence hash. Bookkeeping and payment MUST be separated (the channel layer is replaceable). Ledger flows MUST support certification (P-02).
+### Requirement: 实名账户与纯记账簿钱包
 
-#### Scenario: Real-name registration creates account
-- **WHEN** a user completes WeChat/Alipay real-name relay
-- **THEN** the system creates the typed account and returns the account id with real-name status
+平台 SHALL 在微信/支付宝实名回传后创建分角色账户（个人 / 商户经营者 / 供应商 / 平台结算通道）。钱包 MUST 为纯记账簿：不设资金余额、不沉淀真实资金，全部真实资金留存于持牌机构账户内。每一笔资金操作 MUST 生成平台记账流水，流水须包含通道交易号、时间戳与存证哈希。记账与支付 MUST 分离（通道层可替换）。记账流水 MUST 支持出证（P-02）。
 
-#### Scenario: Real-name channel unavailable suspends flow
-- **WHEN** the WeChat/Alipay real-name relay is unavailable
-- **THEN** the system suspends registration and related flows with an explicit message; no manual document verification fallback is accepted
+#### Scenario: 实名注册创建账户
 
-#### Scenario: Ledger flow carries channel and hash
-- **WHEN** a fund operation occurs (e.g., disbursement)
-- **THEN** the system records a platform ledger flow with the channel transaction number, timestamp, and evidence hash, without holding any real funds
+- **WHEN** 用户完成微信/支付宝实名回传
+- **THEN** 系统创建分角色账户并返回账户标识与实名状态
 
-#### Scenario: Unauthorized flow query blocked
-- **WHEN** a user queries another account's ledger flows without authorization
-- **THEN** the system denies the request (horizontal privilege check)
+#### Scenario: 实名通道不可用时挂起相关流程
 
-### Requirement: Two-way labor credit review
-At employment end or salary completion, both employer and worker SHALL be able to review each other with evidence attached. Confirmed weights (2026-09-11): employer side = salary fulfillment 40 + disputes 20 + employment reviews 20 + qualification compliance 20; worker side = attendance fulfillment 40 + disputes 20 + employer reviews 20 + real-name trust 20. Reviews MUST update labor credit scores integrated into the global credit system (A-07/A-06). Untrustworthy employers MUST be restricted from posting jobs and untrustworthy workers from accepting jobs.
+- **WHEN** 微信/支付宝实名回传通道不可用
+- **THEN** 系统挂起注册及相关流程并给出明确提示；不接受人工证件核验作为降级路径
 
-#### Scenario: Mutual review updates credit
-- **WHEN** both parties submit reviews at employment end or after salary completion
-- **THEN** the system updates each side's labor credit score using the confirmed weights and records the reviews with evidence
+#### Scenario: 记账流水携带通道号与存证哈希
 
-#### Scenario: Untrustworthy party restricted
-- **WHEN** an employer's or worker's credit falls below the untrustworthy threshold
-- **THEN** the employer is restricted from posting jobs or the worker from accepting jobs, accordingly
+- **WHEN** 发生资金操作（如代付）
+- **THEN** 系统记录一条平台记账流水，含通道交易号、时间戳与存证哈希，且不沉淀任何真实资金
 
-### Requirement: Wage-guaranteed disbursement
-The employer SHALL initiate wage disbursement through a licensed institution drawing from the employer's bound account. The platform MUST only verify employment/attendance and keep ledger records — the platform never touches the money. If wages are due but unpaid beyond the deadline, the system MUST raise an arrears warning automatically. After receipt confirmation, the system MUST update the employer's salary-fulfillment rate. Wage flows plus employment records MUST be exportable as one evidence package for arbitration (P-02).
+#### Scenario: 未授权查询流水被拦截
 
-#### Scenario: Disbursement succeeds and confirms receipt
-- **WHEN** an employer initiates disbursement with valid employment/attendance and the licensed channel completes the transfer
-- **THEN** the worker receives the funds, receipt confirmation updates the employer's salary-fulfillment rate, and the flows are evidenced
+- **WHEN** 用户在未获授权的情况下查询他人账户的记账流水
+- **THEN** 系统拒绝该请求（水平越权校验）
 
-#### Scenario: Arrears warning raised automatically
-- **WHEN** wages are due but not disbursed beyond the deadline
-- **THEN** the system raises an arrears warning and notifies the relevant parties
+### Requirement: 劳务信用双向互评
 
-#### Scenario: Channel failure retries idempotently
-- **WHEN** the licensed channel fails or times out
-- **THEN** the system retries idempotently or switches to a backup channel; duplicate payments never occur, and daily reconciliation compensates any discrepancy
+用工结束或工资结清时，雇主与工作者双方 SHALL 可互相评价并附证据。已定档权重（2026-09-11）：雇主侧 = 工资履约 40 + 争议 20 + 用工评价 20 + 资质合规 20；工作者侧 = 出勤履约 40 + 争议 20 + 雇主评价 20 + 实名可信 20。互评 MUST 更新劳务信用分并并入全域信用体系（A-07/A-06）。失信雇主 MUST 被限制发岗，失信工作者 MUST 被限制接单。
 
-#### Scenario: Evidence package export for arbitration
-- **WHEN** a worker or supervisor requests certification of wage flows and employment records
-- **THEN** the system exports a timestamped, hashed evidence package for labor arbitration or regulatory use
+#### Scenario: 双向互评更新信用分
 
-### Requirement: No fund pooling and no second clearing
-The platform MUST NOT pool funds, MUST NOT perform second clearing, and MUST NOT maintain a fund pool. All funds MUST flow through licensed third-party channels with bookkeeping separated from payment (AC-C1). Audits MUST show no violation.
+- **WHEN** 双方在用工结束或工资结清后提交评价
+- **THEN** 系统按已定档权重更新双方劳务信用分，并将评价连附证据一并留痕
 
-#### Scenario: Funds never rest on platform accounts
-- **WHEN** any wage or payment flows through the platform
-- **THEN** real funds are transferred entirely between licensed channel accounts; the platform records only ledger flows, and audit shows no fund resting on platform accounts
+#### Scenario: 失信主体被限制
+
+- **WHEN** 雇主或工作者的信用分低于失信阈值
+- **THEN** 相应地限制雇主发岗或限制工作者接单
+
+### Requirement: 工资保障代付
+
+雇主 SHALL 通过持牌机构、从其绑定账户发起工资代付。平台 MUST 只做用工/考勤校验并保留记账记录——平台绝不触碰资金。若工资应付未付且超过时限，系统 MUST 自动发起欠薪预警。收到收款确认后，系统 MUST 更新雇主的工资履约率。工资流水与用工记录 MUST 可打包为一份证据包用于仲裁（P-02）。
+
+#### Scenario: 代付成功并确认收款
+
+- **WHEN** 雇主以有效的用工/考勤数据发起代付，且持牌通道完成转账
+- **THEN** 工作者收到款项，收款确认更新雇主的工资履约率，相关流水完成存证
+
+#### Scenario: 自动发起欠薪预警
+
+- **WHEN** 工资应付而未付、超过时限
+- **THEN** 系统发起欠薪预警并通知相关方
+
+#### Scenario: 通道失败时幂等重试
+
+- **WHEN** 持牌通道失败或超时
+- **THEN** 系统幂等重试或切换备用通道；绝不发生重复付款，并由每日对账补齐差异
+
+#### Scenario: 导出证据包用于仲裁
+
+- **WHEN** 工作者或监管方申请对工资流水与用工记录出证
+- **THEN** 系统导出带时间戳与哈希的证据包，供劳动仲裁或监管使用
+
+### Requirement: 不沉淀资金、不做二清
+
+平台 MUST NOT 沉淀资金、MUST NOT 做二清、MUST NOT 设立资金池。全部资金 MUST 经持牌第三方通道流转，并做到记账与支付分离（AC-C1）。审计 MUST 显示无违规。
+
+#### Scenario: 资金绝不停留在平台账户
+
+- **WHEN** 任何工资或支付经由平台流转
+- **THEN** 真实资金全部在持牌通道账户之间划转；平台仅记录记账流水，审计显示平台账户无任何资金停留

@@ -1,88 +1,110 @@
-# Platform Baseline Specification
+# 平台级能力规范
 
 ## Purpose
 
-Defines the platform-level capabilities of the Minsheng Zhenxuan city livelihood platform: fee-rate transparency, evidence preservation, pilot scope governance, government-system substitution, trust commitment, merchant cold-start, and anti-fraud baseline. These capabilities are cross-cutting commitments (PRD v2.3 P-01~P-06, R-15) that apply to every module on the platform.
+定义民生甄选城市民生服务平台（民生甄选）的平台级能力：费率透明、证据存证、试点范围治理、政务系统替代、信任背书承诺、商户冷启动与防刷基线。这些能力是适用于平台每一个模块的横切承诺（PRD v2.3 P-01~P-06、R-15）。
 
 ## ADDED Requirements
 
-### Requirement: Public fee rate and commission disclosure
-The platform SHALL publicly disclose the transparent-transaction service fee rate of 0.5%~1% by category (confirmed), including the calculation method and adjustment rules, and MUST notify merchants before any rate adjustment. The disclosure page MUST be updated when new categories are onboarded. The platform MUST NOT charge bidding-based (paid placement) advertising fees or hidden deductions.
+### Requirement: 费率与抽成公开公示
 
-#### Scenario: Query the disclosed fee rate
-- **WHEN** a user visits the fee/commission disclosure page on any of the three ends (consumer/merchant/regulator)
-- **THEN** the system displays the per-category service fee rate (0.5%~1%), the calculation method, and the adjustment rules
+平台 SHALL 按品类公开公示透明交易服务费率 0.5%~1%（已确认），含计算方式与调整规则，且 MUST 在费率调整生效前告知商户。新品类入驻时，公示页 MUST 同步更新。平台 MUST NOT 收取竞价（付费置顶）广告费或隐性扣费。
 
-#### Scenario: Fee adjustment requires advance notice
-- **WHEN** the platform adjusts a fee rate or its calculation method
-- **THEN** merchants are notified before the adjustment takes effect, and the new rate is reflected on the disclosure page
+#### Scenario: 查询已公示的费率
 
-#### Scenario: Category expansion updates the disclosure
-- **WHEN** a new category enters the platform through the industry expansion process (P-03)
-- **THEN** the disclosure page includes the fee rate and rules for the new category before it goes live
+- **WHEN** 用户在三端（消费端/经营端/监管端）任一访问费率/抽成公示页
+- **THEN** 系统展示分品类服务费率（0.5%~1%）、计算方式与调整规则
 
-### Requirement: Platform-wide evidence preservation and certification
-The platform SHALL record timestamp + hash evidence for wage payroll flows, complaint evidence, traceability event records, and transaction records. Evidence records MUST be append-only (no modification or deletion). The platform MUST support packaging evidence on demand for labor arbitration or regulatory retrieval.
+#### Scenario: 费率调整需提前告知
 
-#### Scenario: Rights-related operation is automatically evidenced
-- **WHEN** a wage disbursement, complaint, traceability event, or transaction leaves a record
-- **THEN** the system stores a timestamp + hash entry for that record in the append-only evidence chain
+- **WHEN** 平台调整费率或其计算方式
+- **THEN** 在调整生效前告知商户，且新费率同步体现在公示页
 
-#### Scenario: Evidence package export
-- **WHEN** an authorized party (worker, regulator, platform operator) requests an evidence package for a business record
-- **THEN** the system returns an evidence package containing the timestamped, hashed records suitable for arbitration or regulatory use
+#### Scenario: 品类扩展同步更新公示
 
-#### Scenario: Evidence cannot be altered
-- **WHEN** any party attempts to modify or delete an existing evidence record
-- **THEN** the system rejects the operation and preserves the original record
+- **WHEN** 新品类经行业扩展流程（P-03）进入平台
+- **THEN** 该品类上线前，其费率与规则已包含在公示页中
 
-### Requirement: Pilot scope and industry expansion governance
-The platform pilot SHALL be limited to Shijiazhuang with first-phase industries of catering + retail + housekeeping (P-03). A new industry MUST NOT enter formal scope until it completes the research → questionnaire → freeze SOP. Unfrozen industries MUST NOT be onboarded.
+### Requirement: 全平台证据存证与出证
 
-#### Scenario: Unfrozen industry rejected from scope
-- **WHEN** a merchant from an unfrozen industry (e.g., the second batch of 7 industries) attempts to onboard
-- **THEN** the system rejects onboarding with a clear message that the industry is not yet in the formal pilot scope
+平台 SHALL 为工资代付流水、投诉证据、溯源环节记录与交易记录留存「时间戳 + 哈希」存证。存证记录 MUST 只增不改（不可修改、不可删除）。平台 MUST 支持按需打包证据，用于劳动仲裁或监管调取。
 
-#### Scenario: Frozen industry enters scope
-- **WHEN** an industry completes the freeze process per the SOP
-- **THEN** the system allows onboarding for that industry and updates the category/fee configuration accordingly
+#### Scenario: 涉权操作自动存证
 
-### Requirement: Government system substitution with dual-track switch
-For confirmed non-connectable government systems (Shijian Code, 12345 hotline, bank escrow accounts), the platform SHALL build self-owned substitutes: manual license verification + OCR pre-check, self-built work orders with offline circulation, and third-party licensed payment channels. The platform MUST run the self-built channel first and switch to government interfaces when they become ready (dual track). Connectable registries (childcare filing, elderly care data, education lists) MUST keep their integration paths reserved.
+- **WHEN** 一次工资代付、投诉、溯源环节或交易留下记录
+- **THEN** 系统在只增不改的证据链中为该记录写入一条时间戳 + 哈希条目
 
-#### Scenario: Self-built channel operates for non-connectable systems
-- **WHEN** a merchant submits licenses or a citizen submits a request
-- **THEN** the platform handles it through the self-built channel (manual + OCR verification, self-built work order with offline circulation)
+#### Scenario: 导出证据包
 
-#### Scenario: Dual-track switch when government interface is ready
-- **WHEN** a government interface becomes available for a previously substituted capability
-- **THEN** the platform switches that capability to the government interface while keeping the self-built channel as fallback
+- **WHEN** 获授权方（工作者、监管方、平台运营）就某条业务记录申请证据包
+- **THEN** 系统返回含带时间戳与哈希记录的证据包，可用于仲裁或监管用途
 
-### Requirement: Trust endorsement commitment
-The platform SHALL deliver a unified external commitment of credit endorsement + government supervision + full-chain traceability + free promotion (credit-weighted) + direct complaint handling with public desensitized results. The platform MUST NOT substitute administrative licensing for strongly regulated categories, and AI MUST NOT execute enforcement actions.
+#### Scenario: 证据不可篡改
 
-#### Scenario: Unified commitment is delivered externally
-- **WHEN** the platform presents its positioning to users, merchants, or regulators
-- **THEN** the five-part commitment is stated consistently, and its boundaries (no licensing substitution, no AI enforcement) are disclosed
+- **WHEN** 任何一方尝试修改或删除已存在的存证记录
+- **THEN** 系统拒绝该操作并保留原始记录
 
-### Requirement: Merchant cold-start and legacy import
-Merchant onboarding MUST support ≤1 minute entry (scan/photograph on PC Web). The platform SHALL provide a manual import channel for legacy merchant data. Cold-start channels are government notices and industry association mobilization; the platform MUST NOT commit to paid traffic acquisition or ground promotion. M1 exit criteria: ≥200 pilot merchants and ≥3 industries.
+### Requirement: 试点范围与行业扩展治理
 
-#### Scenario: Legacy merchant batch import
-- **WHEN** the platform operator imports legacy merchant data
-- **THEN** the system creates merchant archives through the manual import channel with missing data flagged for补录
+平台试点 SHALL 限于石家庄，首批行业为餐饮 + 零售 + 家政（P-03）。新行业 MUST NOT 进入正式范围，除非已完成「调研 → 问卷 → 冻结」SOP。未冻结行业 MUST NOT 开通入驻。
 
-#### Scenario: M1 pilot exit criteria
-- **WHEN** the M1 pilot closes
-- **THEN** the platform demonstrates ≥200 onboarded pilot merchants across ≥3 industries (catering, retail, housekeeping)
+#### Scenario: 未冻结行业被拒于范围之外
 
-### Requirement: Anti-fraud and anti-cheating baseline
-The platform SHALL intercept high-frequency operations from the same IP/device and abnormal price operations (R-15), and MUST retain evidence of intercepted attempts.
+- **WHEN** 来自未冻结行业（如第二批 7 个行业）的商户尝试入驻
+- **THEN** 系统以明确提示驳回入驻，说明该行业尚未进入正式试点范围
 
-#### Scenario: High-frequency operation intercepted
-- **WHEN** requests from the same IP/device exceed frequency thresholds on protected operations (e.g., repeated submissions, reviews, coupon redemption)
-- **THEN** the system intercepts the operation and records evidence of the attempt
+#### Scenario: 已冻结行业进入范围
 
-#### Scenario: Abnormal price operation intercepted
-- **WHEN** a price entry deviates abnormally from the merchant's own historical prices
-- **THEN** the system flags and intercepts the operation for review, retaining evidence
+- **WHEN** 某行业按 SOP 完成冻结流程
+- **THEN** 系统允许该行业入驻，并相应更新品类/费率配置
+
+### Requirement: 政务系统替代与双轨切换
+
+对已确认不可对接的政务系统（石监码、12345 热线、银行专户），平台 SHALL 自建替代能力：人工证照核验 + OCR 预审、自建工单并线下流转、第三方持牌支付通道。平台 MUST 先运行自建通道，待政务接口就绪后切换（双轨）。可对接的登记类系统（托育备案、养老数据、教育名录）MUST 保留其对接路径。
+
+#### Scenario: 不可对接系统由自建通道承接
+
+- **WHEN** 商户提交证照或群众提交诉求
+- **THEN** 平台经自建通道处理（人工 + OCR 核验、自建工单并线下流转）
+
+#### Scenario: 政务接口就绪后双轨切换
+
+- **WHEN** 某项此前被替代的能力获得可用的政务接口
+- **THEN** 平台将该能力切换至政务接口，同时保留自建通道作为兜底
+
+### Requirement: 信任背书承诺
+
+平台 SHALL 对外交付统一承诺：信用背书 + 政府监管 + 全链溯源 + 免费推广（信用加权）+ 投诉直达与结果脱敏公示。平台 MUST NOT 对强监管品类以行政许可作替代，且 AI MUST NOT 执行执法动作。
+
+#### Scenario: 统一承诺对外交付
+
+- **WHEN** 平台面向用户、商户或监管方呈现其定位
+- **THEN** 该五部分承诺表述一致，且其边界（不替代行政许可、不由 AI 执法）被一并披露
+
+### Requirement: 商户冷启动与存量导入
+
+商户入驻 MUST 支持 ≤1 分钟录入（PC Web 扫码/拍照）。平台 SHALL 为存量商户数据提供人工导入通道。冷启动渠道为政府发文与行业协会动员；平台 MUST NOT 承诺付费买量或地推。M1 退出标准：试点商户 ≥200 家、覆盖行业 ≥3 个。
+
+#### Scenario: 存量商户批量导入
+
+- **WHEN** 平台运营导入存量商户数据
+- **THEN** 系统经人工导入通道创建商户档案，并对缺失数据标注待补录
+
+#### Scenario: M1 试点退出标准
+
+- **WHEN** M1 试点收口
+- **THEN** 平台可举证已完成入驻的试点商户 ≥200 家、覆盖 ≥3 个行业（餐饮、零售、家政）
+
+### Requirement: 防刷与防作弊基线
+
+平台 SHALL 拦截同 IP/同设备的高频操作与异常价格操作（R-15），且 MUST 留存被拦截尝试的证据。
+
+#### Scenario: 高频操作被拦截
+
+- **WHEN** 同 IP/同设备在受保护操作（如重复提交、评价、消费券核销）上的请求超过频次阈值
+- **THEN** 系统拦截该操作并记录该次尝试的证据
+
+#### Scenario: 异常价格操作被拦截
+
+- **WHEN** 某次价格录入相对该商户自身历史价格出现异常偏离
+- **THEN** 系统标记并拦截该操作以供复核，同时留存证据

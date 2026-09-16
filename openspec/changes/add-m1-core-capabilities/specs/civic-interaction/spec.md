@@ -1,43 +1,53 @@
-# Civic Interaction Specification
+# 民生互动能力规范
 
 ## Purpose
 
-Defines the M1 civic-interaction capability: the citizen hotline / request work-order baseline (PRD v2.3 G-01). Because the 12345 hotline is confirmed non-connectable, the platform builds a self-owned work-order channel with offline circulation to departments, deadline-based resolution, and public desensitized result disclosure.
+定义 M1 民生互动能力：群众热线/诉求工单基础版（PRD v2.3 G-01）。因 12345 热线已确认不可对接，平台自建工单通道，采用线下流转至各部门、限时办结与办结结果脱敏公示。
 
 ## ADDED Requirements
 
-### Requirement: Citizen request submission generates a work order
-A citizen SHALL submit a request (select department/category, attach optional evidence) and the system MUST generate a work order and return the ticket id with acceptance status. Submission requires completed real-name verification.
+### Requirement: 群众诉求提交生成工单
 
-#### Scenario: Request submitted and accepted
-- **WHEN** a real-name verified citizen submits a request with department, category, and content
-- **THEN** the system creates a work order and returns the ticket id and acceptance status
+群众 SHALL 可提交诉求（选择部门/类别、可选附证据），系统 MUST 生成工单并返回工单号与受理状态。提交须已完成实名核验。
 
-#### Scenario: Invalid submission rejected with reasons
-- **WHEN** required fields are missing
-- **THEN** the system rejects with a parameter error message
+#### Scenario: 诉求提交并受理
 
-### Requirement: Intelligent dispatch with offline circulation
-Because the 12345 system is non-connectable, the platform SHALL dispatch the work order to the corresponding department via the self-built channel with offline circulation (dual-track per P-04). The dispatch result MUST be recorded on the work order.
+- **WHEN** 已实名核验的群众提交带有部门、类别与内容的诉求
+- **THEN** 系统创建工单并返回工单号与受理状态
 
-#### Scenario: Work order dispatched to department
-- **WHEN** a request work order is created
-- **THEN** the system assigns it to the corresponding department through the self-built channel, and the offline circulation handoff is recorded
+#### Scenario: 无效提交被拒并给出原因
 
-### Requirement: Deadline-based resolution and progress visibility
-The department MUST resolve the work order within the configured deadline (7 working days is the confirmed default; configurable). Statuses (accepted / handling / resolved / evaluated) MUST be visible to the citizen throughout. Outstanding high-frequency requests or excellent suggestions MAY be converted to the suggestion forum (G-02, M2) — outside this change.
+- **WHEN** 必填字段缺失
+- **THEN** 系统以参数错误信息拒绝提交
 
-#### Scenario: Resolution within deadline
-- **WHEN** the assigned department resolves the request within the deadline
-- **THEN** the work order status becomes resolved and the citizen sees the progress
+### Requirement: 智能分派与线下流转
 
-#### Scenario: Overdue resolution is escalated
-- **WHEN** the department fails to resolve within the deadline
-- **THEN** the system escalates the work order and the overdue state is recorded for assessment
+因 12345 系统不可对接，平台 SHALL 经自建通道将工单分派至对应部门，并采用线下流转（对齐 P-04 双轨）。分派结果 MUST 记录在工单上。
 
-### Requirement: Public desensitized result disclosure
-The resolved result SHALL be publicly disclosed in desensitized form for citizen oversight.
+#### Scenario: 工单分派至部门
 
-#### Scenario: Resolved result disclosed
-- **WHEN** a request work order reaches a resolved status
-- **THEN** the system publishes the desensitized result for public viewing
+- **WHEN** 诉求工单创建完成
+- **THEN** 系统经自建通道将其指派至对应部门，并记录线下流转交接
+
+### Requirement: 限时办结与进度可见
+
+部门 MUST 在配置时限内办结工单（7 个工作日为已确认默认值，可配置）。状态（已受理 / 处理中 / 已办结 / 已评价）MUST 全程对群众可见。高频未决诉求或优质建议 MAY 转入建议论坛（G-02，M2）——不在本变更范围内。
+
+#### Scenario: 时限内办结
+
+- **WHEN** 承办部门在时限内办结诉求
+- **THEN** 工单状态变为已办结，群众可见办理进度
+
+#### Scenario: 逾期办结被升级
+
+- **WHEN** 部门未在时限内办结
+- **THEN** 系统升级该工单，并记录逾期状态以供考核
+
+### Requirement: 办结结果脱敏公示
+
+已办结结果 SHALL 以脱敏形式公示，接受群众监督。
+
+#### Scenario: 办结结果公示
+
+- **WHEN** 诉求工单进入已办结状态
+- **THEN** 系统发布脱敏后的办结结果供公众查看

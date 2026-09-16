@@ -1,41 +1,50 @@
-# Employment Protection Specification
+# 用工保障能力规范
 
 ## Purpose
 
-Defines the M1 employment-protection capability of the platform: child-labor prevention via age verification at employment registration (PRD v2.3 C-01) and attendance clock-in with work-hour accumulation serving as the attendance basis for wage-guaranteed disbursement (C-02, per PDD §5.14.4 / EMP er.md M1 design). Per the PRD deduplication convention, wage protection is specified under account-funds (I-03) and employment history under credibility-regulation (A-06).
+定义平台 M1 的用工保障能力：入职年龄核验防童工（PRD v2.3 C-01），以及打卡记工时并累积工时、作为工资保障代付的考勤依据（C-02，依 PDD §5.14.4 与 EMP er.md 的 M1 设计）。按 PRD 去重约定，工资保障在 account-funds（I-03）中规定，从业履历在 credibility-regulation（A-06）中规定。
 
 ## ADDED Requirements
 
-### Requirement: Child-labor prevention at employment registration
-Employment registration SHALL run identity + face verification of the candidate and MUST automatically block registration when the verified age is below 16, with a warning and an audit record. The check MUST link to the person archive (A-06) and offer one-click verification for employers (protection rather than burden).
+### Requirement: 入职年龄核验防童工
 
-#### Scenario: Registration blocked for age below 16
-- **WHEN** an employer registers an employment relationship and the verified age of the candidate is below 16
-- **THEN** the system automatically blocks the registration, shows a warning, and keeps an audit record of the blocked attempt
+用工登记 SHALL 对入职者执行身份 + 人脸核验，且当核验年龄低于 16 岁时 MUST 自动拦截登记，同时给出警告并留存审计记录。该核验 MUST 关联一人一档（A-06），并为雇主提供一键核验（是保护而非负担）。
 
-#### Scenario: Registration proceeds for age 16 and above
-- **WHEN** the verified age is 16 or above
-- **THEN** the employment relationship is recorded and the result links to the person archive
+#### Scenario: 年龄低于 16 岁被拦截登记
 
-#### Scenario: Verification requires real-name completion
-- **WHEN** the candidate has not completed real-name verification
-- **THEN** the system rejects the employment registration with a real-name-required message; no document-based manual fallback is accepted
+- **WHEN** 雇主登记用工关系，且入职者核验年龄低于 16 岁
+- **THEN** 系统自动拦截该登记，展示警告，并留存被拦截尝试的审计记录
 
-### Requirement: Attendance clock-in with work-hour accumulation
-Employees SHALL clock in and out for work, with each punch recorded and work hours accumulated automatically. Accumulated hours MUST serve as the attendance basis for wage-guaranteed disbursement (I-03). Duplicate punches of the same type on the same day MUST be rejected idempotently. Missed punches MUST be recoverable through a makeup application with an audit trail. When attendance data is missing at disbursement time, the system MUST prompt for record completion.
+#### Scenario: 年龄 16 岁及以上正常登记
 
-#### Scenario: Clock-in records and accumulates hours
-- **WHEN** an employee clocks in or out
-- **THEN** the system records the punch time and accumulates the work hours
+- **WHEN** 核验年龄为 16 岁或以上
+- **THEN** 用工关系被记录，且结果关联至一人一档
 
-#### Scenario: Duplicate punch rejected idempotently
-- **WHEN** an employee punches the same type again on the same day
-- **THEN** the system rejects the duplicate idempotently without double-counting hours
+#### Scenario: 核验要求已完成实名
 
-#### Scenario: Missed punch recoverable via makeup application
-- **WHEN** an employee missed a punch
-- **THEN** the employee can submit a makeup application, which takes effect after employer confirmation with an audit trail
+- **WHEN** 入职者尚未完成实名核验
+- **THEN** 系统以「须先完成实名」的提示拒绝该用工登记；不接受基于证件的人工降级路径
 
-#### Scenario: Attendance hours serve as disbursement basis
-- **WHEN** an employer initiates wage disbursement and attendance data is missing or incomplete
-- **THEN** the system prompts for record completion, and verified work hours serve as the attendance basis for the disbursement
+### Requirement: 打卡记工时并累积工时
+
+员工 SHALL 进行上下班打卡，每次打卡均被记录且工时自动累积。累积工时 MUST 作为工资保障代付的考勤依据（I-03）。同一员工当日同类型重复打卡 MUST 被幂等拒绝。漏打卡 MUST 可通过补卡申请补救并留有审计轨迹。代付时若考勤数据缺失，系统 MUST 提示补录。
+
+#### Scenario: 打卡记录并累积工时
+
+- **WHEN** 员工上班或下班打卡
+- **THEN** 系统记录打卡时间并累积工时
+
+#### Scenario: 重复打卡幂等拒绝
+
+- **WHEN** 员工当日再次打卡同一类型
+- **THEN** 系统幂等拒绝该重复打卡，且不重复计工时
+
+#### Scenario: 漏打卡可通过补卡申请补救
+
+- **WHEN** 员工漏打卡
+- **THEN** 员工可提交补卡申请，经雇主确认后生效并留有审计轨迹
+
+#### Scenario: 考勤工时作为代付依据
+
+- **WHEN** 雇主发起工资代付而考勤数据缺失或不完整
+- **THEN** 系统提示补录，并以经核验的工时作为本次代付的考勤依据

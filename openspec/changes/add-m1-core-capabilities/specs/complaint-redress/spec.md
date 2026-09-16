@@ -1,44 +1,54 @@
-# Complaint Redress Specification
+# 投诉直达与维权能力规范
 
 ## Purpose
 
-Defines the M1 complaint-redress capability: direct complaint submission in at most 3 steps with full progress visibility and public desensitized result disclosure (PRD v2.3 D-02), including the "minor entering in violation" reporting category and the 48-hour merchant handling deadline.
+定义 M1 投诉直达与维权能力：最多 3 步完成投诉提交、全流程进度可见与办结结果脱敏公示（PRD v2.3 D-02），含「未成年人违规进入」举报类别与 48 小时商家处理时限。
 
 ## ADDED Requirements
 
-### Requirement: Direct complaint submission in at most 3 steps
-A consumer SHALL be able to submit a complaint in at most 3 steps: select merchant → select category → attach evidence. Categories MUST include "minor entering in violation" for entertainment venues and internet cafes. The complaint MUST generate a work order and return the ticket id and status immediately upon submission.
+### Requirement: 最多 3 步完成投诉直达
 
-#### Scenario: Complaint submitted in 3 steps
-- **WHEN** a consumer selects a merchant, picks a category, and attaches evidence in three steps
-- **THEN** the system creates a complaint work order with a ticket id and returns the initial status
+消费者 SHALL 能在最多 3 步内提交投诉：选择商户 → 选择类别 → 上传证据。类别 MUST 包含面向娱乐场所与网吧的「未成年人违规进入」。投诉 MUST 生成工单，并在提交时即返回工单号与状态。
 
-#### Scenario: Minor-entry violation category available
-- **WHEN** a consumer selects the complaint category list
-- **THEN** the "minor entering in violation" category is available, and submitted reports under it flow to the violation-entry venue alert aggregation
+#### Scenario: 3 步完成投诉提交
 
-### Requirement: Progress visibility through full lifecycle
-The complaint lifecycle statuses (submitted / in handling / resolved / escalated / closed) MUST be visible to the complainant throughout. After triage, the merchant MUST handle the complaint within 48 hours (configurable by category; 48h is the confirmed default). If unresolved within the deadline, the complaint MUST be escalated automatically to the market regulator.
+- **WHEN** 消费者在三步内完成选择商户、选择类别与上传证据
+- **THEN** 系统创建投诉工单并返回工单号与初始状态
 
-#### Scenario: Merchant handles within deadline
-- **WHEN** a merchant receives a complaint and responds within the 48-hour deadline
-- **THEN** the system records the response and the progress updates for the complainant
+#### Scenario: 未成年人违规进入类别可用
 
-#### Scenario: Unresolved complaint auto-escalates
-- **WHEN** the merchant does not resolve the complaint within the deadline
-- **THEN** the complaint escalates automatically to the market regulator and the status becomes "escalated"
+- **WHEN** 消费者打开投诉类别列表
+- **THEN** 「未成年人违规进入」类别可用，且以此类别提交的举报进入违规入场场所预警聚合
 
-### Requirement: Public desensitized result disclosure and credit linkage
-A closed complaint result SHALL be publicly disclosed in desensitized form. The outcome MUST be counted into the merchant's credit score. Complaint evidence MUST be preserved in the platform evidence chain for certification (P-02).
+### Requirement: 全生命周期进度可见
 
-#### Scenario: Result disclosed desensitized
-- **WHEN** a complaint reaches a closed status
-- **THEN** the system publishes the desensitized result for public viewing
+投诉生命周期状态（已提交 / 处理中 / 已办结 / 已升级 / 已关闭）MUST 全程对投诉人可见。分诊后，商家 MUST 在 48 小时内处理该投诉（可按类别配置；48 小时为已确认默认值）。若在时限内未解决，投诉 MUST 自动升级至市场监管部门。
 
-#### Scenario: Outcome feeds credit score
-- **WHEN** a complaint outcome is confirmed
-- **THEN** the merchant's credit score is updated accordingly with an audit trail
+#### Scenario: 商家在时限内处理
 
-#### Scenario: Evidence preserved for certification
-- **WHEN** complaint evidence is submitted
-- **THEN** the evidence is stored with timestamp + hash in the append-only evidence chain and can be packaged for certification
+- **WHEN** 商家收到投诉并在 48 小时时限内作出响应
+- **THEN** 系统记录该响应，且投诉人的进度视图随之更新
+
+#### Scenario: 未解决投诉自动升级
+
+- **WHEN** 商家未在时限内解决投诉
+- **THEN** 投诉自动升级至市场监管部门，状态变为「已升级」
+
+### Requirement: 办结结果脱敏公示与信用联动
+
+已关闭投诉的结果 SHALL 以脱敏形式公示。处理结果 MUST 计入商户信用分。投诉证据 MUST 存入平台证据链以支持出证（P-02）。
+
+#### Scenario: 结果脱敏公示
+
+- **WHEN** 投诉进入已关闭状态
+- **THEN** 系统发布脱敏后的结果供公众查看
+
+#### Scenario: 处理结果计入信用分
+
+- **WHEN** 投诉处理结果被确认
+- **THEN** 商户信用分相应更新，并留有审计轨迹
+
+#### Scenario: 证据留痕以支持出证
+
+- **WHEN** 投诉证据被提交
+- **THEN** 证据以时间戳 + 哈希写入只增不改的证据链，并可打包出证

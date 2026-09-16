@@ -1,89 +1,105 @@
+# 会话凭据能力规范
+
 ## Purpose
 
-The lifecycle of platform session credentials: issuing short- and long-lived tokens at login, exchanging a single-use rotating long token for a fresh pair, and detecting replayed long tokens so that a leaked credential invalidates its whole session family. It turns the already-decided dual-token policy into a working, revocable loop.
+平台会话凭据的生命周期契约：登录时同时签发短效与长效两种令牌，以单次使用并轮换的长效令牌换取新的一对令牌，并识别被重放的长效令牌——一旦凭据泄露，即令其整个会话族失效。本能力把既定档的双 token 策略落地为可运行、可吊销的闭环。
 
 ## ADDED Requirements
 
-### Requirement: Login issues both tokens
+### Requirement: 登录同时签发两种令牌
 
-The system SHALL provide a passwordless login endpoint that authenticates a mobile number together with a captcha ticket and, on success, issues both a **short-lived access token** and a **long-lived refresh token**. The access token MUST be returned in the response body; the refresh token MUST be delivered only through `Set-Cookie` and MUST NOT appear in the response body or in any log. Login failures (unknown account, closed or frozen account, invalid or already consumed captcha ticket) MUST return `2001 unauthenticated / token invalid` and MUST NOT disclose internal details beyond that. The access token lifetime MUST NOT exceed 15 minutes.
+系统 SHALL 提供免密登录端点，以手机号配合人机验证票据完成认证，成功后同时签发**短效访问令牌**与**长效刷新令牌**。访问令牌 MUST 通过响应体返回；刷新令牌 MUST 仅经 `Set-Cookie` 下发，且 MUST NOT 出现在响应体或任何日志中。登录失败（账户不存在、账户已注销或已冻结、人机验证票据无效或已被消费）MUST 返回 `2001`（未认证／令牌无效），且 MUST NOT 泄露除此之外的内部细节。访问令牌的有效期 MUST NOT 超过 15 分钟。
 
-#### Scenario: Successful login returns a token pair
-- **WHEN** a client calls the login endpoint with a valid mobile number and a valid captcha ticket
-- **THEN** the response body carries the access token (lifetime at most 15 minutes) with the account identity, while the refresh token is set through `Set-Cookie` and never appears in the body
+#### Scenario: 登录成功返回令牌对
 
-#### Scenario: Invalid login factor rejected
-- **WHEN** the captcha ticket is invalid, already consumed, or the mobile number has no account
-- **THEN** the system returns 401 with `2001` and issues no token
+- **WHEN** 客户端以有效手机号与有效人机验证票据调用登录端点
+- **THEN** 响应体携带访问令牌（有效期至多 15 分钟）与账户身份信息，而刷新令牌经 `Set-Cookie` 下发、绝不出现在响应体中
 
-#### Scenario: Closed or frozen account cannot log in
-- **WHEN** the account behind the mobile number is closed (`closed_at` set) or frozen/suspended
-- **THEN** login is rejected with 401 and `2001`
+#### Scenario: 登录要素无效被拒绝
 
-### Requirement: Refresh tokens are single-use and rotate
+- **WHEN** 人机验证票据无效、已被消费，或该手机号不存在对应账户
+- **THEN** 系统返回 401 与 `2001`，不签发任何令牌
 
-Every exchange SHALL consume the presented refresh token and issue a **new access token and a new refresh token** (rotation). A consumed refresh token MUST become invalid immediately and MUST NOT be usable for another exchange. A successful exchange MUST deliver the new refresh token through `Set-Cookie`, replacing the previous value.
+#### Scenario: 已注销或已冻结账户无法登录
 
-#### Scenario: Exchange rotates the refresh token
-- **WHEN** a client exchanges a valid, unused refresh token
-- **THEN** it receives a new access token and a new refresh token via `Set-Cookie`, and the previous refresh token can no longer be used
+- **WHEN** 该手机号对应的账户已注销（`closed_at` 已置位）或处于冻结／暂停状态
+- **THEN** 登录被拒绝，返回 401 与 `2001`
 
-#### Scenario: Expired or unknown refresh token rejected
-- **WHEN** the presented refresh token is expired, has an invalid signature, or is unknown to the system
-- **THEN** the system returns 401 with `2001` and issues no token
+### Requirement: 刷新令牌单次使用并轮换
 
-### Requirement: Session family and replay detection
+每次换发 SHALL 消费所出示的刷新令牌，并签发**新的访问令牌与新的刷新令牌**（轮换）。已被消费的刷新令牌 MUST 立即失效，且 MUST NOT 再次用于换发。换发成功 MUST 经 `Set-Cookie` 下发新的刷新令牌，并覆盖原值。
 
-The system SHALL establish a **session family** at login so that every token of one login can be revoked together. When a refresh token that has already been rotated is presented, the system MUST treat it as a replay/leak signal, MUST revoke every access token and refresh token of that session family (including unexpired access tokens), and MUST record a security audit event. Any token of a revoked family MUST be rejected with 401 and `2001`.
+#### Scenario: 换发完成令牌轮换
 
-#### Scenario: Replaying a rotated refresh token revokes the family
-- **WHEN** an attacker replays a refresh token that was already rotated
-- **THEN** the system returns 401 with `2001`, revokes every token of that session family, and records a security audit event
+- **WHEN** 客户端以有效且未使用的刷新令牌发起换发
+- **THEN** 客户端获得新的访问令牌与经 `Set-Cookie` 下发的新刷新令牌，原刷新令牌不再可用
 
-#### Scenario: Unrevoked access token of a revoked family stops working
-- **WHEN** an unexpired access token belonging to a revoked family is used against a business endpoint
-- **THEN** the gateway rejects it through the revocation list (401 with `2001`)
+#### Scenario: 已过期或未知刷新令牌被拒绝
 
-### Requirement: Logout revokes the current session
+- **WHEN** 所出示的刷新令牌已过期、签名无效，或系统无法识别
+- **THEN** 系统返回 401 与 `2001`，不签发任何令牌
 
-The system SHALL provide a logout endpoint that revokes the current session family: the access token MUST enter the revocation list readable by the gateway (with a TTL covering its remaining lifetime) and the refresh token MUST be invalidated immediately. Logout MUST be idempotent (repeating it still succeeds) and MUST clear the client cookie through `Set-Cookie`.
+### Requirement: 会话族与重用检测
 
-#### Scenario: Access token stops working right after logout
-- **WHEN** the client uses the pre-logout access token against a protected endpoint immediately after logging out
-- **THEN** the gateway returns 401 with `2001`
+系统 SHALL 在登录时建立**会话族**，使同一次登录产生的全部令牌可被一并吊销。当出现已被轮换的刷新令牌时，系统 MUST 将其视为重放／泄露信号，MUST 吊销该会话族的全部访问令牌与刷新令牌（含尚未过期的访问令牌），并 MUST 记录一条安全审计事件。已吊销会话族的任何令牌 MUST 以 401 与 `2001` 拒绝。
 
-#### Scenario: Repeated logout is idempotent
-- **WHEN** the client calls logout again for the same session
-- **THEN** the system still reports success and no error occurs
+#### Scenario: 重放已轮换的刷新令牌触发整族吊销
 
-### Requirement: Refresh token transport and CSRF protection
+- **WHEN** 攻击者重放一个已被轮换的刷新令牌
+- **THEN** 系统返回 401 与 `2001`，吊销该会话族的全部令牌，并记录一条安全审计事件
 
-The refresh token MUST live in a `HttpOnly`, `Secure`, `SameSite` cookie whose `Path` is restricted to the session endpoints, so page scripts MUST NOT be able to read it. The exchange endpoint MUST validate the request origin (`Origin`/`Referer`) to defend against CSRF, and an exchange MUST NOT have side effects other than rotation and issuance. The access token MUST NOT be transported in a cookie, so business endpoints stay out of CSRF scope.
+#### Scenario: 已吊销会话族的未吊销访问令牌失效
 
-#### Scenario: Cross-site origin is rejected
-- **WHEN** the exchange request carries an `Origin`/`Referer` outside the platform's allowed origins
-- **THEN** the request is rejected and no token is rotated
+- **WHEN** 一个属于已吊销会话族、且尚未过期的访问令牌被用于访问业务端点
+- **THEN** 网关经吊销名单将其拒绝（401 与 `2001`）
 
-#### Scenario: Session cookie cannot be read by scripts
-- **WHEN** the `Set-Cookie` attributes of a login or exchange response are inspected
-- **THEN** the refresh cookie carries `HttpOnly`, `Secure` and `SameSite`, with `Path` limited to the session endpoints
+### Requirement: 登出吊销当前会话
 
-### Requirement: Session storage and revocation contract
+系统 SHALL 提供登出端点，吊销当前会话族：访问令牌 MUST 写入网关可读的吊销名单（TTL 覆盖其剩余有效期），刷新令牌 MUST 立即失效。登出 MUST 幂等（重复调用仍成功），且 MUST 经 `Set-Cookie` 清除客户端 Cookie。
 
-The system SHALL keep session family and refresh token state in **Redis** (the same instance the gateway reads the revocation list from) with these keys and semantics: the refresh record TTL MUST NOT exceed its validity (7 days); revoking an access token MUST use the contract key `revoked:jti:{jti}` with a placeholder value and a TTL covering that token's remaining lifetime (the revocation contract shared with the gateway). When Redis is unavailable, login, exchange and logout MUST fail fast rather than silently degrading into sessions that cannot be revoked.
+#### Scenario: 登出后访问令牌立即失效
 
-#### Scenario: Revocation keys follow the gateway contract
-- **WHEN** logout or a family-wide revocation happens
-- **THEN** the system writes `revoked:jti:{jti}` for every unexpired access token of the family, with a TTL equal to its remaining lifetime
+- **WHEN** 客户端在登出后立即以登出前的访问令牌访问受保护端点
+- **THEN** 网关返回 401 与 `2001`
 
-#### Scenario: Session store unavailable fails fast
-- **WHEN** the session store (Redis) is unavailable
-- **THEN** login, exchange and logout fail fast with a 5xx and no token is issued that could not be revoked
+#### Scenario: 重复登出保持幂等
 
-### Requirement: Access token claims match the gateway policy
+- **WHEN** 客户端对同一会话再次调用登出
+- **THEN** 系统仍返回成功，不发生任何错误
 
-The access token MUST be HS256-signed and MUST carry at least `sub` (account id), `role`, `mfa`, `jti`, `iat` and `exp`; the difference between `exp` and `iat` MUST NOT exceed 15 minutes, satisfying the gateway token policy (non-blank `sub`, `exp` within the configured maximum plus skew).
+### Requirement: 刷新令牌传输与 CSRF 防护
 
-#### Scenario: Issued access token satisfies the gateway policy
-- **WHEN** the access token obtained from login or exchange is used against any protected business endpoint
-- **THEN** the gateway verifies it and forwards the identity, without rejecting it for a policy violation (missing `sub`, lifetime beyond the maximum)
+刷新令牌 MUST 存放于 `HttpOnly`、`Secure`、`SameSite` 的 Cookie 中，且其 `Path` MUST 限定于会话端点，使页面脚本 MUST NOT 能够读取。换发端点 MUST 校验请求来源（`Origin`／`Referer`）以防御 CSRF，且一次换发 MUST NOT 产生轮换与签发之外的副作用。访问令牌 MUST NOT 经 Cookie 传输，使业务端点不落入 CSRF 影响范围。
+
+#### Scenario: 跨站来源被拒绝
+
+- **WHEN** 换发请求携带的 `Origin`／`Referer` 不在平台允许的来源之内
+- **THEN** 请求被拒绝，不发生任何令牌轮换
+
+#### Scenario: 会话 Cookie 无法被脚本读取
+
+- **WHEN** 检查登录或换发响应的 `Set-Cookie` 属性
+- **THEN** 刷新令牌 Cookie 携带 `HttpOnly`、`Secure` 与 `SameSite`，且 `Path` 限定于会话端点
+
+### Requirement: 会话存储与吊销契约
+
+系统 SHALL 将会话族与刷新令牌状态存于 **Redis**（与网关读取吊销名单的同一实例），并遵循以下键与语义：刷新记录的 TTL MUST NOT 超过其有效期（7 天）；吊销访问令牌 MUST 使用与网关共享的契约键 `revoked:jti:{jti}`，值占位，TTL 覆盖该令牌的剩余有效期。当 Redis 不可用时，登录、换发与登出 MUST 快速失败，而 MUST NOT 静默降级为无法吊销的会话。
+
+#### Scenario: 吊销键遵循网关契约
+
+- **WHEN** 发生登出或整族吊销
+- **THEN** 系统为该会话族中每个未过期的访问令牌写入 `revoked:jti:{jti}`，其 TTL 等于该令牌的剩余有效期
+
+#### Scenario: 会话存储不可用时快速失败
+
+- **WHEN** 会话存储（Redis）不可用
+- **THEN** 登录、换发与登出以 5xx 快速失败，且不签发任何无法吊销的令牌
+
+### Requirement: 访问令牌声明符合网关策略
+
+访问令牌 MUST 采用 HS256 签名，且 MUST 至少携带 `sub`（账户 ID）、`role`、`mfa`、`jti`、`iat` 与 `exp`；`exp` 与 `iat` 之差 MUST NOT 超过 15 分钟，以符合网关的令牌策略（`sub` 非空白、`exp` 在配置上限加容差之内）。
+
+#### Scenario: 签发的访问令牌符合网关策略
+
+- **WHEN** 以登录或换发获得的访问令牌访问任一受保护业务端点
+- **THEN** 网关校验通过并透传身份，不因策略违规（缺失 `sub`、有效期超出上限）而拒绝

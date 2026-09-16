@@ -1,128 +1,190 @@
-# Smart Assistant Specification
+# 智能助手与画像能力规范
 
 ## Purpose
 
-Defines the M1 smart assistant and personal profile capability: role-based usage guidance, whitelisted page navigation, transparent-reason product recommendation, multi-turn context, human fallback, content safety, service governance, clarifying shopping guidance (PRD v2.3 J-01~J-06/J-12/J-13), and the personal profile center with user four-rights and compliance red line C7 (J-07~J-11 M1 basic edition).
+定义 M1 智能助手与个人画像能力：分角色使用指导、白名单页面跳转、理由透明的商品推荐、多轮上下文、人工兜底、内容安全、服务治理、澄清式导购（PRD v2.3 J-01~J-06/J-12/J-13），以及含用户四权与合规红线 C7 的个人画像中心（J-07~J-11 M1 基础版）。
 
 ## ADDED Requirements
 
-### Requirement: Role-based usage guidance
-The assistant SHALL provide role-specific knowledge bases (consumer / merchant owner / supplier / practitioner / regulator) with step-by-step guidance, resident as a sidebar on PC Web. Answers MUST be bound to platform processes and specification documents — the assistant MUST NOT fabricate or free-style answers.
+### Requirement: 分角色使用指导
 
-#### Scenario: Role-matched guidance
-- **WHEN** a logged-in user asks how to use a platform function
-- **THEN** the assistant answers with guidance matched to the user's role, bound to platform processes and documents
+助手 SHALL 提供分角色知识库（消费者 / 商户经营者 / 供应商 / 从业人员 / 监管人员）与步骤式引导，在 PC Web 以侧边栏常驻。回答 MUST 绑定平台流程与规格文档——助手 MUST NOT 编造或自由发挥。
 
-#### Scenario: Factual answers bound to documents
-- **WHEN** a factual question cannot be matched to platform data or documents
-- **THEN** the assistant does not invent an answer; it falls back to FAQ keywords or the human entry
+#### Scenario: 角色匹配的指导
 
-### Requirement: Whitelisted page navigation
-Natural-language intent SHALL navigate to platform-internal pages only, limited to a whitelist route table, with no external links. Navigation MUST require a second confirmation before jumping.
+- **WHEN** 已登录用户询问如何使用平台某功能
+- **THEN** 助手以匹配该用户角色的指导作答，且内容绑定平台流程与文档
 
-#### Scenario: Navigation within whitelist
-- **WHEN** a user expresses a navigation intent mapped to a whitelisted route
-- **THEN** the assistant shows the target page card and requires second confirmation before jumping
+#### Scenario: 事实类回答绑定文档
 
-#### Scenario: Non-whitelisted intent rejected
-- **WHEN** the intent maps to no whitelisted route or to an external link
-- **THEN** the assistant declines navigation with a prompt instead of jumping
+- **WHEN** 某事实性问题无法匹配到平台数据或文档
+- **THEN** 助手不编造答案，而是回退到 FAQ 关键字或人工入口
 
-### Requirement: Transparent-reason product recommendation
-Product recommendations SHALL use candidates that are on sale + supplier credit score ≥ threshold (initial value 80, confirmed for pre-launch review) + complete traceability, ranked by credit 40 + traceability completeness 30 + price 20 + praise rate 10 (confirmed initial values). Reasons MUST be output transparently via templates. Ranking MUST be non-bidding with no paid placement; prices MUST NOT vary by profile. When candidates are insufficient, the assistant MUST say so honestly.
+### Requirement: 白名单页面跳转
 
-#### Scenario: Recommendation with transparent reasons
-- **WHEN** a user asks for a product recommendation
-- **THEN** the assistant returns candidates ranked by the confirmed weights, each with a template-based transparent reason
+自然语言意图 SHALL 仅跳转平台内页面，且限于白名单路由表、不对外链。跳转 MUST 经二次确认后方可执行。
 
-#### Scenario: Insufficient candidates reported honestly
-- **WHEN** eligible candidates fall below the threshold count
-- **THEN** the assistant honestly reports the shortage instead of padding recommendations
+#### Scenario: 白名单内跳转
 
-### Requirement: Multi-turn context within a session
-The assistant SHALL resolve in-session references across turns. Session context MUST be cleared automatically after 30 minutes of timeout, and NO cross-session memory MAY be retained.
+- **WHEN** 用户表达映射到白名单路由的跳转意图
+- **THEN** 助手展示目标页面卡片，并要求二次确认后才跳转
 
-#### Scenario: Reference resolved in session
-- **WHEN** a user asks a follow-up with an in-session reference
-- **THEN** the assistant resolves the reference using the current session context
+#### Scenario: 非白名单意图被拒绝
 
-#### Scenario: Session timeout clears context
-- **WHEN** a session exceeds the 30-minute timeout
-- **THEN** the system clears the session context; no memory carries into the next session
+- **WHEN** 意图未映射到任何白名单路由，或指向外链
+- **THEN** 助手以提示拒绝跳转，而不是执行跳转
 
-### Requirement: Fallback to human entry
-When intent recognition fails, the assistant SHALL fall back to FAQ keywords and then to the human entry (G-01 hotline/work order) — never hard-answering with pure AI. Answers MUST be rateable; feedback data MUST be desensitized for knowledge-base iteration and MUST NOT be used to train third-party models.
+### Requirement: 理由透明的商品推荐
 
-#### Scenario: Unrecognized intent reaches human entry
-- **WHEN** the assistant cannot recognize the intent after FAQ fallback
-- **THEN** the assistant provides the human entry (hotline/work order) instead of fabricating
+商品推荐 SHALL 使用满足「在售 + 供应商信用分 ≥ 阈值（初值 80，已确认供上线前复核）+ 溯源链完整」的候选，并按信用 40 + 溯源完整度 30 + 价格 20 + 好评率 10 排序（已确认初值）。理由 MUST 经模板透明输出。排序 MUST 非竞价、无付费置顶；价格 MUST NOT 因画像差异化。候选不足时，助手 MUST 如实告知。
 
-#### Scenario: Feedback used only desensitized
-- **WHEN** a user rates an answer
-- **THEN** the system stores the rating desensitized for knowledge-base iteration and never uses it for third-party model training
+#### Scenario: 带透明理由的推荐
 
-### Requirement: Content safety and hallucination control
-Assistant output MUST pass content-safety filtering before display. Minor-related scenarios MUST apply additional sensitive-word and age restrictions. Factual answers MUST bind to platform data and documents, and every answer MUST carry the label "generated by the platform assistant, please refer to the page information".
+- **WHEN** 用户请求商品推荐
+- **THEN** 助手返回按已确认权重排序的候选，且每条附模板化的透明理由
 
-#### Scenario: Unsafe content blocked
-- **WHEN** the assistant output contains prohibited content (political, pornographic, violent)
-- **THEN** the system blocks the output and returns a compliant prompt
+#### Scenario: 候选不足如实告知
 
-#### Scenario: Answer carries page-information label
-- **WHEN** the assistant returns an answer
-- **THEN** the answer includes the label "generated by the platform assistant, please refer to the page information"
+- **WHEN** 合格候选低于阈值数量
+- **THEN** 助手如实告知候选不足，而不是硬凑推荐
 
-### Requirement: Assistant service governance
-The dialogue API SHALL be rate-limited per account and frequency to prevent abuse; M1 pilots volume control with high-frequency FAQ served by the rule base to reduce cost. Governance metrics (intent hit rate / navigation success rate / recommendation adoption rate) MUST be observable, desensitized, and visible on the regulator end.
+### Requirement: 会话内多轮上下文
 
-#### Scenario: Rate limit enforced per account
-- **WHEN** an account exceeds the configured dialogue frequency limit
-- **THEN** the system rejects further requests with a rate-limit response
+助手 SHALL 在会话内跨轮次解析指代。会话上下文 MUST 在 30 分钟超时后自动清空，且 MUST NOT 保留任何跨会话记忆。
 
-#### Scenario: Governance metrics observable
-- **WHEN** the assistant operates
-- **THEN** the intent hit rate, navigation success rate, and recommendation adoption rate are recorded desensitized and viewable on the regulator end
+#### Scenario: 会话内解析指代
 
-### Requirement: Clarifying shopping guidance
-A vague shopping intent SHALL trigger template-based clarifying questions (purpose / budget / recipient, skippable), then candidate convergence (same rules as recommendation), then output of at most 5 candidates with transparent-reason comparison, and one-click jump to the selection/detail page or continued multi-turn. The assistant MUST NOT presume user needs and MUST NOT place orders or set prices on behalf of users.
+- **WHEN** 用户以会话内指代提出追问
+- **THEN** 助手基于当前会话上下文解析该指代
 
-#### Scenario: Vague intent converges to comparison
-- **WHEN** a user expresses a vague shopping intent
-- **THEN** the assistant asks template questions, converges candidates, and outputs at most 5 candidates with transparent-reason comparison
+#### Scenario: 会话超时清空上下文
 
-#### Scenario: Assistant never presumes or transacts
-- **WHEN** the user's need is unclear or candidates are insufficient
-- **THEN** the assistant reports honestly and never presumes needs, places orders, or sets prices
+- **WHEN** 会话超过 30 分钟超时
+- **THEN** 系统清空会话上下文；不有任何记忆带入下一次会话
 
-### Requirement: Profile data sources with authorization
-The personal profile SHALL aggregate the confirmed data sources: real-name information (registration consent), employment history (requires the person's explicit, revocable authorization), platform behavior (privacy agreement; desensitized, no dialogue originals), user comments (privacy agreement + revocable; NOT collected for minors), purchase/transaction records (M2, outside this change), and voluntary self-description. Unauthorized fields MUST NOT enter the profile. Behavior/comment data MUST NOT be collected for minors.
+### Requirement: 回退人工入口
 
-#### Scenario: Unauthorized field excluded from profile
-- **WHEN** a data source (e.g., employment history) lacks the user's authorization
-- **THEN** that field does not enter the profile and the authorization status is recorded
+意图识别失败时，助手 SHALL 回退至 FAQ 关键字，再回退至人工入口（G-01 热线/工单）——绝不以纯 AI 硬答。回答 MUST 可评价；反馈数据 MUST 脱敏后用于知识库迭代，且 MUST NOT 用于训练第三方模型。
 
-#### Scenario: Minor profile collection restricted
-- **WHEN** the user is a minor
-- **THEN** the system does not build behavior/purchase profiles for them and does not collect their comments or dwell-time behavior
+#### Scenario: 无法识别的意图抵达人工入口
 
-### Requirement: Profile four-rights management
-The user SHALL have four rights on the profile management page: view (tags + sources + authorization status), modify/correct, close personalization (recommendations revert to general rules; behavior collection stops), and delete (derived data cleaned within 30 days; basic functions unaffected). All operations MUST be audited.
+- **WHEN** 助手经 FAQ 回退后仍无法识别意图
+- **THEN** 助手提供人工入口（热线/工单），而不是编造回答
 
-#### Scenario: Closing personalization reverts recommendations
-- **WHEN** a user closes personalization
-- **THEN** recommendations revert to the general rule-based ranking, behavior collection stops, and the action is audited
+#### Scenario: 反馈仅脱敏使用
 
-#### Scenario: Deleting profile cleans derived data
-- **WHEN** a user deletes the profile
-- **THEN** the system cleans derived profile data within 30 days, keeps basic functions unaffected, and audits the deletion
+- **WHEN** 用户对回答作出评价
+- **THEN** 系统脱敏留存该评价用于知识库迭代，绝不用于第三方模型训练
 
-### Requirement: Personalized use with transparent basis and no price discrimination
-Personalized recommendation MUST overlay profile weights on top of the rule ranking (overlay, not replacement), and reasons MUST state the profile basis. Personalized information and usage guidance follow the same constraints. Prices MUST NOT vary by profile (transparent pricing, no discrimination).
+### Requirement: 内容安全与幻觉管控
 
-#### Scenario: Recommendation states profile basis with unchanged price
-- **WHEN** personalized recommendation is produced
-- **THEN** the reasons state the profile basis, and the price shown for the same product is identical for all users
+助手输出 MUST 经内容安全过滤后方可展示。未成年人相关场景 MUST 追加敏感词与年龄限制。事实类回答 MUST 绑定平台数据与文档，且每条回答 MUST 携带标注「平台助手生成，请以页面信息为准」。
 
-#### Scenario: Personalized guidance respects four rights
-- **WHEN** a user has closed personalization
-- **THEN** personalized information pushes and usage guidance stop, constrained by the four rights
+#### Scenario: 不安全内容被拦截
+
+- **WHEN** 助手输出包含违禁内容（政治、色情、暴力）
+- **THEN** 系统拦截该输出并返回合规提示
+
+#### Scenario: 回答携带「以页面为准」标注
+
+- **WHEN** 助手返回一条回答
+- **THEN** 该回答包含标注「平台助手生成，请以页面信息为准」
+
+### Requirement: 助手服务治理
+
+对话 API SHALL 按账号与频次限流以防滥用；M1 试点以规则库承接高频 FAQ 来控制量、降成本。治理指标（意图命中率 / 跳转成功率 / 推荐采纳率）MUST 可观测、脱敏，并在监管端可见。
+
+#### Scenario: 按账号执行限流
+
+- **WHEN** 某账号超过配置的对话频次上限
+- **THEN** 系统以限流响应拒绝后续请求
+
+#### Scenario: 治理指标可观测
+
+- **WHEN** 助手运行中
+- **THEN** 意图命中率、跳转成功率与推荐采纳率被脱敏记录，并可在监管端查看
+
+### Requirement: 澄清式导购
+
+模糊购物意图 SHALL 触发模板化追问（用途 / 预算 / 给谁用，可跳过），随后收敛候选（规则与推荐一致），再输出至多 5 个带透明理由对比的候选，并支持一键跳转选品/详情页或继续多轮。助手 MUST NOT 臆断用户需求，且 MUST NOT 代用户下单或定价。
+
+#### Scenario: 模糊意图收敛为对比
+
+- **WHEN** 用户表达模糊的购物意图
+- **THEN** 助手提出模板化追问、收敛候选，并输出至多 5 个带透明理由对比的候选
+
+#### Scenario: 助手绝不臆断也绝不代交易
+
+- **WHEN** 用户需求不清晰或候选不足
+- **THEN** 助手如实告知，绝不臆断需求、代下单或代定价
+
+### Requirement: 画像数据源与授权
+
+个人画像 SHALL 聚合已确认的数据源：实名信息（注册协议同意）、从业履历（须本人明确授权，可撤回）、平台行为（隐私协议；脱敏、不含对话原文）、用户评价（隐私协议 + 可撤回；未成年人 MUST NOT 采集）、购买/交易记录（M2，不在本变更内）与自愿自述。未授权字段 MUST NOT 进入画像。未成年人 MUST NOT 采集行为/评价数据。
+
+#### Scenario: 未授权字段不入画像
+
+- **WHEN** 某数据源（如从业履历）缺少用户授权
+- **THEN** 该字段不进入画像，且授权状态被记录在案
+
+#### Scenario: 未成年人画像采集受限
+
+- **WHEN** 用户为未成年人
+- **THEN** 系统不为其构建行为/购买画像，也不采集其评价或停留时长行为
+
+### Requirement: 画像四权管理
+
+用户 SHALL 在画像管理页拥有四项权利：查看（标签 + 来源 + 授权状态）、修改/纠错、关闭个性化（推荐回退通用规则、停止行为采集）与删除（衍生数据 30 天内清理、基本功能不受影响）。全部操作 MUST 留痕审计。
+
+#### Scenario: 关闭个性化后推荐回退
+
+- **WHEN** 用户关闭个性化
+- **THEN** 推荐回退到通用规则排序，行为采集停止，且该操作留痕审计
+
+#### Scenario: 删除画像清理衍生数据
+
+- **WHEN** 用户删除画像
+- **THEN** 系统在 30 天内清理画像衍生数据，基本功能不受影响，且删除操作留痕审计
+
+### Requirement: 个性化使用须依据透明且不杀熟
+
+个性化推荐 MUST 在规则排序之上叠加画像权重（叠加而非替代），且理由 MUST 标注画像依据。个性化信息与使用引导遵循同样的约束。价格 MUST NOT 因画像差异化（透明定价、不杀熟）。
+
+#### Scenario: 推荐标注画像依据且价格不变
+
+- **WHEN** 产出个性化推荐
+- **THEN** 理由标注画像依据，且同一商品展示给所有用户的价格完全一致
+
+#### Scenario: 个性化引导受四权约束
+
+- **WHEN** 用户已关闭个性化
+- **THEN** 个性化信息推送与使用引导随即停止，受四权约束
+
+### Requirement: 用户习惯与购买影响因素（长期记忆）
+
+平台 SHALL 由画像服务作为**唯一权威存储**保存用户习惯结论与购买影响因素权重：习惯含品类偏好 / 价格带 / 时段 / 频次 / 供应商信任 / 渠道六类，影响因素含价格 / 信用 / 溯源 / 评价 / 时效 / 品牌 / 优惠 / 规格 / 新鲜度 / 资质齐全十类。每条结论 MUST 含权重、置信度、样本量与可解释证据，MUST NOT 存人格推断标签。样本来源 MUST 如实标注（M1 行为近似为 `BEHAVIOR`，交易接入后为 `PURCHASE` 或 `MIXED`）。权重 MUST 只用于推荐排序叠加，MUST NOT 进入定价链路。习惯 MUST 随画像四权查看与清除，关闭个性化后 MUST 停止重算，删除画像后 MUST 在 30 天内清理衍生数据。未成年人 MUST NOT 建立习惯。
+
+#### Scenario: 习惯结论按证据与置信度产出
+
+- **WHEN** 行为日聚合数据达到最小样本量后触发习惯计算
+- **THEN** 系统产出带权重、置信度、样本量与可解释证据的习惯结论，并如实标注样本来源
+
+#### Scenario: 样本不足如实示弱
+
+- **WHEN** 行为样本量低于最小样本量阈值
+- **THEN** 系统返回空结论并将置信度示弱，不臆造习惯、不硬凑
+
+#### Scenario: 习惯只进排序不进定价
+
+- **WHEN** 推荐场景读取习惯与影响因素权重
+- **THEN** 权重仅参与候选排序与推荐理由，同一商品对所有用户的价格保持完全一致
+
+#### Scenario: 习惯随四权联动清理
+
+- **WHEN** 用户查看或清除习惯，或删除画像、关闭个性化
+- **THEN** 系统相应返回习惯内容或将其置为已清除、停止重算，并在 30 天内清理衍生数据，全过程留痕审计
+
+#### Scenario: 未成年人不得建立习惯
+
+- **WHEN** 用户为未成年人
+- **THEN** 系统在采集侧拦截，不为其建立任何习惯结论或购买影响因素权重

@@ -1,32 +1,73 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# ============================================================================
+# 项目上下文（生成工件时供 AI 读取）
+# ============================================================================
+context: |
+  「民生甄选」城市民生综合服务平台（政府牵头、信用驱动的全产业链透明交易 + 民生服务），
+  试点石家庄，覆盖消费端 / 经营端 / 监管端 / 运营端 / 骑手端。
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  技术栈（2026-09-01 拍板，PDD §3）：
+  - 前端：React 18 + TypeScript + Vite + Ant Design 5；桌面套壳 Electron；移动端 uni-app
+  - 后端主站：Java 17 + Spring Boot 3.5 + MyBatis-Plus（模块化单体起步，按域预留拆分）
+  - AI 侧：Python 3.12 + FastAPI（ASSIST 助手 / AICORE AI 能力中心）
+  - 关系库：MySQL 8（主从；流水类按月分表）；**不引入其他关系库引擎**
+  - 缓存 Redis 7 · 消息队列 RabbitMQ · 对象存储 OSS/MinIO · 网关 Spring Cloud Gateway
+  - 大模型 DeepSeek 开放平台；视觉走云视觉 API（签数据合规协议）
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+  文档语言：中文（对齐 DEVELOPMENT_CONSTRAINTS.md §2「注释与文档使用中文」）。
+
+  事实来源优先级（不得臆造，冲突时按序取先）：
+  1. `docs/需求调研/核心成果/产品需求文档.md`（PRD）
+  2. `docs/需求调研/核心成果/非功能需求-信息安全与可靠性专项.md`
+  3. `docs/design/产品设计文档.md`（PDD）
+  4. `docs/design/微服务边界与职责基准.md`（SSOT：服务边界与数据归属唯一事实来源）
+  5. `docs/design/高并发架构演进设计.md`
+  6. 各服务 `services/*/docs/openapi.yaml`（接口唯一可手改源）与 `services/*/docs/er.md`（库表唯一可手改源）
+
+  平台红线（贯穿全部能力，写入对应 Requirement）：R-01 不沉淀资金/不做二清 · R-02 实名仅第三
+  方回传不可人工降级 · R-03 数据分级授权 · R-05/C8 AI 只标记不决策 · R-06 对话脱敏不出域且日志
+  ≤30 天 · R-07 画像合规不杀熟 · R-11 PC Web 优先、核心信息一屏可查、投诉 ≤3 步。
+
+# ============================================================================
+# 工件语言规范（强制）
+# ============================================================================
+rules:
+  proposal:
+    - 全文使用中文书写；标题与正文不得混用英文段落。
+    - 章节标题沿用模板固定英文标记：`## Why` / `## What Changes` / `## Capabilities` / `## Impact`（OpenSpec 模板契约，不得中文化）；标题下的正文一律中文。
+    - 需求与设计的一切标识（功能点编号 P-01…L-08、红线 R-01…R-16、验收 AC-*、服务缩写）原样引用，不翻译、不改写。
+  specs:
+    - 正文全文使用中文书写（这是本项目的既定规范，对齐 DEVELOPMENT_CONSTRAINTS.md §2）。
+    - **必须保留英文的解析器契约 token（不得中文化，否则校验失败或门禁变红）**：`## Purpose`、`## ADDED Requirements`、`## MODIFIED Requirements`、`## REMOVED Requirements`、`## RENAMED Requirements`、`### Requirement:`、`#### Scenario:`。
+    - **必须保留英文的规范动词**：`SHALL` / `MUST` / `MUST NOT`（保留在中文句子里，如「系统 SHALL 提供…」「MUST NOT 出现在响应体」）。原因：校验器以英文关键字判定规范性，缺失会产生 WARNING，导致 `openspec validate --strict` 失败（门禁变红）；同时该分级也是平台文档统一口径。
+    - 场景标题书写为 `#### Scenario: <中文场景名>`；场景内条件与预期一律中文，可沿用 `- **WHEN**` / `- **THEN**` 标记或直接中文叙述（两者均通过校验，推荐保留 WHEN/THEN 便于跨工具解析）。
+    - 场景标题必须恰好使用四个井号（`####`）；用三个井号会被静默忽略并导致「must include at least one scenario」报错。
+    - 每个 Requirement 至少包含一个场景；每个 Requirement 正文必须出现 `SHALL` 或 `MUST`。
+    - 新增能力（New Capabilities）的 delta spec 以 `## Purpose` 开头，正文不少于 50 个字符；对既有能力书写 delta 时**不得**包含 `## Purpose`。
+    - Requirement 正文长度不超过 500 字符；单文件不得混入实现细节（类名、函数名、框架选型、分步实施计划属于 design.md / tasks.md）。
+    - 枚举值、字段名、接口路径、错误码、Redis 键名等机器标识原样保留英文，不翻译。
+  design:
+    - 全文使用中文书写；章节标题沿用模板固定英文标记（`## Context` / `## Goals / Non-Goals` / `## Decisions` / `## Risks / Trade-offs` / `## Migration Plan` / `## Open Questions`），标题下正文一律中文。
+    - 技术决策必须写明「为什么选 X 不选 Y」并列出已考虑的备选；引用既有定档文档而非重新决策。
+  tasks:
+    - 全文使用中文书写；任务必须使用 `- [ ] X.Y 描述` 复选框格式，否则 apply 阶段无法跟踪进度。
+    - 每个任务必须写明完成验证方式（测试、命令、可观察行为或交付物）。
+    - 按依赖顺序排列，单个任务应可在一个会话内完成。
+  specs-archive:
+    - 归档时把 delta 合入主 spec，主 spec 的 `## Purpose` 占位符（`TBD - created by archiving change …`）必须手工改写为中文正式描述，不得留占位。
+    - **归档新建主 spec 时，工具会生成英文一级标题**（形如 `# <capability> Specification`，已实测 2026-09-16）。归档后 MUST 手工改为中文标题（如 `# 会话凭据能力规范`），与既有 13 份 delta spec 的中文 H1 风格保持一致；`## Purpose` 正文会被正确提取，无需改动。
+
+# ============================================================================
+# 操作指引
+# ============================================================================
+operations:
+  apply:
+    guidance:
+      - 按 tasks.md 顺序推进，完成一项即勾选并说明验证证据（命令 + 结果），不得批量勾选未验证项。
+      - 实现前先读对应 `services/<服务>/docs/openapi.yaml` 与 `er.md`，接口与库表以这两份为唯一可手改源。
+      - 遇 C8 类「AI 只标记不决策」与资金类红线，必须在任务描述与代码注释中显式标注，不得默认略过。
+  archive:
+    guidance:
+      - 归档前确认 tasks.md 全部勾选或未完成项已登记到后续变更；运行 `openspec validate --strict` 全绿。
+      - 归档后在 `AI_DEV_LOG/` 当日文件记录本次变更的收口结论（产出物 + 验证证据）。

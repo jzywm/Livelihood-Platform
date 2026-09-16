@@ -7,7 +7,8 @@
 ## What Changes
 
 - 新增 9 个 M1 能力规范（详见 Capabilities），覆盖 PRD §3.1 M1 范围全部功能点：平台级能力（P-01~P-06）、信用与监管（A-01~A-08 的 M1 基础口径）、用工保障（C-01 防童工、C-02 打卡记工时）、投诉直达（D-02）、政民互动（G-01 基础）、平台账户与资金（I-01/I-02/I-03）、智能助手与画像（J-01~J-06/J-12/J-13 + J-07~J-11 画像 M1 基础版）、AI 能力底座（K-01/K-02）、供应商与溯源底座（T-01/T-05 基础/T-08/T-09）。
-- 全部规范以 PRD v2.3（`docs/需求调研/核心成果/产品需求文档.md`）、非功能专项 v1.0（`docs/需求调研/核心成果/非功能需求-信息安全与可靠性专项.md`）、PDD v1.0（`docs/design/产品设计文档.md`）、高并发架构演进设计 v1.0（`docs/design/高并发架构演进设计.md`）与用例图规约为事实来源；不臆造接口、模块、文件名或实现细节。
+- 全部规范以 PRD v2.3（`docs/需求调研/核心成果/产品需求文档.md`）、非功能专项 v1.0（`docs/需求调研/核心成果/非功能需求-信息安全与可靠性专项.md`）、PDD v1.19（`docs/design/产品设计文档.md`）、微服务边界与职责基准 v2.0（`docs/design/微服务边界与职责基准.md`）、高并发架构演进设计 v1.0（`docs/design/高并发架构演进设计.md`）与用例图规约为事实来源；不臆造接口、模块、文件名或实现细节。
+- **范围增量（2026-09-16 增，随 plan 执行补充）**：在既有 9 能力内新增「用户习惯与购买影响因素（长期记忆）」相关需求，事实来源为边界基准 §4.16-C16 与 PDD v1.19 §4.4/§5.11.1.4——① `smart-assistant` 增「用户习惯与购买影响因素（长期记忆）」；② `ai-capability-center` 增「习惯权重无状态计算」「人工复核驱动的准确率闭环」「权威数据回写须经人工确认」。**权威归属（用户裁决 D2/X1/X3）**：PROFILE 为唯一权威存储，AICORE 只算不存、不建记忆表；短期会话仍为 Redis 30 分钟 TTL，故 **R-06 与 J4-2 隐私承诺不变**；**平台不引入 PostgreSQL**。
 - 平台级红线 R-01~R-16 与合规验收 AC-C1~C8、非功能验收 AC-NFR-1~11 贯穿全部能力，写入对应能力的 Requirement 与场景。
 - 非目标（Non-Goals）：M2/M3 功能域（B-02/B-03 完整版、D-03、E/F/H 组、G-02/G-03、L 配送交付、T-02~T-21、K-03~K-06、I-04/I-05、骑手端交付、EDU 专项）不在本变更内，后续里程碑另行提出 change；本变更只建规范、不改代码。
 
@@ -21,8 +22,8 @@
 - `complaint-redress`：交易与维权（D-02 投诉直达+进度可见+结果公示，含「未成年人违规进入」举报类别）。
 - `civic-interaction`：政民互动（G-01 群众热线/诉求工单基础版，12345 不可接→自建工单+线下流转）。
 - `account-funds`：平台账户系统（I-01 实名账户与钱包记账、I-02 劳务信用双向互评、I-03 工资保障代付，记账与支付分离、不沉淀资金）。
-- `smart-assistant`：智能使用助手与个人画像（J-01~J-06 助手基础能力、J-12 服务治理、J-13 澄清式导购、J-07~J-11 个人画像 M1 基础版：数据源/标签/三用途/画像四权/合规 C7）。
-- `ai-capability-center`：AI 能力中心（K-01 证照 OCR 自动核验、K-02 AI 网关与治理底座，AI 只标记不决策 C8）。
+- `smart-assistant`：智能使用助手与个人画像（J-01~J-06 助手基础能力、J-12 服务治理、J-13 澄清式导购、J-07~J-11 个人画像 M1 基础版：数据源/标签/三用途/画像四权/合规 C7；**+ 用户习惯与购买影响因素（长期记忆）：唯一权威存储、六类习惯与十类影响因素、样本证据化、只进排序不进定价、随四权联动清理、未成年人不建**）。
+- `ai-capability-center`：AI 能力中心（K-01 证照 OCR 自动核验、K-02 AI 网关与治理底座，AI 只标记不决策 C8；**+ 习惯权重无状态计算（只算不存）、人工复核驱动的准确率闭环（纠错回流 + 固定评估集 + 漏检抽样）、权威数据回写须经人工确认（含模型血缘）**）。
 - `supplier-traceability`：全产业透明交易 M1 底座（T-01 供应商入驻与品类资质核验、T-05 供应商信用档案基础、T-08 溯源批次码生成与环节上报、T-09 扫码验真与全链透明展示）。
 
 ### Modified Capabilities
@@ -31,7 +32,7 @@
 
 ## Impact
 
-- **后端服务**（按 PDD §5 服务映射，均为绿场实现）：`services/acc`（I1）、`services/settle`（I3 代付）、`services/cred`（A1/A2/A3 + 价目表 + 禁入承诺）、`services/emp`（C-01/I2 互评）、`services/ticket`（D2/G1）、`services/trace`（T2/T3）、`services/assist`（J，Python）、`services/aicore`（K-01/K-02，Python）、`services/dash`（费率公示页 AC-M1.10）、`services/profile`（J7 画像，Java）、`services/gateway`（M1 后期独立部署，M1 初期内嵌 Filter+Nginx）、`services/_common`（公共组件/错误码/存证/幂等）。
+- **后端服务**（按 PDD §5 服务映射，均为绿场实现）：`services/acc`（I1）、`services/settle`（I3 代付）、`services/cred`（A1/A2/A3 + 价目表 + 禁入承诺）、`services/emp`（C-01/I2 互评）、`services/ticket`（D2/G1）、`services/trace`（T2/T3）、`services/assist`（J，Python）、`services/aicore`（K-01/K-02，Python）、`services/dash`（费率公示页 AC-M1.10）、`services/profile`（J7 画像，Java）、`services/gateway`（**M1 初期交付即接管**——平台唯一鉴权点，口径见边界基准 §2.15/§4.14-C14；原「M1 后期独立部署 + 内嵌 Filter + Nginx 过渡」口径已作废）、`services/_common`（公共组件/错误码/存证/幂等）。
 - **前端**：`apps/pc`（消费端/经营端/监管端三端合一单 App）；`apps/mobile` 不在 M1 范围。
 - **外部依赖**：微信/支付宝实名回传（唯一通道）、微信支付/支付宝代付、DeepSeek 开放平台 API、云视觉 API（OCR）、短信通道；均 M0 前置开通（AC-M0.1~M0.6）。
 - **非功能与合规**：等保三级（定级备案 M0、测评 M1 上线前）、OWASP ASVS L2、L1 可用性 ≥99.95%、压测规划峰值 1.5~3x（AC-NFR 系列）；高并发地基（按月分表、infra-idgen 分布式 ID、幂等、接口级限流、可观测三件套）M1 启动即做。
