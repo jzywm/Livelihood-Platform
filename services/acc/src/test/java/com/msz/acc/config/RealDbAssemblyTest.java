@@ -77,7 +77,7 @@ class RealDbAssemblyTest {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
     private static final String INTERNAL_TOKEN = "acc-internal-test-token";
-    private static final String CALLBACK_SECRET = "acc-callback-test-secret";
+    private static final String FIXTURE_CALLBACK_SECRET = "acc-callback-test-secret";
     private static final String ROLE_CONSUMER = "CONSUMER";
     private static final String ROLE_REGULATOR = "REGULATOR";
 
@@ -539,7 +539,7 @@ class RealDbAssemblyTest {
         long timestamp = Instant.now().getEpochSecond();
         String nonce = "nonce-real-db-01";
         String payload = bizId + "|" + openId + "|" + name + "|" + idNo + "|true|" + timestamp + "|" + nonce;
-        String sign = new HmacSignatureVerifier(CALLBACK_SECRET).sign(payload);
+        String sign = new HmacSignatureVerifier(FIXTURE_CALLBACK_SECRET).sign(payload);
         String body = "{\"bizId\":\"" + bizId + "\",\"openId\":\"" + openId + "\",\"name\":\"" + name
                 + "\",\"idNo\":\"" + idNo + "\",\"pass\":true,\"sign\":\"" + sign + "\",\"timestamp\":"
                 + timestamp + ",\"nonce\":\"" + nonce + "\"}";
