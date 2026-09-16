@@ -96,11 +96,26 @@ public final class AccLettuceStringRedisOps implements StringRedisOps, AutoClose
         return call(() -> "OK".equals(sync.set(key, value, SetArgs.Builder.nx().ex(ttlSeconds))), key);
     }
 
+    /**
+     * 执行 Lua 脚本并按**整数回复**解码（返回 {@link Long}）。
+     *
+     * <p><b>为什么必须是 {@link ScriptOutputType#INTEGER}（真实缺陷记录，2026-09-16）</b>：
+     * {@link com.msz.acc.infrastructure.auth.session.RedisSessionStore} 的 5 个脚本
+     * （ISSUE/ROTATE/CONSUME/SET/REVOKE）一律 {@code return 1}，即 Redis 整数回复。
+     * 原实现用 {@code VALUE}（{@code ValueOutput}）解码，真实 Redis 下抛
+     * {@code UnsupportedOperationException: io.lettuce.core.output.ValueOutput does not support set(long)}，
+     * 于是建族/轮换/单次使用/吊销**全部失效**——登录直接 503 + 5003，即「真实 Redis 不可用」。
+     * 该缺陷由「双 token 会话闭环演练」（任务 7.2）在真实 Redis 上首次暴露：此前的单测用假客户端
+     * 回放期望语义，从未真正执行过脚本。</p>
+     *
+     * <p><b>契约</b>：本端口只支持「返回整数的脚本」（会话脚本的既有形态）；如需字符串/数组回复的脚本，
+     * 必须显式扩展本方法而不是改回 {@code VALUE}（否则整数脚本会再次崩）。</p>
+     */
     @Override
     public Object eval(String script, List<String> keys, List<String> args) {
         String[] keyArray = keys.toArray(new String[0]);
         String[] argArray = args.toArray(new String[0]);
-        return call(() -> sync.eval(script, ScriptOutputType.VALUE, keyArray, argArray),
+        return call(() -> sync.eval(script, ScriptOutputType.INTEGER, keyArray, argArray),
                 String.join(",", keys));
     }
 

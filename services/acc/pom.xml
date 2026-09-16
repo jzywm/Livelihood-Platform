@@ -55,6 +55,16 @@
       <version>3.4.1</version>
       <scope>test</scope>
     </dependency>
+    <!-- 真机联调桩（deploy/drill）内嵌**真实 Redis**（任务组 7，裁定 R-A2）：jar 内含 Windows 原生
+         redis-server-5.0.14.1-windows-amd64.exe，进程内启动即可验证「ACC 写 / 网关读」跨进程吊销链路
+         与会话键路径（acc:session:*/acc:refresh:*/revoked:jti:*）。
+         **仅 test 作用域**：不进生产产物、不引任何生产依赖（生产客户端是 lettuce-core）。 -->
+    <dependency>
+      <groupId>com.github.codemonstur</groupId>
+      <artifactId>embedded-redis</artifactId>
+      <version>1.4.3</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>jakarta.servlet</groupId>
       <artifactId>jakarta.servlet-api</artifactId>
