@@ -1,7 +1,20 @@
-# 网关服务 GATEWAY · 本地一键起(M1 初期形态:Redis + 网关双实例 + ACC 占位)
+# 网关服务 GATEWAY · 本地一键起(M1 初期形态:Redis + MySQL/MariaDB + ACC + 网关双实例)
 # 用法:docker compose -f services/gateway/deploy/docker-compose.yml up -d
 # 说明:生产部署用 K8s/裸机双实例 + Nginx upstream(见 nginx-gateway.conf.example);
-#      本文件用于开发/测试环境一键验证「Nginx → 网关双实例 → 应用」链路与降级行为。
+#      本文件用于开发/测试环境一键验证「Nginx → 网关双实例 → ACC → DB/Redis」链路与降级行为。
+#
+# 2026-09-16 增量(双 token 会话,add-refresh-token-rotation 任务组 7):
+#   ① 新增 **acc 服务**:会话凭据需要与网关共享同一个 Redis 实例(吊销名单 revoked:jti:{jti}
+#      「ACC 写、网关读」),故 acc 明确 depends_on redis(healthy),并显式给出会话存储环境变量
+#      `ACC_SESSION_STORE=redis` / `ACC_REDIS_HOST` / `ACC_REDIS_PORT` —— 生产**必须**取 redis,
+#      取 memory 时进程内存储无法与网关共享吊销名单,登出/踢人静默失效(裁定 R-A8:switch 化 + 缺 host 启动失败);
+#   ② 网关 GATEWAY_ACC_URI 默认指向容器内 acc 服务(而不是 host.docker.internal,避免"网关在容器、ACC 在宿主"的半容器错配);
+#   ③ 新增 **mariadb 服务**:ACC 数据层需要一个真实库;首次启动自动执行 ACC 的 Flyway 迁移脚本
+#      (services/acc/src/main/resources/db/migration/*.sql,建表 + 最小权限账号 acc_app)。
+# 已知限制(详见 services/acc/deploy/Dockerfile 头注与 services/gateway/deploy/README.md §6):
+#   ACC 的 M1 占位 DataSource 尚未替换为真实数据源 → 容器内触库路径不可用;
+#   本 compose 先固化**部署拓扑与配置口径**(Redis 依赖/会话存储环境变量/同实例约束),
+#   真机联调仍以 `services/acc/deploy/drill`(真实 ACC 进程 + 真实 MariaDB + 内嵌真实 Redis)为准。
 version: "3.9"
 
 services:
@@ -16,6 +29,49 @@ services:
       timeout: 3s
       retries: 5
 
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-dev-root-only}
+      MARIADB_DATABASE: acc
+    ports:
+      - "3306:3306"
+    volumes:
+      # ACC 的 Flyway 迁移脚本即建库脚本(顺序按文件名字典序,与 ACC 内 Flyway 一致)
+      - ../../acc/src/main/resources/db/migration:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  acc:
+    build:
+      context: ../../..
+      dockerfile: services/acc/deploy/Dockerfile
+    image: msz/acc:0.1.0-SNAPSHOT
+    depends_on:
+      redis:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    environment:
+      # 会话存储:必须与网关同一个 Redis 实例(否则吊销名单不共享 → 登出/踢人失效)
+      ACC_SESSION_STORE: redis
+      ACC_REDIS_HOST: redis
+      ACC_REDIS_PORT: 6379
+      # 短 token/refresh 签名密钥:与网关同值,否则网关验签一律失败(生产经 KMS 注入)
+      ACC_JWT_SECRET: ${ACC_JWT_SECRET:-dev-only-change-me}
+      # 会话 Cookie 生产必须带 Secure(容器内为 http,仅本地联调试 true/false 需与入口 TLS 一致)
+      ACC_SESSION_COOKIE_SECURE: ${ACC_SESSION_COOKIE_SECURE:-true}
+      ACC_INTERNAL_TOKEN: ${ACC_INTERNAL_TOKEN:-dev-only-change-me}
+      # 数据源(M1 占位 DataSource 尚未消费这些键,替换真实数据源后即为 ACC 的连接口径)
+      ACC_DB_URL: jdbc:mariadb://mariadb:3306/acc
+      ACC_DB_USERNAME: acc_app
+      ACC_DB_PASSWORD: ${ACC_DB_PASSWORD:-dev-only-change-me}
+    ports:
+      - "8080:8080"
+
   gateway-a:
     build:
       context: ../../..
@@ -28,7 +84,7 @@ services:
       GATEWAY_STORE: redis
       GATEWAY_REDIS_HOST: redis
       GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:-dev-only-change-me}
-      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://host.docker.internal:8080}
+      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://acc:8080}
       GATEWAY_INSTANCE_ID: gateway-a
       GATEWAY_VERSION: 0.1.0-SNAPSHOT
     ports:
@@ -43,7 +99,7 @@ services:
       GATEWAY_STORE: redis
       GATEWAY_REDIS_HOST: redis
       GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET:-dev-only-change-me}
-      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://host.docker.internal:8080}
+      GATEWAY_ACC_URI: ${GATEWAY_ACC_URI:-http://acc:8080}
       GATEWAY_INSTANCE_ID: gateway-b
       GATEWAY_VERSION: 0.1.0-SNAPSHOT
     ports:

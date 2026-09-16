@@ -1,7 +1,9 @@
 # ACC 真机联调桩（drill）
 
-> 用途：以**真实进程 + 真实数据库**形态运行 ACC，供「网关 §10.2 真机双进程联调」与手工验证使用。
-> 口径：`openspec/changes/implement-gateway-service/tasks.md` 任务组 10 / `services/gateway/deploy/README.md` §3 验证清单。
+> 用途：以**真实进程 + 真实数据库 + 真实 Redis**形态运行 ACC，供「网关 §10.2 真机双进程联调」、
+> 「双 token 会话闭环演练（`add-refresh-token-rotation` 任务组 7）」与手工验证使用。
+> 口径：`openspec/changes/implement-gateway-service/tasks.md` 任务组 10 /
+> `openspec/changes/add-refresh-token-rotation/tasks.md` 任务组 7 / `services/gateway/deploy/README.md` §3 验证清单。
 > **非生产代码**：`deploy/` 不在 Maven 源根下，不参与构建、不进入任何产物。
 
 ## 1. 为什么需要它
@@ -17,37 +19,77 @@
 curl → 网关(鉴权/限流/熔断/改写) → ACC(真实进程) → MyBatis → MariaDB(真实库) → 响应
 ```
 
+**2026-09-16 增量（双 token 会话，任务组 7）**：桩内再起一个**内嵌真实 Redis**
+（test 作用域依赖 `com.github.codemonstur:embedded-redis`，jar 内含 Windows 原生
+`redis-server-5.0.14.1-windows-amd64.exe`），ACC 以 `acc.session.store=redis` 使用它——
+跨进程吊销（**ACC 写、网关读**同一份 `revoked:jti:*`）是本变更最关键的安全行为，
+内存假实现无法验证；自写 RESP 桩则要支持网关限流用的 Lua `EVAL`，脆弱且是假证据。链路补全为：
+
+```
+curl → 网关(验签/限流/吊销读 Redis) → ACC(登录签发/换发轮换/重用检测/登出吊销) → MariaDB + Redis(真实实例)
+```
+
 ## 2. 前置
 
 | 项 | 要求 |
 |---|---|
 | JDK / Maven | Java 17、Maven 3.8+（本仓库自定义本地仓库亦可，脚本自动探测） |
-| 端口 | `8080`（ACC）、`33061`（嵌入式 MariaDB，可用外部 mysql 客户端直连核验） |
-| 不需要 | Docker、外部 MySQL、Redis（限流/吊销用 `--gateway.store=memory` 兜底） |
+| 端口 | `8080`（ACC）、`33061`（嵌入式 MariaDB，可用外部 mysql 客户端直连核验）、**`6380`（嵌入式 Redis）**、`18081`（网关） |
+| 不需要 | Docker、外部 MySQL、外部 Redis（Redis 由桩内嵌；`6380` 已有实例时桩会直接复用） |
 
 ## 3. 用法
 
 ```powershell
-# ① 构建 classpath（含 test 依赖）并编译演练桩
+# ① 构建 classpath（含 test 依赖：mariaDB4j / mariadb-java-client / embedded-redis）并编译演练桩
+#    注意：本脚本必须是**带 BOM 的 UTF-8**，否则 Windows PowerShell 5.1 解析中文字符串失败
 powershell -NoProfile -ExecutionPolicy Bypass -File services/acc/deploy/drill/build-drill-classpath.ps1
 
-# ② 起 ACC 真机（工作目录必须是 services/acc：数据库落在 target/drill-mariadb）
+# ② 起 ACC 真机（工作目录必须是 services/acc：数据库落在 target/drill-mariadb、Redis 数据目录 target/drill-redis）
+#    默认 8080；-Ddrill.acc.port / -Ddrill.db.port / -Ddrill.redis.port / -Ddrill.redis.host 可覆盖
 cd services/acc
 java -cp "target\classes;target\drill-classes;$(Get-Content target\drill-cp-final.txt -Raw)" drill.AccDrill
 
 # ③ 用 ACC 自身 JwtCodec 签发演练 token（与 acc.jwt-secret 同密钥）
 java -cp "target\classes;target\drill-classes;$(Get-Content target\drill-cp-final.txt -Raw)" drill.AccDrill token 1001 CONSUMER
 
-# ④ 起网关（A 实例）指向真实 ACC；密钥与 ③ 一致
-$env:GATEWAY_ACC_URI='http://localhost:8080'; $env:GATEWAY_STORE='memory'
+# ④ **先起 ACC（含 Redis）再起网关**——网关启动即连 Redis，顺序颠倒会拿到 down 状态需重启
+#    网关（A 实例）指向真实 ACC 与同一 Redis；密钥与 ACC 侧 acc.jwt-secret 一致
+$env:GATEWAY_STORE='redis'; $env:GATEWAY_REDIS_HOST='127.0.0.1'; $env:GATEWAY_REDIS_PORT='6380'
+$env:GATEWAY_ACC_URI='http://localhost:8080'
 $env:GATEWAY_JWT_SECRET='acc-jwt-test-secret-0123456789abcdef'  # 演练 fixture:与 ACC 侧 acc.jwt-secret 一致
 $env:GATEWAY_INSTANCE_ID='gateway-drill'
 java -jar services/gateway/target/gateway-0.1.0-SNAPSHOT.jar --server.port=18081
+#    就绪判据：curl http://127.0.0.1:18081/gateway/health → {"status":"UP","redis":"up",...}
+
+# ⑤ 跑双 token 会话闭环演练（25 项断言，逐项原始输出落盘）
+powershell -NoProfile -ExecutionPolicy Bypass -File services/acc/deploy/drill/session-drill.ps1
+#    退出码 0 = 全绿；取证目录默认 D:\progrom\.superpowers\sdd\add-refresh-token-rotation\drill
 ```
 
-启动时桩会：起嵌入式 MariaDB（**每次演练 DROP DATABASE 重建**，结果可复现）→ Flyway 迁移 V1/V2
-→ 以 `@Primary` 真实 DataSource 覆盖占位数据源 → 启动 `AccApplication`
-→ 用 ACC 自身 `DaoSupport`/`AccountMapper` 灌入夹具账户 `account_id=1001`（明文进出、AES-GCM 加密落库）。
+启动时桩会：起嵌入式 Redis（**6380**，端口被占则复用既有实例）→ 起嵌入式 MariaDB
+（**每次演练 DROP DATABASE 重建**，结果可复现）→ Flyway 迁移 V1/V2 → 以 `@Primary` 真实 DataSource
+覆盖占位数据源 → 启动 `AccApplication`（`acc.session.store=redis` + `acc.redis.host/port` 指向内嵌实例）
+→ 用 ACC 自身 `DaoSupport`/`AccountMapper` 灌入夹具账户 `account_id=1001 / mobile=13800138000`
+（明文进出、AES-GCM 加密落库，`mobile_hash` 由 `HmacFingerprint` 现算，与登录查询同源）。
+
+### 3.1 会话闭环演练（`session-drill.ps1`）逐项内容
+
+| 步 | 请求/动作 | 断言 |
+|---|---|---|
+| 0 | `/gateway/health` + Redis `PING` | 网关报 `redis=up`；Redis `PONG` |
+| 1 | `GET /api/v1/acc/captcha?type=IMAGE` → 从真实 Redis 读回答案 → `POST /api/v1/acc/captcha/verify` → `POST /api/v1/acc/auth/login` | 200；**响应体只有短 token**（无 `refreshToken` 字段）；`Set-Cookie` 带 `HttpOnly/Secure/SameSite=Lax/Path=/api/v1/acc/auth` + `Max-Age=604800`；短 token `exp-iat=900s` |
+| 2 | `GET /api/v1/acc/me`（Bearer 短 token） | 200 且返回真实库账户 |
+| 3 | `POST /api/v1/acc/auth/refresh`（Cookie 换发） | 200 + 新短 token + 新 `Set-Cookie`；Redis 族记录 `currentJti` 前移、旧 jti 进已轮换标记 |
+| 4 | **等 >5s（并发宽限窗口）**后重放旧 refresh，再用原短 token 访问 `/api/v1/acc/me` | 重放 401 + 2001；族 `status=REVOKED`；`revoked:jti:{jti}`=1 且 TTL∈[1,900]；**原短 token 与换发出的第二个短 token 都立即 401**（网关从 Redis 读吊销名单） |
+| 5 | 重新登录（新挑战/新票据） | 200，新会话族与旧族不同；新短 token 可用（200） |
+| 6 | `POST /api/v1/acc/auth/logout` → 再用该短 token 访问 `/api/v1/acc/me` → 直连 ACC 重复登出 | 登出 200 + `revoked=true` + `Max-Age=0`；随后 401（网关侧）；`revoked:jti` TTL∈[1,900]；重复登出仍 200（幂等，`revoked=false`） |
+| 7 | Redis `KEYS/TYPE/TTL` 遍历 `acc:session:*`、`acc:refresh:*`、`revoked:jti:*` | `acc:refresh:{jti}` TTL ≤ 604800（7 天）；`revoked:jti:{jti}` TTL ≤ 900；三类键同实例 |
+| 8 | 审计与网关日志抽取 | ACC `acc.session.audit` 记 `SESSION_REFRESH_REPLAY`/`SESSION_LOGOUT`（不含 token 原文）；网关 `鉴权失败 … reason=Token 已吊销` |
+
+> 说明：refresh Cookie 按生产口径带 `Secure`，curl 的 cookie 引擎不会在 http 链路回带，
+> 故脚本从 `Set-Cookie` 头解析出长 token 并以**显式 `Cookie` 头**回放（等价浏览器行为，且不放松生产属性）；
+> 重复登出经网关必被吊销名单拦下（401），故幂等语义**直连 ACC** 观测。
+
 
 ## 4. 校验矩阵（2026-09-15 实测，gateway 18081 + ACC 8080 + MariaDB 33061）
 
@@ -90,8 +132,43 @@ test 作用域的 `mariaDB4j` 把 javax 时代的 `jakarta.annotation-api:1.3.5`
 DAO 测试用 `openSession(true)`（自动提交），装配层的会话语义从未被真实库验证过。
 修复方案与影响面见 change 记录（待裁决）。
 
+## 5.1 演练发现（2026-09-16，双 token 会话任务组 7 的产出）
+
+### F-3 夹具账户 `mobile_hash` 为占位串 → 登录必 401（**演练桩自限，已修**）
+
+夹具账户原写死 `mobile_hash = "drill-mobile-hash-1001"`，而登录按
+`HmacFingerprint.hmacSha256Hex(mobile)` 查 `mobile_hash` 列（`SessionFlow#login`），
+故首次登录**必然** 401 + 2001（日志 reason=账户不存在）——旧矩阵只需签发 token，从未走登录，
+缺陷一直不可见。**已修**：夹具改取运行中的 `HmacFingerprint` Bean 现算指纹（与
+`AccConfiguration` 密钥同源，密钥轮换无需改桩）。
+
+### F-4 真实 Redis 上 `EVAL` 整数回复解码失败 → 建族/轮换/全失效（**真实生产缺陷，已修**）
+
+`AccLettuceStringRedisOps.eval` 原用 `ScriptOutputType.VALUE` 解码，而 `RedisSessionStore` 的
+5 个 Lua 脚本（ISSUE/ROTATE/CONSUME/SET/REVOKE）一律 `return 1`（Redis 整数回复），真实 Redis 下抛：
+
+```
+java.lang.UnsupportedOperationException: io.lettuce.core.output.ValueOutput does not support set(long)
+→ SessionStoreUnavailableException → 登录 503 + 5003（fail-closed 兜住了「不可吊销的 token」，但功能不可用）
+```
+
+**为什么单测没拦住**：`RedisSessionStoreContractTest` 用「假装执行脚本」的假客户端**回放期望语义**，
+从未真正执行过脚本——L4 风险「真实 Redis 上 Lua 行为」正是本次演练要覆盖的。
+**已修**：`eval` 改用 `ScriptOutputType.INTEGER`（并写明「本端口只支持返回整数的脚本」契约），
+新增回归用例 `AccLettuceStringRedisOpsRealRedisTest`（内嵌真实 Redis 上跑真实脚本：建族双键 /
+单次使用 / 轮换标记 / 吊销 TTL）——先 RED（同一 `UnsupportedOperationException`）后 GREEN。
+
+> 复跑指引：`mvn -f services/acc/pom.xml test -Dtest=AccLettuceStringRedisOpsRealRedisTest`。
+
 ## 6. 注意
 
 - 桩会 `DROP DATABASE acc`，**禁止指向任何真实数据库**；端口与库目录均可通过 `-Ddrill.acc.port` / `-Ddrill.db.port` 调整；
 - token 由 ACC 自身 `JwtCodec` 签发（M1 尚无登录接口，签发路径与未来登录一致），仅用于演练；
-- 外部核验库内容：`mysql -h 127.0.0.1 -P 33061 -u root acc -e "SELECT * FROM account"`（root 空口令，仅本机演练库）。
+- 外部核验库内容：`mysql -h 127.0.0.1 -P 33061 -u root acc -e "SELECT * FROM account"`（root 空口令，仅本机演练库）；
+- **Redis 由桩内嵌**（默认 6380，`-Ddrill.redis.port` 可改；该端口已有实例则复用）；
+  ACC 侧组合为 `acc.session.store=redis` + `acc.redis.host/port`（L1/R-A8：取 `redis` 而缺 `host` 会**启动失败**，
+  不会静默退化为内存会话存储）；
+- **启动顺序**：先 ACC（含 Redis）→ 起网关（网关启动即连 Redis，顺序颠倒会拿到 `redis=down`，需重启网关）；
+- **收尾必须停掉全部进程**（ACC 桩、网关、内嵌 Redis、内嵌 MariaDB），确认 `8080/18081/6380/33061` 全部释放
+  （`netstat -ano | findstr "LISTENING"` + 四端口连接探测）；桩退出时会经 shutdown hook 停掉内嵌实例；
+- MariaDB 目录若处于半安装状态（上次被强杀），删 `target/drill-mariadb` 后重起即可。

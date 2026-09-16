@@ -11,25 +11,38 @@
 | 运行时 | Java 17(JRE 即可) |
 | 实例数 | **双实例起步**(A/B),无状态、可水平扩展 |
 | 端口 | `8081`(业务入口 + 运维接口;运维接口另有网段白名单) |
-| 依赖 | **Redis(必需)** — JWT 吊销名单 + 限流计数;不可用时入口 fail-closed 503 |
-| 密钥 | `GATEWAY_JWT_SECRET`(env / KMS 注入;**密钥不出网关**) |
+| 依赖 | **Redis(必需)** — JWT 吊销名单 + 限流计数;不可用时入口 fail-closed 503。**该 Redis 必须与 ACC 的会话存储同一实例**(`revoked:jti:{jti}` = ACC 写、网关读,2026-09-16 双 token 会话增量) |
+| 密钥 | `GATEWAY_JWT_SECRET`(env / KMS 注入;**密钥不出网关**);与 ACC 的 `acc.jwt-secret` **同值**(否则 acc 签发的短 token 一律验签失败) |
 | 配置 | `gateway.*`(白名单/内部路径/限流初值/运维网段/**令牌策略** `auth.access-token-max-ttl` + `auth.clock-skew`)、`spring.cloud.gateway.server.webflux.routes`(路由)、`resilience4j.circuitbreaker.configs.default.*`(熔断) |
 | 入口 | Nginx(LB + TLS 终结 + `/gateway/**` 不对外) → 网关双实例 |
-| 容器 | `deploy/Dockerfile`(多阶段构建)、`deploy/docker-compose.yml`(本地一键起)、`deploy/nginx-gateway.conf.example`(入口样例) |
+| 容器 | `deploy/Dockerfile`(多阶段构建)、`deploy/docker-compose.yml`(本地一键起:redis + mariadb + **acc** + 网关双实例 + nginx)、`deploy/nginx-gateway.conf.example`(入口样例) |
 
 ### 环境变量(生产)
 
 ```
 GATEWAY_STORE=redis
-GATEWAY_JWT_SECRET=<KMS 注入,勿明文入库>
+GATEWAY_JWT_SECRET=<KMS 注入,勿明文入库>   # 与 ACC acc.jwt-secret 同值
 GATEWAY_ACCESS_TOKEN_MAX_TTL=15m            # 短 token(access)有效期上限,超长 token 一律 401+2001
 GATEWAY_CLOCK_SKEW=60s                     # 时钟容差(只放宽有效期上限判定,不放宽过期判定)
 GATEWAY_REDIS_HOST / GATEWAY_REDIS_PORT / GATEWAY_REDIS_USERNAME / GATEWAY_REDIS_PASSWORD
+                                           # 必须与 ACC 的 acc.redis.host/port 指向同一实例(吊销名单共享)
 GATEWAY_ACC_URI=http://acc:8080            # 各域路由目标(逐个环境覆盖)
 GATEWAY_INSTANCE_ID=gateway-a              # 双实例区分
 GATEWAY_VERSION=0.1.0-SNAPSHOT
 GATEWAY_TRUST_XFF=true                     # 仅当入口只有可信代理时保持 true
 ```
+
+### 对端(ACC)必须同时满足的部署前提(2026-09-16 会话增量)
+
+| ACC 配置 | 生产取值 | 不满足的后果 |
+|---|---|---|
+| `acc.session.store` | **`redis`** | 默认 `memory` 只允许测试/演练;生产取 memory 时会话族与吊销名单只在进程内,**登出/踢人静默失效** |
+| `acc.redis.host` / `acc.redis.port` | 与网关同一 Redis 实例 | 取 `redis` 而缺 `host` → **启动 fail-fast**(`IllegalStateException`,裁定 R-A8);指向别的实例 → 吊销名单不共享 |
+| `acc.jwt-secret` | 与 `GATEWAY_JWT_SECRET` 同值 | 短 token 验签失败 |
+| `acc.session.cookie-secure` | `true`(HTTPS 入口) | 明文链路下发长 token |
+
+> 会话端点白名单与 Cookie 透传口径见 `services/gateway/docs/README.md` §3.2;
+> 一键起的 compose 已把上述 ACC 依赖与环境变量写成 `acc` 服务的 `depends_on: redis(healthy)` + `environment`。
 
 ## 2. 上线切换步骤(首次接管)
 
@@ -62,6 +75,13 @@ GATEWAY_TRUST_XFF=true                     # 仅当入口只有可信代理时�
 | 12 | 停掉全部网关实例 | 入口快速失败 503(不直连应用) |
 | 13 | 运维接口非内网来源访问 | 404 |
 | 14 | 超长有效期 token(如 1 小时)/ 无 `sub` 的 token | 401 + 2001(网关只认短 token;`sub` 必填) |
+| 15 | **会话换发链路(2026-09-16 增量,真机实测见 `services/acc/deploy/drill/README.md` §3.1)** | — |
+| 15.1 | 无 token `POST /api/v1/acc/auth/login`(白名单) | 放行直达 ACC;200 且响应体**只有短 token**,`Set-Cookie` 带 `HttpOnly; Secure; SameSite=Lax; Path=/api/v1/acc/auth` |
+| 15.2 | 短 token 访问 `/api/v1/acc/me` | 200(网关验签 + 透传身份头) |
+| 15.3 | 带 refresh Cookie `POST /api/v1/acc/auth/refresh` | 200 + 新短 token + 新 `Set-Cookie`(Cookie 原样透传,网关不解析) |
+| 15.4 | 重放已轮换的旧 refresh(超出 5s 并发宽限窗口) | 401 + 2001,且**整族吊销**——随后原短 token 访问业务接口 → 401(`鉴权失败 reason=Token 已吊销`,证明网关从 Redis 读到吊销名单) |
+| 15.5 | `POST /api/v1/acc/auth/logout`(带短 token) | 200 + 清 Cookie(`Max-Age=0`);随后该短 token → 401;**logout 不在白名单**,无 token 时 401 |
+| 15.6 | 会话端点限流 | 不获豁免(落 WRITE 档),超限 429 + 2004 且下游零调用 |
 
 ## 4. 回滚
 
@@ -78,7 +98,16 @@ GATEWAY_TRUST_XFF=true                     # 仅当入口只有可信代理时�
 ## 6. 已知约束 / 待办
 
 - 路由目标 M1 初期为静态配置(改配置需重启或走配置刷新);Nacos 服务发现与配置热更新在 M1 后期;
-- 吊销名单写入方(ACC 登出/踢下线)在任务组 10 落地:`SET revoked:jti:{jti} 1 PX <剩余有效期>`;
+- 吊销名单写入方 = **ACC(已落地,2026-09-16)**:登出/重用检测写 `SET revoked:jti:{jti} 1 EX <剩余有效期>`,
+  网关只读;两侧**必须同一 Redis 实例**(口径见 §1 与 `services/gateway/docs/README.md` §3.2);
 - 限流初值为定档初值(★压测标定):IP 200/s、读 1000/s、写 100/s、AI 10/min、资金 100/s;
 - 熔断实例按路由命名(当前 `accCircuitBreaker`),新增路由须各自命名;
-- **换发(refresh)接口待落地**:长 token 存 **HttpOnly + Secure + SameSite Cookie**、**7 天**,仅用于换发短 token、**不经网关业务链路**;换发接口属**接口清单新增**(M1 尚无登录接口),落地前网关侧只校验短 token(access **15 分钟**,`exp` 超上限即 401+2001)。
+- **换发(refresh)链路已落地(2026-09-16)**:长 token 存 **HttpOnly + Secure + SameSite Cookie**、**7 天**,
+  只经 `POST /api/v1/acc/auth/refresh` 换短 token、**不经网关业务链路**(网关不解析 Cookie);
+  网关侧白名单 +2(`/api/v1/acc/auth/login`、`/api/v1/acc/auth/refresh`,**不含 logout**)。
+  真机闭环(登录/换发/重放整族吊销/登出)实测见 `services/acc/deploy/drill/README.md` §3.1 与本文件 §3 第 15 组;
+- **ACC 容器化未闭环(M1 已知限制)**:`services/acc/deploy/Dockerfile` 可产出镜像(classes + 运行期依赖),
+  但 ACC 的 `AccConfiguration` 仍是**占位 DataSource**,容器内触库路径不可用——真实数据源注入落地前,
+  compose 中的 `acc` 服务只用于固化**部署拓扑与配置口径**(Redis 依赖 + 会话存储环境变量),**不是**联调路径;
+  真机联调走 `services/acc/deploy/drill`(真实 ACC 进程 + 真实 MariaDB + 内嵌真实 Redis);
+- 沙箱无 Docker,`docker compose up` 的运行验证未在本机执行(仅做 compose YAML 解析校验);有 Docker 的环境可直接跑。
