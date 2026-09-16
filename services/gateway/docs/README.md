@@ -45,14 +45,24 @@
 
 ① TLS 终止（Nginx）→ ② 云 WAF/高防 → ③ **入口净化**（剥离客户端伪造的 `X-User-*`、拒绝路径混淆 `./ ../ // %2e`）→ ④ 网关 JWT 验签（HS256，硬校验 `alg`）+ Redis 吊销检查（`revoked:jti:{jti}`）+ 限流 → ⑤ 透传身份头 `X-User-Id/Role/Mfa/Jti` → ⑥ 服务内越权校验（2002）。
 
-- **白名单**（无 token 放行）：`/api/v1/acc/captcha`、`/api/v1/acc/register`、`/api/v1/acc/realname/status`（段边界匹配，`/registerAny` 不蹭白名单）；白名单请求同样经过入口净化与 IP 级限流。
-- 验签失败/过期/已吊销 → 401 + 2001（不泄露失败细节）；Redis 吊销查询不可用 → **fail-closed 503 + 5003**。
+- **白名单**（无 token 放行，**段边界匹配**，`/registerAny`、`/auth/loginAny` 不蹭白名单）：
+  `/api/v1/acc/captcha`、`/api/v1/acc/register`、`/api/v1/acc/realname/status`、
+  **`/api/v1/acc/auth/login`**、**`/api/v1/acc/auth/refresh`**（2026-09-16 会话增量；**`/api/v1/acc/auth/logout` 刻意不在白名单**——
+  登出需有效短 token 或有效长 token Cookie，白名单化只会削弱保护）。白名单请求同样经过入口净化与 IP 级限流，**不获限流豁免**。
+- **Cookie 透传与非解析（2026-09-16 会话增量）**：网关**不读、不写、不解析** `Cookie`/`Set-Cookie`，
+  请求头与响应头**原样透传**（换发响应下发的 `refresh_token` 逐字到达客户端）；鉴权**只看 `Authorization: Bearer`**，
+  「仅带 Cookie 无 Bearer」访问受保护路径一律 401 + 2001（Cookie 不构成认证），因此业务接口不受 Cookie 影响、也无需全站 CSRF Token。
+- 验签失败/过期/已吊销 → 401 + 2001（不泄露失败细节，吊销命中记 `鉴权失败 reason=Token 已吊销`）；Redis 吊销查询不可用 → **fail-closed 503 + 5003**。
 
-**令牌策略（双 token，2026-09-15 用户裁决 + 审查 I9 加固）**：
+**令牌策略（双 token，2026-09-15 用户裁决 + 审查 I9 加固；2026-09-16 签发侧落地）**：
 
 - **短 token（access，15 分钟）**：走 `Authorization: Bearer`，由网关验签校验。网关**只认短 token**——`exp` 必须存在、未过期且**不超过 `access-token-max-ttl`（默认 15 分钟）+ `clock-skew`（默认 60 秒）** 的绝对时间上界，超长有效期一律 401 + 2001（密钥泄漏时爆炸半径受控）；`sub` 必须存在且非空白（否则下游会收到空身份）；签名算法 `alg` 必须为 HS256。
-- **长 token（refresh，7 天）**：存 **HttpOnly + Secure + SameSite** Cookie，**不经网关业务链路**，仅用于换发短 token（不进 `Authorization` 头、不被网关验签）。
-- **换发（refresh）接口尚未实现**：M1 尚无登录接口，换发接口属**接口清单新增**（需走 openapi 权威源 + 前端 api-client 同步），已登记待评审；本次只落地**网关侧校验策略**，不表示 refresh 链路已可用。
+- **长 token（refresh，7 天）**：存 **HttpOnly + Secure + SameSite=Lax Cookie，Path 限定 `/api/v1/acc/auth`**，**不经网关业务链路**（不进 `Authorization` 头、不被网关验签、网关不解析 Cookie），仅用于 `POST /api/v1/acc/auth/refresh` 换发短 token。
+- **签发与吊销写入方 = ACC（2026-09-16 已落地）**：`POST /api/v1/acc/auth/{login,refresh,logout}` 由 ACC 提供并签发；
+  登出/重用检测写 `revoked:jti:{jti}`（TTL = 该短 token 剩余有效期），网关只读该键——
+  两侧**必须同一 Redis 实例**（网关 `spring.data.redis.host/port` 与 ACC `acc.redis.host/port`），
+  ACC 侧生产必须 `acc.session.store=redis`（取 memory 则吊销名单不共享、登出/踢人静默失效；缺 `host` 启动即失败）。
+  真机闭环实证见 `services/acc/deploy/drill/README.md` §3.1 与 `services/gateway/deploy/README.md` §3 第 15 组。
 - 判定口径：**过期判定严格**（不留容差），容差只用于放宽「有效期上限」，避免过期 token 被额外接受。
 
 ### 3.3 网关级限流
@@ -118,9 +128,14 @@
 - **过滤器顺序（契约，测试锁定）**：`RequestSanitizerFilter(-20)` → `TraceIdFilter(-10)` → `JwtAuthFilter(0)` → `InternalPathGuardFilter(5)` → `RateLimitFilter(10)` → `TimeoutFilter(100)` → 路由过滤器（RewritePath 等）→ R4J 熔断。
 - **配置键**：`gateway.{store,auth.whitelist,auth.jwt-secret,auth.access-token-max-ttl,auth.clock-skew,internal-paths,rate-limit.*,version,instance-id}`；其中 `auth.access-token-max-ttl`（默认 `15m`，env `GATEWAY_ACCESS_TOKEN_MAX_TTL`）与 `auth.clock-skew`（默认 `60s`，env `GATEWAY_CLOCK_SKEW`）为**令牌策略**（见 §3.2）；路由 `spring.cloud.gateway.server.webflux.routes`（含 `metadata.timeout`、`metadata.weight`）；熔断 `resilience4j.circuitbreaker.configs.default.*`；Redis `spring.data.redis.{host,port,username,password,timeout,connect-timeout}`。环境变量模板见 `.env.example`。
 - **部署**：`mvn -f services/gateway/pom.xml verify` 产出可执行 fat jar（`java -jar gateway-*.jar`）；双实例 + Nginx upstream 指向；`gateway.store=redis` 为生产模式（`memory` 仅开发兜底）。
-- **质量基线**：139 用例（含 Redis 故障 fail-closed、熔断打开/半开恢复、路径改写、伪造头剥离、令牌策略等集成用例；2026-09-15 令牌策略加固新增 6 用例 + 配置绑定 1 用例，原 132）；jacoco 行 ≥80% / 分支 ≥75%（实测 94%/84%）。
+- **质量基线**：150 用例（含 Redis 故障 fail-closed、熔断打开/半开恢复、路径改写、伪造头剥离、令牌策略等集成用例；2026-09-15 令牌策略加固新增 6 用例 + 配置绑定 1 用例，2026-09-15 会话端点增量新增 11 用例——白名单/近似路径/Cookie 透传/仅 Cookie 不构成认证/限流不豁免，原 139）；jacoco 行 ≥80% / 分支 ≥75%（实测 94%/84%，`verify` 一次通过）。
 - **配置绑定陷阱（实测记录）**：`@ConfigurationProperties` 的记录绑定**只允许唯一构造器**——给嵌套记录再加一个构造器会让 Spring 找不到绑定入口，实测 `gateway.auth` 绑定为 `null`（12 个上下文用例同时变红）；需要默认值时应使用**静态工厂**（如 `Auth.of(...)`），不要加第二构造器。
 - **真机双进程联调（2026-09-15，任务组 10.2）**：`curl → 网关(18081，鉴权/限流/熔断/改写) → ACC 真实进程(8080) → MyBatis → MariaDB(33061)` 全链路实测——15 分钟 token 200 / 1 小时 token 401+2001 / 无 `sub` token 401+2001 / 伪造 `X-User-Id:9999` 仍按验签身份 `acc_1001` / 白名单 200 / 内部接口 404（直连 ACC 同路径 200，证明拦截发生在网关）/ 路径混淆 7 变体全部 404。演练桩见 `services/acc/deploy/drill/README.md`。
+- **会话闭环真机演练（2026-09-16，`add-refresh-token-rotation` 任务组 7）**：网关(18081, `GATEWAY_STORE=redis`) + 真实 ACC(8080, `acc.session.store=redis`) + **内嵌真实 Redis(6380)** 三进程，
+  换发链路与跨进程吊销全绿——登录 200（体只含短 token + Cookie 四属性）/ 短 token 业务 200 / Cookie 换发 200 且长 token 轮换 /
+  旧 refresh 重放 401+2001 且整族吊销（原短 token 立即 401，网关日志 `鉴权失败 … reason=Token 已吊销` → 证明网关读的是 Redis 吊销名单）/
+  重新登录 200 / 登出 200 后立即 401；Redis 键路径与 TTL 逐键核验。断言脚本 `services/acc/deploy/drill/session-drill.ps1`（25 项断言），
+  网关侧验证清单见 `services/gateway/deploy/README.md` §3 第 15 组。
 
 ## 7. 参考文档
 

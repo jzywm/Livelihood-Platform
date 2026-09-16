@@ -11,8 +11,8 @@
 - **里程碑**：M1 交付。
 - **实现载体 / 技术栈**：Java 17 + Spring Boot 3.5（模块化单体，属业务域，不随 Agent/AI 侧 Python 化）。
 - **三端分布**：消费端（实名/流水）· 经营端（实名/流水）· 监管端（资金流水审计）。
-- **依赖服务 / 外部依赖**：微信 / 支付宝实名回传（强依赖）、支付通道；被 ACC 依赖的下游包括 CRED、EMP、TICKET、TRACE、SETTLE、ASSIST 等。
-- **核心状态机**：实名认证（未实名 → 实名中 → 已实名 / 暂停）。
+- **依赖服务 / 外部依赖**：微信 / 支付宝实名回传（强依赖）、支付通道、**Redis（会话凭据存储，生产必需）**——会话族与网关吊销名单必须落在**同一个 Redis 实例**（`revoked:jti:{jti}` 契约：ACC 写、网关读）；被 ACC 依赖的下游包括 CRED、EMP、TICKET、TRACE、SETTLE、ASSIST 等。
+- **核心状态机**：实名认证（未实名 → 实名中 → 已实名 / 暂停）；**会话凭据**（登录建族 → 轮换换发 → 重用检测整族吊销 / 登出吊销）。
 
 ## 2. 背景条件
 
@@ -45,6 +45,22 @@
 
 登录 / 注册页（页面码 G-01）人机验证：默认滑块拼图，滑块失败降级图形验证码；校验通过下发一次性凭证 verifyToken，注册接口回填 captchaToken 完成防机器人校验（登录爆破限速）。接口：`GET /acc/captcha`（下发挑战，正确结果仅存服务端）、`POST /acc/captcha/verify`（校验，挑战一次性消费防暴力枚举）。异常处理：答案错误 / 过期 → success=false，前端重取或降级图形验证码。
 
+### 3.5 会话凭据（双 token：签发 / 换发轮换 / 重用检测 / 登出吊销，2026-09-16）
+
+免密登录签发**短 token（access，15 分钟，走 `Authorization: Bearer`）**与**长 token（refresh，7 天，仅 `HttpOnly; Secure; SameSite=Lax; Path=/api/v1/acc/auth` Cookie）**；换发**单次使用 + 轮换**，旧长 token 再次出现即判泄露并**吊销整个会话族**（含未过期短 token）；登出把短 token 的 `jti` 写入网关共享吊销名单并清 Cookie。**长 token 原文只经 `Set-Cookie` 下发，永不进响应体与日志**。
+
+| 接口（openapi v1.2.0，网关对外路径） | 说明 | 关键口径 |
+|---|---|---|
+| `POST /api/v1/acc/auth/login` | 手机号 + 一次性人机验证票据换双 token | 200 响应体只含短 token；长 token 仅 `Set-Cookie`；失败统一 401 + 2001（不区分原因） |
+| `POST /api/v1/acc/auth/refresh` | 以 Cookie 换发新 token 对 | 单次使用 + 轮换；超出 5s 并发宽限窗口的旧 token 重放 → 401 + 2001 且**整族吊销**；校验 `Origin`/`Referer` |
+| `POST /api/v1/acc/auth/logout` | 吊销当前会话族（幂等） | 短 token `jti` 入 `revoked:jti:{jti}`（TTL = 剩余有效期）；族置 `REVOKED`；`Max-Age=0` 清 Cookie |
+
+- **数据归属**：会话族 `acc:session:{familyId}`、refresh 映射 `acc:refresh:{jti}`（TTL ≤ 7 天 = 其有效期）、
+  已轮换标记（保留至族到期，重放因此可识别）与吊销名单 `revoked:jti:{jti}`（TTL = 短 token 剩余有效期）
+  **全部在 Redis**；ACC **不设会话业务表**（非权威业务数据，`er.md` 不新增实体）。
+- **网关协作**：`revoked:jti:{jti}` 是**跨服务契约**——ACC 写、网关读；两侧必须同一 Redis 实例，
+  否则登出/踢人失效。网关侧白名单放行 login/refresh（**不含 logout**），Cookie 原样透传、不解析。
+
 ## 4. 非功能性需求要求
 
 ### 4.1 全平台通用基线（所有服务共同遵守）
@@ -68,12 +84,12 @@
 
 - 《产品需求文档》PRD §2 背景与目标、§3.4 红线 R-01~R-16、§5.11（I 组）、§7 非功能需求
 - 《产品设计文档》PDD §2.4 模块与服务映射、§5.1 账户服务、§6.4.1 接口清单、§8 非功能设计
-- 接口文档（**唯一可手改源**）：`services/acc/docs/openapi.yaml`（OpenAPI 3.0，前端接口 16 个；公共组件引用 `services/_common/openapi.yaml`，勿复制内联）
-- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/acc/docs/er.md`（6 实体：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)；口径对齐 openapi.yaml v1.1.0 与《高并发架构演进设计》v1.0 §2）
-- Apifox 导入产物（**自动生成，禁止手改**）：`services/acc/docs/openapi.apifox.json`
+- 接口文档（**唯一可手改源**）：`services/acc/docs/openapi.yaml`（OpenAPI 3.0，**v1.2.0：前端接口 19 个**，含会话三接口 `/acc/auth/{login,refresh,logout}`；公共组件引用 `services/_common/openapi.yaml`，勿复制内联）
+- 数据库设计说明书（ER + 分库分表 + 数据字典 + 表设计）：`services/acc/docs/er.md`（6 实体：account / realname_record / wallet_flow / wallet_binding / reconcile_task + captcha_challenge(Redis)；口径对齐 openapi.yaml v1.1.0 与《高并发架构演进设计》v1.0 §2）；**会话族/refresh 映射/吊销名单在 Redis，不新增业务表，故 er.md 不变**
+- Apifox 导入产物（**自动生成，禁止手改**）：`services/acc/docs/openapi.apifox.json`（用 `.dsh/regen-apifox.cjs acc --write` 由 openapi.yaml 重打包）
 - 流程时序：`docs/design/diagrams/05-实名认证流程-I1.md`
 
-## 6. 已知限制与实现要点（2026-09-15 真机联调补录）
+## 6. 已知限制与实现要点（2026-09-15 真机联调补录；2026-09-16 会话增量补录）
 
 - **数据层会话语义（已修 + 残余限制）**：`AccConfiguration` 的 Mapper Bean 原为 `factory.openSession().getMapper(...)`——会话长驻、`autoCommit=false`、**事务永不提交**。真实数据库下出现三个症状：
   1. **读陈旧**：外部连接已提交 `wallet_status='FROZEN'`，接口仍返回 `ACTIVE`（REPEATABLE READ 长事务快照）；
@@ -83,4 +99,20 @@
 - **已落地：请求级事务边界 + session-per-request（`fix-acc-transaction-boundary`，2026-09-15）**：上条止血留下的三项残留已全部收敛——① `AccConfiguration` 的 6 个 Mapper Bean 改为**事务感知动态代理**（`infrastructure/tx/TransactionalMapperProxy`），每次调用转发到**当前请求会话**上的真实 Mapper，一个请求内的全部数据访问落在同一会话/连接；② `repository/RequestSqlSessionHolder` 以 `ThreadLocal` 绑定**请求级会话**，首次真正访问数据库时才惰性 `openSession(false)`，请求结束必 `close()`（归还连接）并 `remove()`，不再有长驻会话，并发请求各持独立会话/连接；③ `infrastructure/tx/TransactionBoundaryFilter`（order 2，`urlPatterns=/acc/*`）承担**请求级事务边界**——正常返回提交、未捕获异常（含受检）回滚、错误 Envelope 经 `GlobalExceptionHandler` 置位的 `acc.transaction.rollbackOnly` 标记同样回滚、`finally` 关会话。由此**跨表写入具备原子性**（失败请求不留半成品）、提交结果对其它连接立即可见、失败的幂等占位随事务释放（同 `Idempotency-Key` 可立即重试）。回归防线：`config/RealDbAssemblyTest` 扩展至跨表回滚 / 并发隔离 / 提交可见性 / 幂等槽位释放 / 读路径契约 / 连接释放 / 并发同 key 竞态 / 未提交写隔离（tasks 3.8 `uncommittedExternalWriteStaysInvisibleToConcurrentRead`，**守卫用例，未观测到 RED**）等真实库用例。**验证**：`mvn -f services/acc/pom.xml verify -nsu` = **280 用例 0 失败**（原 253）；真机双进程联调复跑（网关 18081 + 真实 ACC 8080 + 嵌入式 MariaDB 33061）与 2026-09-15 记录一致——短 token 200 / 超长与无 `sub` token 401+2001 / 白名单 200 / 网关内部接口 404（直连 ACC 同路径 200，证明拦截在网关）/ 直连 ACC 四身份头 200，并复验写后读：`POST /acc/account/close` 返回 200 后外部连接立即读到 `closed_at=2026-09-15 21:02:16.391, close_reason=g4-drill-recheck`，无「写不落库 / 读陈旧」回归。
 - **回归防线**：新增 `services/acc/src/test/java/com/msz/acc/config/RealDbAssemblyTest.java`（真实库 + 真实 Tomcat + 真实 HTTP，2 用例，分别拦「读陈旧」与「写不落库」）。反向验证：把修复临时改回原实现，该测试立刻 **1 Failure**（`closed_at` 为 NULL）+ **1 Error**（`Lock wait timeout exceeded`）→ 证明能拦住回归。ACC `mvn verify` = **253 用例 0 失败**（原 251）。
 - **`jakarta.annotation-api` 钉版缘由**：`services/acc/pom.xml` 显式钉 `jakarta.annotation:jakarta.annotation-api:2.1.1`——test 作用域的 mariaDB4j 会传递 javax 时代的 `1.3.5` 抢占依赖调解，令 Web 容器启动抛 `NoClassDefFoundError: jakarta/annotation/PostConstruct`（真机联调发现；真实库装配层测试与演练桩均依赖该钉版）。
-- **真机联调桩入口**：`services/acc/deploy/drill/README.md`（嵌入式 MariaDB（mariaDB4j，test 作用域）+ Flyway V1/V2 + `@Primary` 真实 DataSource 覆盖 M1 占位数据源 + 真实 `AccApplication` 进程；夹具账户 `account_id=1001`，`token` 模式用 ACC 自身 `JwtCodec` 签发演练 token；**非生产代码、不参与构建**）。
+- **真机联调桩入口**：`services/acc/deploy/drill/README.md`（嵌入式 MariaDB（mariaDB4j，test 作用域）+ **内嵌真实 Redis（embedded-redis，默认 6380）** + Flyway V1/V2 + `@Primary` 真实 DataSource 覆盖 M1 占位数据源 + 真实 `AccApplication` 进程；夹具账户 `account_id=1001 / mobile=13800138000`（`mobile_hash` 由 `HmacFingerprint` 现算，与登录查询同源），`token` 模式用 ACC 自身 `JwtCodec` 签发演练 token；`session-drill.ps1` 为双 token 会话闭环断言脚本；**非生产代码、不参与构建**）。
+- **会话存储装配（L1 修复 + 裁定 R-A8，2026-09-16）**：新增显式开关 **`acc.session.store = memory|redis`（默认 `memory`）**——
+  ① 取 `redis` 而 `acc.redis.host` 为空 → **启动 fail-fast**（`IllegalStateException`，提示「acc.session.store=redis 需配置 acc.redis.host（生产会话存储）」），取代原「host 为空即静默退化为内存」的静默降级；
+  ② 取 `memory` → 进程内实现且**绝不触碰 Redis**（测试/演练）；
+  ③ 取值非法同样启动失败（拼错不放行）。
+  **生产必须设 `acc.session.store=redis` + 指向网关同一实例的 `acc.redis.host`**，否则登出/踢人静默失效；该前提已写入 PDD v1.18 §8.4.1、
+  网关部署手册 §1、`services/gateway/deploy/docker-compose.yml`（acc 服务 `depends_on: redis(healthy)` + 环境变量）。
+- **真实 Redis 缺陷修复（L4，2026-09-16 会话闭环演练暴露）**：`AccLettuceStringRedisOps.eval` 原用 `ScriptOutputType.VALUE`，
+  而 `RedisSessionStore` 的 5 个 Lua 脚本一律 `return 1`（整数回复）→ 真实 Redis 上抛
+  `UnsupportedOperationException: ValueOutput does not support set(long)`，登录直接 503 + 5003。已改用 `ScriptOutputType.INTEGER`；
+  回归防线 `AccLettuceStringRedisOpsRealRedisTest`（内嵌真实 Redis 上跑真实脚本：建族双键/单次使用/轮换标记/吊销 TTL，先 RED 后 GREEN）。
+  教训：会话存储的单测用「回放期望语义」的假客户端，**真实 Lua 行为必须由真实 Redis 用例或真机演练覆盖**。
+- **会话闭环真机演练（2026-09-16，任务组 7）**：网关 18081 + 真实 ACC 8080 + 内嵌真实 Redis 6380 双进程，
+  `session-drill.ps1` 25 项断言全绿——登录 200（体只含短 token、Cookie 四属性齐备）/ 短 token 业务 200 /
+  Cookie 换发 200 且轮换 / 旧 refresh 重放 401+2001 且**整族吊销**（原短 token 立即 401，网关日志 `reason=Token 已吊销`）/
+  重新登录 200 / 登出 200 后立即 401；Redis 键路径与 TTL 逐键核验（`acc:refresh:*` ≤ 7 天、`revoked:jti:*` ≤ 短 token 有效期）。
+  **ACC `mvn -f services/acc/pom.xml verify -nsu` = 385 用例 0 失败**（基线 381，+2 L1 装配用例 +2 真实 Redis 用例）。
