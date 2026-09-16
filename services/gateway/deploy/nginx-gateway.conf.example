@@ -6,11 +6,15 @@
 #   3. X-Forwarded-For 用 $proxy_add_x_forwarded_for 追加真实客户端 IP 到链尾
 #      (网关取链尾作为客户端 IP,防伪造);TLS 在本层终结;
 #   4. 网关全实例不可用时返回 503(LB 层快速失败),不做「直连单体」降级;
-#   5. **X-Forwarded-Host $host 必须带上**(2026-09-16 双 token 会话增量,裁定 R-A15):
-#      网关(SCG)会把 Host 改写成下游 ACC 的内网地址,ACC 侧的「同源默认放行」需要知道
-#      浏览器看到的 host;本行让 ACC 收到的请求自身来源 = 前端入口 origin,
-#      从而**无需**为每个环境维护 acc.session.allowed-origins。
-#      (真机演练已验证 SCG 会把客户端/入口传入的 X-Forwarded-Host 原样转发给 ACC。)
+#   5. **Host 必须透传(默认必需),X-Forwarded-Host 建议同时带上(备案/双保险)**:
+#      网关 acc 路由已启用 `PreserveHostHeader`(裁定 R-A16),把入口传来的原始 `Host` 原样转给 ACC;
+#      ACC 侧「同源默认放行」据此推断浏览器看到的 host(host 部分不再依赖 X-Forwarded-Host)。
+#      - `proxy_set_header Host $host;`                          ← 默认链路的关键行(不要改成 upstream 名);
+#      - `proxy_set_header X-Forwarded-Host $host;`             ← 备案:链路中再多一跳/换入口代理时的兜底,
+#        R-A16 之前它是必需项(真机演练已验证 SCG 会把入口传入的值原样转发给 ACC),保留即双保险;
+#      - `proxy_set_header X-Forwarded-Proto $scheme;`          ← HTTPS 入口必需:scheme 无法由 Host 推断
+#        (TLS 在本层终结,浏览器是 https 而网关到 ACC 是明文 http)。
+#      (真机实测:入口只透传 Host + 同源 Origin → 换发 200;跨站 Origin → 401 + 2001 且不轮换。)
 
 upstream gateway_cluster {
     # M1 初期双实例;生产按实例清单替换
@@ -36,8 +40,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 见文件头约定 5:HTTPS 入口必需(scheme 不能由 Host 推断)
         proxy_set_header X-Forwarded-Proto $scheme;
-        # 见文件头约定 5:ACC 的会话来源校验(同源默认放行)依赖它
+        # 见文件头约定 5:备案/双保险——默认链路已由网关保留原始 Host(R-A16),本行保留以兼容多跳代理
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header Connection "";
         proxy_connect_timeout 1s;

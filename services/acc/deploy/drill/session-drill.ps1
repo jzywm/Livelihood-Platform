@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   双 token 会话闭环演练（登录 → 业务接口 → 换发 → 旧 refresh 重放被拒且整族吊销 → 重新登录取新对 → 登出后立即 401）。
 
@@ -18,6 +18,8 @@
     3  Cookie 换发 POST /api/v1/acc/auth/refresh → 200 + 新短 token + 新 Set-Cookie
        （**A1**：轮换后族键 TTL 仍 ≈ 7 天；族记录 expiresAtMillis 与族内短 token 到期时刻相差 > 1 天）
     3b **来源校验（R-A15）**：带跨站 `Origin` 的换发 → 401 + 2001 且**不轮换**；同源 `Origin` → 200
+       （三种可达形态：入口转发原始 host / 直连 ACC / **R-A16 默认链路**——入口只透传 `Host`、网关保留原始
+       Host，浏览器同源 `Origin` 即 200，无需任何 `X-Forwarded-*`；跨站 `Origin` 仍 401 且不轮换）
     4  **等待超过 5s 轮换宽限窗口**后重放旧 refresh → 401 + 2001，且整族吊销：
        原短 token 访问 /api/v1/acc/me → 401（网关从 Redis 的 `revoked:jti:{jti}` 读到吊销）
        （**A1**：重放后族记录 `status=REVOKED` 仍**存在**，且族键 TTL 仍 ≈ 7 天——
@@ -303,13 +305,13 @@ Assert-Step '3.6' 'R-A15 跨站 Origin 的换发 → 401 + 2001' "http=$code cod
 $familyAfterCross = [string](Invoke-Redis -Command @('GET', "acc:session:$family"))
 $familyCross = $familyAfterCross | ConvertFrom-Json
 Assert-Step '3.7' 'R-A15 跨站来源被拒时**不轮换**（族 currentJti 未前移）' "before=$(Short $jtiBeforeOriginCheck) after=$(Short $familyCross.currentJti)" ($familyCross.currentJti -eq $jtiBeforeOriginCheck)
-# 3b.2）同源默认放行的两种**可达**形态：
-#   a) 入口代理转发客户端看到的 host（X-Forwarded-Proto/Host）——生产推荐形态；
-#   b) 直连 ACC 且 Host 即客户端 host——本地联调形态。
-# 已核实的环境约束（见 deploy/drill/README.md §3.1 与 gateway/deploy/README.md §1 前提表）：
-#   Spring Cloud Gateway 会把 Host 改写成 ACC 内网地址、且**默认不转发**原始 Host ⇒ 该拓扑下 ACC
-#   推断不出对外来源，浏览器换发需把前端入口 origin 配进 acc.session.allowed-origins（或让入口
-#   代理设置 X-Forwarded-Host）；否则本步 a) 之外的「裸网关」形态仍会 401。
+# 3b.2）同源默认放行的三种**可达**形态：
+#   a) 入口代理转发客户端看到的 host（X-Forwarded-Proto/Host）——HTTPS 入口（TLS 终结）形态，样例入口配置已含；
+#   b) 直连 ACC 且 Host 即客户端 host——本地联调形态；
+#   c) **默认链路（R-A16 收口）**：入口只按常规 `proxy_set_header Host $host` 透传原始 Host，网关
+#      （acc 路由的 PreserveHostHeader 过滤器）原样转给 ACC——**不需要** X-Forwarded-*。
+# 历史约束（R-A16 之前）：SCG 会把 Host 改写成 ACC 内网地址且默认不转发原始 Host ⇒ 该拓扑下 ACC 推断不出
+# 对外来源，只能靠 acc.session.allowed-origins 或入口补 X-Forwarded-Host（现已由网关侧保留 Host 解决）。
 $code = Invoke-Api -Name 'step3b-same-origin-forwarded' -Method POST -Url "$GatewayBase/api/v1/acc/auth/refresh" `
     -Headers @("Cookie: $CookieName=$refresh2", "Origin: $GatewayBase", 'X-Forwarded-Proto: http',
         "X-Forwarded-Host: $(([uri]$GatewayBase).Authority)")
@@ -319,6 +321,35 @@ $code = Invoke-Api -Name 'step3b-same-origin-direct' -Method POST -Url 'http://1
     -Headers @("Cookie: $CookieName=$refresh2", 'Origin: http://127.0.0.1:8080')
 Assert-Step '3.9' 'R-A15 同源放行（直连 ACC 形态）：Origin = 请求自身 scheme+host → 200' "http=$code origin=http://127.0.0.1:8080" ($code -eq 200)
 if ($code -eq 200) { $refresh2 = Get-SetCookieValue 'step3b-same-origin-direct' }
+
+# 3b.3）R-A16（最终评审 Important I1 收口）：网关 acc 路由启用 PreserveHostHeader，原始 Host 原样到 ACC。
+#   正向（3.10）：模拟真实浏览器 + 常规入口（Host: $publicHost，**不带任何 X-Forwarded-* 头**），
+#     浏览器同源 Origin = http://$publicHost ⇒ 必须 200（默认部署拓扑下换发不再 401）。
+#   反向（3.11/3.12）：同样的保留 Host 形态 + 跨站 Origin=https://evil.example ⇒ 401 + 2001 且不轮换。
+$publicHost = 'api.example.com'
+$chainNote = @(
+    'R-A16 默认链路取证（网关保留原始 Host）',
+    "请求: POST $GatewayBase/api/v1/acc/auth/refresh",
+    "  Host: $publicHost  ← 模拟入口 proxy_set_header Host `$host;网关 acc 路由 PreserveHostHeader 原样透传",
+    "  Origin: http://$publicHost  ← 与请求自身来源同源;**不带** X-Forwarded-Host/X-Forwarded-Proto",
+    "ACC 推断: requestOrigin = scheme(http)://${publicHost}:80（Host 未带端口 → 容器按 scheme 取默认端口 80）",
+    "  归一化 http://$publicHost 与 Origin 逐字相等 → 同源默认放行（无需 allowed-origins）",
+    '反向: 同一 Host 形态 + Origin: https://evil.example → 401 + 2001 且族 currentJti 不前移'
+)
+Write-Evidence 'step3b-r-a16-chain.txt' ($chainNote -join "`r`n")
+$refreshBeforePreservedHost = $refresh2
+$code = Invoke-Api -Name 'step3b-same-origin-preserved-host' -Method POST -Url "$GatewayBase/api/v1/acc/auth/refresh" `
+    -Headers @("Cookie: $CookieName=$refresh2", "Host: $publicHost", "Origin: http://$publicHost")
+$refreshAfterPreservedHost = Get-SetCookieValue 'step3b-same-origin-preserved-host'
+Assert-Step '3.10' 'R-A16 正向：经网关换发只带同源 Origin、不带 X-Forwarded-Host → 200 且真的轮换（网关保留原始 Host，默认链路已闭合）' "http=$code host=$publicHost origin=http://$publicHost rotated=$($refreshAfterPreservedHost -and $refreshAfterPreservedHost -ne $refreshBeforePreservedHost)" ($code -eq 200 -and $refreshAfterPreservedHost -and $refreshAfterPreservedHost -ne $refreshBeforePreservedHost)
+if ($code -eq 200) { $refresh2 = $refreshAfterPreservedHost }
+$familyBeforeCrossPreserved = [string](Invoke-Redis -Command @('GET', "acc:session:$family")) | ConvertFrom-Json
+$code = Invoke-Api -Name 'step3b-cross-origin-preserved-host' -Method POST -Url "$GatewayBase/api/v1/acc/auth/refresh" `
+    -Headers @("Cookie: $CookieName=$refresh2", "Host: $publicHost", 'Origin: https://evil.example')
+$crossPreservedJson = Get-Body 'step3b-cross-origin-preserved-host' | ConvertFrom-Json
+Assert-Step '3.11' 'R-A16 反向：保留原始 Host 形态 + 跨站 Origin=https://evil.example → 401 + 2001' "http=$code code=$($crossPreservedJson.code)" ($code -eq 401 -and $crossPreservedJson.code -eq 2001)
+$familyAfterCrossPreserved = [string](Invoke-Redis -Command @('GET', "acc:session:$family")) | ConvertFrom-Json
+Assert-Step '3.12' 'R-A16 反向：跨站被拒时**不轮换任何 token**（族 currentJti 未前移）' "before=$(Short $familyBeforeCrossPreserved.currentJti) after=$(Short $familyAfterCrossPreserved.currentJti)" ($familyAfterCrossPreserved.currentJti -eq $familyBeforeCrossPreserved.currentJti)
 
 # 4) 重放旧 refresh（必须超出 5s 并发宽限窗口）
 Write-Host "等待 $GraceWaitSeconds 秒（轮换并发宽限窗口 5s）后重放旧 refresh…"

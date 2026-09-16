@@ -150,6 +150,12 @@
   `#sameOriginBehindProxyUsesForwardedOrigin`（含「同样的转发头 + 跨站 Origin 仍拒绝」）。
   **部署口径**：`services/gateway/deploy/README.md` §1 前提表与 `services/gateway/deploy/docker-compose.yml`
   （`ACC_SESSION_ALLOWED_ORIGINS` 默认留空并注明同源无需配置）。
+  **R-A16 收口（2026-09-16，Important I1 闭环）**：同源判定的 host 部分**依赖入口保留原始 Host**——
+  网关 acc 路由已启用 `PreserveHostHeader`（部署件默认生效，入口按常规 `proxy_set_header Host $host` 即可，
+  ACC 由 `Host` 推断出浏览器看到的 host；**链路中若还有其它代理需自行透传 Host**，HTTPS 入口另需
+  `X-Forwarded-Proto`，建议同时透传 `X-Forwarded-Host` 作备案）。无此保留时 ACC 只能看到网关改写后的内网
+  Host，同源默认放行不会自动生效（正是 I1 的成因，已在网关侧解决）。真机取证见
+  `services/acc/deploy/drill/README.md` §3.1 的 3.10/3.11/3.12 与 `.superpowers/sdd/add-refresh-token-rotation/drill3/`。
 - **FIX-1 顺修（评审 Minor，2026-09-16）**：
   ① **F5/F6 事务边界防御**：两个 `FilterRegistrationBean` 显式 `setDispatcherTypes(REQUEST)`（不再依赖 Spring Boot
   「是 `OncePerRequestFilter` 就给全部派发类型」的启发式），`RequestSqlSessionHolder.beginRequest()` 对重入**显式拒绝**

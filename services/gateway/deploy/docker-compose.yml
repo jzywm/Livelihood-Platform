@@ -17,6 +17,11 @@
 #      (**静默 fail-open**),故本实例一律不淘汰会话键(见 services/gateway/deploy/README.md §1 前提表);
 #   ⑤ acc 服务新增 `ACC_SESSION_ALLOWED_ORIGINS`:换发/仅凭 Cookie 登出的来源校验默认**同源放行**
 #      (Origin 与请求自身 scheme+host 一致即可,裁定 R-A15),**只有跨源前端**才需要在此列出白名单。
+# 2026-09-16 增量三(R-A16:网关保留原始 Host,I1 收口):
+#   ⑥ acc 路由启用 SCG 的 **PreserveHostHeader** 过滤器(见 src/main/resources/application.yml):
+#      SCG 默认把 Host 改写成下游内网地址,ACC 的「同源默认放行」需要浏览器看到的 host;
+#      保留原始 Host 后默认链路(浏览器 → 入口 → 网关 → ACC)不再需要 X-Forwarded-* 或白名单
+#      (HTTPS 入口仍需入口透传 X-Forwarded-Proto;X-Forwarded-Host 降级为备案/双保险)。
 # 已知限制(详见 services/acc/deploy/Dockerfile 头注与 services/gateway/deploy/README.md §6):
 #   ACC 的 M1 占位 DataSource 尚未替换为真实数据源 → 容器内触库路径不可用;
 #   本 compose 先固化**部署拓扑与配置口径**(Redis 依赖/会话存储环境变量/同实例约束),
@@ -69,9 +74,12 @@ services:
       ACC_REDIS_HOST: redis
       ACC_REDIS_PORT: 6379
       # 换发/仅凭 Cookie 登出的来源校验:留空 = **同源放行**(Origin 与请求自身 scheme+host 一致即放行,
-      # 裁定 R-A15);⚠️ 本 compose 拓扑下网关会改写 Host 且默认不转发原始 Host,故**浏览器换发需两项之一**:
-      #   ① 在此填入前端入口 origin(逗号分隔),或 ② 让入口 Nginx 设置 `X-Forwarded-Host $host`
-      #      (nginx-gateway.conf.example 已给出该行;真机演练已验证该形态下同源默认放行生效)
+      # 裁定 R-A15);**默认链路已由 R-A16 闭合**——网关 acc 路由启用 PreserveHostHeader,入口按常规
+      # `proxy_set_header Host $host` 透传原始 Host 即可(ACC 据此推断浏览器看到的 host),本项留空即可。
+      # 仅当①前端与入口**跨源**(填前端入口 origin,逗号分隔)时需配置;HTTPS 入口(TLS 在入口终结)仍需入口
+      # 透传 `X-Forwarded-Proto $scheme`,并建议同时透传 `X-Forwarded-Host $host` 作备案/双保险
+      # (nginx-gateway.conf.example 两行均已给出;真机演练 3.10/3.11/3.12 已验证:只透传 Host 时同源 200、
+      #  跨站 401 且不轮换)。
       ACC_SESSION_ALLOWED_ORIGINS: ${ACC_SESSION_ALLOWED_ORIGINS:-}
       # 短 token 有效期(秒):可配且**真正生效**,夹紧到 [60, 900];默认 900 = 网关上限
       ACC_SESSION_ACCESS_TOKEN_TTL_SECONDS: ${ACC_SESSION_ACCESS_TOKEN_TTL_SECONDS:-900}
