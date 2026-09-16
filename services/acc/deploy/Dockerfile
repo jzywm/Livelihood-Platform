@@ -6,7 +6,8 @@
 #   ① ACC 的 pom **未接 spring-boot-maven-plugin**,产物不是可执行 fat jar →
 #      以「classes + 运行期依赖目录」方式启动(等价 classpath,行为一致);
 #   ② 会话凭据落 **Redis**(与网关同一实例):生产必须设 acc.session.store=redis + acc.redis.host
-#      (缺 host 即启动 fail-fast,见 AccConfiguration#sessionStore / 裁定 R-A8);
+#      (配对错两个方向都 fail-fast:redis 缺 host,**以及 memory 却配了 host**——后者会让会话
+#      只落进程内,登出/踢人静默失效;见 AccConfiguration#sessionStore / 裁定 R-A8 + C1/R-A11);
 #   ③ **M1 已知限制**:AccConfiguration 的 DataSource 仍是占位实现,容器内**未接真实数据库**——
 #      凡触库的路径(注册/流水/绑定//acc/me)都会明确失败;真实 DataSource 注入落地前,
 #      本镜像只用于拓扑与配置口径验证(真机联调走 services/acc/deploy/drill 真机桩)。

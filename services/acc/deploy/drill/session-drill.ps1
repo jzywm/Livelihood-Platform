@@ -12,15 +12,21 @@
     0  预检：网关 /gateway/health 报 redis=up；Redis PING=PONG
     1  登录：GET /api/v1/acc/captcha?type=IMAGE → 从**真实 Redis** 读回挑战答案 →
        POST /api/v1/acc/captcha/verify 取一次性票据 → POST /api/v1/acc/auth/login
-       （断言：200；响应体只有短 token、无 refreshToken 字段；Set-Cookie 带 HttpOnly/Secure/SameSite/Path）
+       （断言：200；响应体只有短 token、无 refreshToken 字段；Set-Cookie 带 HttpOnly/Secure/SameSite/Path；
+       **A1**：族键 `acc:session:{fam}` TTL ≈ 7 天 = 1e5 秒量级，不是 900 量级）
     2  短 token 访问 GET /api/v1/acc/me → 200
     3  Cookie 换发 POST /api/v1/acc/auth/refresh → 200 + 新短 token + 新 Set-Cookie
+       （**A1**：轮换后族键 TTL 仍 ≈ 7 天；族记录 expiresAtMillis 与族内短 token 到期时刻相差 > 1 天）
+    3b **来源校验（R-A15）**：带跨站 `Origin` 的换发 → 401 + 2001 且**不轮换**；同源 `Origin` → 200
     4  **等待超过 5s 轮换宽限窗口**后重放旧 refresh → 401 + 2001，且整族吊销：
        原短 token 访问 /api/v1/acc/me → 401（网关从 Redis 的 `revoked:jti:{jti}` 读到吊销）
+       （**A1**：重放后族记录 `status=REVOKED` 仍**存在**，且族键 TTL 仍 ≈ 7 天——
+       记录寿命不被 15 分钟短 token 污染，重放在整个 refresh 有效期内都可识别）
     5  重新登录取新 token 对 → 200
     6  POST /api/v1/acc/auth/logout → 200（Max-Age=0 清 Cookie），随后同一短 token → 401（网关侧证据）
     7  Redis 键路径与语义（L4）：`acc:session:{familyId}` / `acc:refresh:{jti}`（TTL ≤ 7 天）/
        `revoked:jti:{jti}`（TTL = 短 token 剩余有效期）逐键 TYPE+TTL
+       （**A1**：`acc:session:*` 全部为 1e5 秒量级的族寿命，**没有** 900 量级的族键）
 
   说明：refresh Cookie 按生产口径带 `Secure`，curl 的 cookie 引擎不会在 http 链路回带，故脚本从
   `Set-Cookie` 头解析出长 token 并以**显式 Cookie 头**回放（等价于浏览器行为，且不放松生产属性）。
@@ -253,6 +259,10 @@ Assert-Step '1.1' 'POST /api/v1/acc/auth/login 200（网关白名单放行 → �
 Assert-Step '1.2' '响应体只有短 token（无 refreshToken 字段、无长 token 原文）' (Redact $login1.Raw) ($login1.Raw -notmatch 'refreshToken' -and $access1)
 Assert-Step '1.3' 'Set-Cookie 四属性齐备（HttpOnly/Secure/SameSite=Lax/Path=/api/v1/acc/auth）+ Max-Age=7 天' (Redact $login1.SetCookie) (($login1.SetCookie -match 'HttpOnly') -and ($login1.SetCookie -match 'Secure') -and ($login1.SetCookie -match 'SameSite=Lax') -and ($login1.SetCookie -match 'Path=/api/v1/acc/auth') -and ($login1.SetCookie -match 'Max-Age=604800'))
 Assert-Step '1.4' '短 token 声明含 sub/role/mfa/jti/iat/exp/fam 且 exp-iat=900s' "sub=$($claims1.sub) jti=$(Short $claims1.jti) fam=$(Short $claims1.fam) ttl=$([long]$claims1.exp - [long]$claims1.iat)" (($claims1.sub -eq '1001') -and $claims1.jti -and $claims1.fam -and (([long]$claims1.exp - [long]$claims1.iat) -eq 900))
+# A1（FIX-1）：族寿命必须由 refresh 有效期（7 天）决定，不能被 15 分钟短 token 的到期时刻污染
+$family1Ttl = [long](Invoke-Redis -Command @('TTL', "acc:session:$($claims1.fam)"))
+Write-Evidence 'step1-redis-family-ttl.txt' "TTL acc:session:$($claims1.fam) -> $family1Ttl"
+Assert-Step '1.5' 'A1：登录后族键 TTL ≈ 7 天（1e5 秒量级，不是 900 量级——族寿命只由 refresh 决定）' "ttl=$family1Ttl" ($family1Ttl -gt 100000 -and $family1Ttl -le 604800)
 
 # 2) 短 token 访问业务接口
 $code = Invoke-Api -Name 'step2-me' -Method GET -Url "$GatewayBase/api/v1/acc/me" -Headers @("Authorization: Bearer $access1")
@@ -271,6 +281,44 @@ Write-Evidence 'step3-redis-family.txt' "GET acc:session:$family ->`r`n$familyAf
 Assert-Step '3.1' 'Cookie 换发 POST /api/v1/acc/auth/refresh → 200 + 新短 token' "http=$code access2=$(Short $access2)" ($code -eq 200 -and $access2 -and $access2 -ne $access1)
 Assert-Step '3.2' '换发响应带新 Set-Cookie（长 token 轮换，值已变）' (Redact (Get-SetCookieLine 'step3-refresh')) ($refresh2 -and $refresh2 -ne $refresh1)
 Assert-Step '3.3' 'Redis 族记录：currentJti 前移且旧 jti 进已轮换标记（rotation marker 保留）' "len=$($familyAfterRotate.Length)" ($familyAfterRotate -match 'rotated' -and $familyAfterRotate -match [regex]::Escape($jti1))
+# A1（FIX-1）：族键 TTL 与族到期时刻只由 refresh 有效期决定——原缺陷把短 token 的到期时刻写进族记录
+$family3Ttl = [long](Invoke-Redis -Command @('TTL', "acc:session:$family"))
+$family3 = $familyAfterRotate | ConvertFrom-Json
+$maxAccessExpiry = 0
+foreach ($prop in @($family3.PSObject.Properties | Where-Object { $_.Name -like 'access.*' })) {
+    if ([long]$prop.Value -gt $maxAccessExpiry) { $maxAccessExpiry = [long]$prop.Value }
+}
+$familyExpiry = [long]$family3.expiresAtMillis
+Write-Evidence 'step3-redis-family-ttl.txt' "TTL acc:session:$family -> $family3Ttl`r`nexpiresAtMillis=$familyExpiry`r`nmaxAccessJtiExpiry=$maxAccessExpiry`r`ndiff=$($familyExpiry - $maxAccessExpiry)"
+Assert-Step '3.4' 'A1：轮换后族键 TTL 仍 ≈ 7 天（1e5 秒量级，未被 15 分钟短 token 到期时刻污染）' "ttl=$family3Ttl" ($family3Ttl -gt 100000 -and $family3Ttl -le 604800)
+Assert-Step '3.5' 'A1：族记录 expiresAtMillis 与族内短 token 到期时刻不同（差值 > 1 天 = 族寿命按 refresh 计）' "family=$familyExpiry access=$maxAccessExpiry diff=$($familyExpiry - $maxAccessExpiry)" (($familyExpiry - $maxAccessExpiry) -gt 86400000)
+
+# 3b) 来源校验（R-A15 同源默认放行）：跨站 Origin 必须 401 且不轮换；同源 Origin 必须 200
+$jtiBeforeOriginCheck = ($family3.currentJti)
+$code = Invoke-Api -Name 'step3b-cross-origin' -Method POST -Url "$GatewayBase/api/v1/acc/auth/refresh" `
+    -Headers @("Cookie: $CookieName=$refresh2", 'Origin: https://evil.example.com')
+$crossBody = Get-Body 'step3b-cross-origin'
+$crossJson = $crossBody | ConvertFrom-Json
+Assert-Step '3.6' 'R-A15 跨站 Origin 的换发 → 401 + 2001' "http=$code code=$($crossJson.code)" ($code -eq 401 -and $crossJson.code -eq 2001)
+$familyAfterCross = [string](Invoke-Redis -Command @('GET', "acc:session:$family"))
+$familyCross = $familyAfterCross | ConvertFrom-Json
+Assert-Step '3.7' 'R-A15 跨站来源被拒时**不轮换**（族 currentJti 未前移）' "before=$(Short $jtiBeforeOriginCheck) after=$(Short $familyCross.currentJti)" ($familyCross.currentJti -eq $jtiBeforeOriginCheck)
+# 3b.2）同源默认放行的两种**可达**形态：
+#   a) 入口代理转发客户端看到的 host（X-Forwarded-Proto/Host）——生产推荐形态；
+#   b) 直连 ACC 且 Host 即客户端 host——本地联调形态。
+# 已核实的环境约束（见 deploy/drill/README.md §3.1 与 gateway/deploy/README.md §1 前提表）：
+#   Spring Cloud Gateway 会把 Host 改写成 ACC 内网地址、且**默认不转发**原始 Host ⇒ 该拓扑下 ACC
+#   推断不出对外来源，浏览器换发需把前端入口 origin 配进 acc.session.allowed-origins（或让入口
+#   代理设置 X-Forwarded-Host）；否则本步 a) 之外的「裸网关」形态仍会 401。
+$code = Invoke-Api -Name 'step3b-same-origin-forwarded' -Method POST -Url "$GatewayBase/api/v1/acc/auth/refresh" `
+    -Headers @("Cookie: $CookieName=$refresh2", "Origin: $GatewayBase", 'X-Forwarded-Proto: http',
+        "X-Forwarded-Host: $(([uri]$GatewayBase).Authority)")
+Assert-Step '3.8' 'R-A15 同源放行（入口转发原始 host 形态）：Origin = 请求自身 scheme+host → 200（默认无需配 allowed-origins）' "http=$code origin=$GatewayBase" ($code -eq 200)
+if ($code -eq 200) { $refresh2 = Get-SetCookieValue 'step3b-same-origin-forwarded' }
+$code = Invoke-Api -Name 'step3b-same-origin-direct' -Method POST -Url 'http://127.0.0.1:8080/acc/auth/refresh' `
+    -Headers @("Cookie: $CookieName=$refresh2", 'Origin: http://127.0.0.1:8080')
+Assert-Step '3.9' 'R-A15 同源放行（直连 ACC 形态）：Origin = 请求自身 scheme+host → 200' "http=$code origin=http://127.0.0.1:8080" ($code -eq 200)
+if ($code -eq 200) { $refresh2 = Get-SetCookieValue 'step3b-same-origin-direct' }
 
 # 4) 重放旧 refresh（必须超出 5s 并发宽限窗口）
 Write-Host "等待 $GraceWaitSeconds 秒（轮换并发宽限窗口 5s）后重放旧 refresh…"
@@ -285,6 +333,10 @@ Write-Evidence 'step4-redis-family.txt' "GET acc:session:$family ->`r`n$familyAf
 Write-Evidence 'step4-redis-revoked.txt' "GET revoked:jti:$jti1 -> $revokedValue`r`nTTL revoked:jti:$jti1 -> $revokedTtl"
 Assert-Step '4.1' '重放旧 refresh → 401 + 2001' "http=$code code=$($replayJson.code) msg=$($replayJson.message)" ($code -eq 401 -and $replayJson.code -eq 2001)
 Assert-Step '4.2' '整族吊销：族记录 status=REVOKED（记录保留，重放可识别为已吊销族）' "len=$($familyAfterReplay.Length)" ($familyAfterReplay -match 'REVOKED')
+# A1（FIX-1）：已吊销族记录的寿命同样只由 refresh 决定——若被短 token 污染，15 分钟后重放就只能看到「未知 token」
+$familyReplayTtl = [long](Invoke-Redis -Command @('TTL', "acc:session:$family"))
+Write-Evidence 'step4-redis-family-ttl.txt' "TTL acc:session:$family -> $familyReplayTtl`r`nGET acc:session:$family -> $familyAfterReplay"
+Assert-Step '4.6' 'A1：重放后族记录仍存在（REVOKED）且族键 TTL 仍 ≈ 7 天（1e5 秒量级，可长期识别重放）' "ttl=$familyReplayTtl revoked=$($familyAfterReplay -match 'REVOKED')" ($familyReplayTtl -gt 100000 -and $familyReplayTtl -le 604800 -and $familyAfterReplay -match 'REVOKED')
 Assert-Step '4.3' "吊销名单按网关契约写 `revoked:jti:{jti}`（TTL=剩余有效期，1..900）" "value=$revokedValue ttl=$revokedTtl" ($revokedValue -eq '1' -and $revokedTtl -ge 1 -and $revokedTtl -le 900)
 $code = Invoke-Api -Name 'step4-revoked-access' -Method GET -Url "$GatewayBase/api/v1/acc/me" -Headers @("Authorization: Bearer $access1")
 $revokedAccessBody = Get-Body 'step4-revoked-access'
@@ -345,13 +397,25 @@ foreach ($key in $revokedKeys) {
     $ttl = [long](Invoke-Redis -Command @('TTL', $key))
     if ($ttl -gt $maxRevokedTtl) { $maxRevokedTtl = $ttl }
 }
+# A1（FIX-1）：族键 TTL 必须全部是「族寿命」量级（1e5 秒 = 7 天），不是 900 量级（短 token）
+$sessionKeys = @(Invoke-Redis -Command @('KEYS', 'acc:session:*'))
+$maxSessionTtl = 0
+$minSessionTtl = [long]::MaxValue
+foreach ($key in $sessionKeys) {
+    $ttl = [long](Invoke-Redis -Command @('TTL', $key))
+    if ($ttl -gt $maxSessionTtl) { $maxSessionTtl = $ttl }
+    if ($ttl -gt 0 -and $ttl -lt $minSessionTtl) { $minSessionTtl = $ttl }
+}
+if ($sessionKeys.Count -eq 0) { $minSessionTtl = 0 }
 $lines.Add("acc:refresh:* 最大 TTL = $maxRefreshTtl（须 ≤ 604800 = 7 天）")
 $lines.Add("revoked:jti:* 最大 TTL = $maxRevokedTtl（须 ≤ 900 = 短 token 有效期）")
+$lines.Add("acc:session:* TTL 最大 = $maxSessionTtl / 最小 = $minSessionTtl（须为 1e5 秒量级 = 族寿命按 7 天 refresh 计，不是 900）")
 $inventory = $lines -join "`r`n"
 Write-Evidence 'step7-redis-inventory.txt' $inventory
 Assert-Step '7.1' '会话键路径与语义：acc:refresh:{jti} TTL ≤ 7 天' "maxTtl=$maxRefreshTtl" ($maxRefreshTtl -ge 1 -and $maxRefreshTtl -le 604800)
 Assert-Step '7.2' '网关共享吊销契约：revoked:jti:{jti} TTL ≤ 短 token 有效期' "maxTtl=$maxRevokedTtl" ($maxRevokedTtl -ge 1 -and $maxRevokedTtl -le 900)
 Assert-Step '7.3' '三类键均落在同一真实 Redis 实例' "session=$(@(Invoke-Redis -Command @('KEYS','acc:session:*')).Count) refresh=$($refreshKeys.Count) revoked=$($revokedKeys.Count)" ((@(Invoke-Redis -Command @('KEYS', 'acc:session:*')).Count -ge 1) -and ($refreshKeys.Count -ge 1) -and ($revokedKeys.Count -ge 1))
+Assert-Step '7.4' 'A1：acc:session:* 全部为族寿命量级（> 1e5 秒且 ≤ 604800）——没有 900 量级的族键' "max=$maxSessionTtl min=$minSessionTtl" ($minSessionTtl -gt 100000 -and $maxSessionTtl -le 604800)
 
 # 8) 审计与网关侧日志证据（不落 token 原文）
 $auditLines = @()

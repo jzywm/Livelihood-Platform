@@ -5,7 +5,12 @@
 #   2. /gateway/** 运维接口不对外暴露(仅内网探测),此处显式 404;
 #   3. X-Forwarded-For 用 $proxy_add_x_forwarded_for 追加真实客户端 IP 到链尾
 #      (网关取链尾作为客户端 IP,防伪造);TLS 在本层终结;
-#   4. 网关全实例不可用时返回 503(LB 层快速失败),不做「直连单体」降级。
+#   4. 网关全实例不可用时返回 503(LB 层快速失败),不做「直连单体」降级;
+#   5. **X-Forwarded-Host $host 必须带上**(2026-09-16 双 token 会话增量,裁定 R-A15):
+#      网关(SCG)会把 Host 改写成下游 ACC 的内网地址,ACC 侧的「同源默认放行」需要知道
+#      浏览器看到的 host;本行让 ACC 收到的请求自身来源 = 前端入口 origin,
+#      从而**无需**为每个环境维护 acc.session.allowed-origins。
+#      (真机演练已验证 SCG 会把客户端/入口传入的 X-Forwarded-Host 原样转发给 ACC。)
 
 upstream gateway_cluster {
     # M1 初期双实例;生产按实例清单替换
@@ -32,6 +37,8 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # 见文件头约定 5:ACC 的会话来源校验(同源默认放行)依赖它
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header Connection "";
         proxy_connect_timeout 1s;
         proxy_send_timeout 10s;

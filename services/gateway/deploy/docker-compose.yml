@@ -11,6 +11,12 @@
 #   ② 网关 GATEWAY_ACC_URI 默认指向容器内 acc 服务(而不是 host.docker.internal,避免"网关在容器、ACC 在宿主"的半容器错配);
 #   ③ 新增 **mariadb 服务**:ACC 数据层需要一个真实库;首次启动自动执行 ACC 的 Flyway 迁移脚本
 #      (services/acc/src/main/resources/db/migration/*.sql,建表 + 最小权限账号 acc_app)。
+# 2026-09-16 增量二(最终评审修复波 FIX-1):
+#   ④ Redis 淘汰策略改为 **noeviction**(原 allkeys-lru):会话族/refresh 映射/吊销名单都带 TTL,
+#      volatile-* 一样会淘汰它们——吊销键 `revoked:jti:*` 被提前淘汰 = 登出后 token 又能用
+#      (**静默 fail-open**),故本实例一律不淘汰会话键(见 services/gateway/deploy/README.md §1 前提表);
+#   ⑤ acc 服务新增 `ACC_SESSION_ALLOWED_ORIGINS`:换发/仅凭 Cookie 登出的来源校验默认**同源放行**
+#      (Origin 与请求自身 scheme+host 一致即可,裁定 R-A15),**只有跨源前端**才需要在此列出白名单。
 # 已知限制(详见 services/acc/deploy/Dockerfile 头注与 services/gateway/deploy/README.md §6):
 #   ACC 的 M1 占位 DataSource 尚未替换为真实数据源 → 容器内触库路径不可用;
 #   本 compose 先固化**部署拓扑与配置口径**(Redis 依赖/会话存储环境变量/同实例约束),
@@ -20,7 +26,9 @@ version: "3.9"
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # 淘汰策略必须不淘汰会话键:revoked:jti:{jti} 被提前淘汰 = 登出/踢人静默 fail-open
+    # (会话族/refresh/吊销键全部带 TTL,volatile-lru 同样会淘汰它们,故用 noeviction)
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     ports:
       - "6379:6379"
     healthcheck:
@@ -60,6 +68,13 @@ services:
       ACC_SESSION_STORE: redis
       ACC_REDIS_HOST: redis
       ACC_REDIS_PORT: 6379
+      # 换发/仅凭 Cookie 登出的来源校验:留空 = **同源放行**(Origin 与请求自身 scheme+host 一致即放行,
+      # 裁定 R-A15);⚠️ 本 compose 拓扑下网关会改写 Host 且默认不转发原始 Host,故**浏览器换发需两项之一**:
+      #   ① 在此填入前端入口 origin(逗号分隔),或 ② 让入口 Nginx 设置 `X-Forwarded-Host $host`
+      #      (nginx-gateway.conf.example 已给出该行;真机演练已验证该形态下同源默认放行生效)
+      ACC_SESSION_ALLOWED_ORIGINS: ${ACC_SESSION_ALLOWED_ORIGINS:-}
+      # 短 token 有效期(秒):可配且**真正生效**,夹紧到 [60, 900];默认 900 = 网关上限
+      ACC_SESSION_ACCESS_TOKEN_TTL_SECONDS: ${ACC_SESSION_ACCESS_TOKEN_TTL_SECONDS:-900}
       # 短 token/refresh 签名密钥:与网关同值,否则网关验签一律失败(生产经 KMS 注入)
       ACC_JWT_SECRET: ${ACC_JWT_SECRET:-dev-only-change-me}
       # 会话 Cookie 生产必须带 Secure(容器内为 http,仅本地联调试 true/false 需与入口 TLS 一致)

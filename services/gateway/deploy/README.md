@@ -11,7 +11,7 @@
 | 运行时 | Java 17(JRE 即可) |
 | 实例数 | **双实例起步**(A/B),无状态、可水平扩展 |
 | 端口 | `8081`(业务入口 + 运维接口;运维接口另有网段白名单) |
-| 依赖 | **Redis(必需)** — JWT 吊销名单 + 限流计数;不可用时入口 fail-closed 503。**该 Redis 必须与 ACC 的会话存储同一实例**(`revoked:jti:{jti}` = ACC 写、网关读,2026-09-16 双 token 会话增量) |
+| 依赖 | **Redis(必需)** — JWT 吊销名单 + 限流计数;不可用时入口 fail-closed 503。**该 Redis 必须与 ACC 的会话存储同一实例**(`revoked:jti:{jti}` = ACC 写、网关读,2026-09-16 双 token 会话增量)。**该实例必须禁用易失淘汰**(`maxmemory-policy noeviction`;会话族/refresh/吊销键全部带 TTL,`allkeys-lru` 与 `volatile-*` 都会淘汰它们) |
 | 密钥 | `GATEWAY_JWT_SECRET`(env / KMS 注入;**密钥不出网关**);与 ACC 的 `acc.jwt-secret` **同值**(否则 acc 签发的短 token 一律验签失败) |
 | 配置 | `gateway.*`(白名单/内部路径/限流初值/运维网段/**令牌策略** `auth.access-token-max-ttl` + `auth.clock-skew`)、`spring.cloud.gateway.server.webflux.routes`(路由)、`resilience4j.circuitbreaker.configs.default.*`(熔断) |
 | 入口 | Nginx(LB + TLS 终结 + `/gateway/**` 不对外) → 网关双实例 |
@@ -36,10 +36,12 @@ GATEWAY_TRUST_XFF=true                     # 仅当入口只有可信代理时�
 
 | ACC 配置 | 生产取值 | 不满足的后果 |
 |---|---|---|
-| `acc.session.store` | **`redis`** | 默认 `memory` 只允许测试/演练;生产取 memory 时会话族与吊销名单只在进程内,**登出/踢人静默失效** |
+| `acc.session.store` | **`redis`** | 默认 `memory` 只允许测试/演练;生产取 memory 时会话族与吊销名单只在进程内,**登出/踢人静默失效**;两方向错配都启动 fail-fast(`redis` 缺 host、`memory` 却配了 host) |
 | `acc.redis.host` / `acc.redis.port` | 与网关同一 Redis 实例 | 取 `redis` 而缺 `host` → **启动 fail-fast**(`IllegalStateException`,裁定 R-A8);指向别的实例 → 吊销名单不共享 |
+| `acc.session.allowed-origins` | 默认留空即可（**同源放行**，裁定 R-A15）；**跨源前端**或**入口未转发原始 host** 时必须填前端入口 origin（逗号分隔） | 漏配的后果只发生在「来源 ≠ ACC 看到的请求自身来源」时:浏览器发起的换发/仅凭 Cookie 登出被来源校验拒为 **401 + 2001**（登录可用、换发不可用）。⚠️ **本手册的拓扑（浏览器 → Nginx → 网关 → ACC）必须显式配置**：SCG 会把 Host 改写成 ACC 内网地址，默认**不**转发原始 Host，故 ACC 推断不出浏览器看到的来源；两种解法任选——① 在此列出前端入口 origin（本表默认做法），② 让入口代理设置 `X-Forwarded-Host $host`（`nginx-gateway.conf.example` 已给出该行；真机演练已验证「入口转发原始 host 时同源默认放行生效」） |
+| `acc.session.cookie-secure` | `true`(HTTPS 入口) | 明文链路下发长 token;置 `false` 时 ACC 启动打 WARN(仅本地/测试) |
+| Redis 淘汰策略 | **`noeviction`**(禁用易失淘汰) | `allkeys-lru`/`volatile-*` 会淘汰 `revoked:jti:*` 与会话族键 → 登出后 token 又能用(**静默 fail-open**),refresh 也会提前失效 |
 | `acc.jwt-secret` | 与 `GATEWAY_JWT_SECRET` 同值 | 短 token 验签失败 |
-| `acc.session.cookie-secure` | `true`(HTTPS 入口) | 明文链路下发长 token |
 
 > 会话端点白名单与 Cookie 透传口径见 `services/gateway/docs/README.md` §3.2;
 > 一键起的 compose 已把上述 ACC 依赖与环境变量写成 `acc` 服务的 `depends_on: redis(healthy)` + `environment`。

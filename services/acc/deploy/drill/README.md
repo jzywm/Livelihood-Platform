@@ -46,6 +46,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File services/acc/deploy/drill/bu
 
 # ② 起 ACC 真机（工作目录必须是 services/acc：数据库落在 target/drill-mariadb、Redis 数据目录 target/drill-redis）
 #    默认 8080；-Ddrill.acc.port / -Ddrill.db.port / -Ddrill.redis.port / -Ddrill.redis.host 可覆盖
+#    会话存储口径由桩固定为 acc.session.store=redis + acc.redis.host=127.0.0.1（可用 -Ddrill.session.store 覆盖，
+#    但**只允许 redis**：改成 memory 而 host 仍在 → 按 C1/R-A11 启动失败，这是有意为之的误配保护，不是桩的 bug）
 cd services/acc
 java -cp "target\classes;target\drill-classes;$(Get-Content target\drill-cp-final.txt -Raw)" drill.AccDrill
 
@@ -61,7 +63,7 @@ $env:GATEWAY_INSTANCE_ID='gateway-drill'
 java -jar services/gateway/target/gateway-0.1.0-SNAPSHOT.jar --server.port=18081
 #    就绪判据：curl http://127.0.0.1:18081/gateway/health → {"status":"UP","redis":"up",...}
 
-# ⑤ 跑双 token 会话闭环演练（25 项断言，逐项原始输出落盘）
+# ⑤ 跑双 token 会话闭环演练（34 项断言，逐项原始输出落盘）
 powershell -NoProfile -ExecutionPolicy Bypass -File services/acc/deploy/drill/session-drill.ps1
 #    退出码 0 = 全绿；取证目录默认 D:\progrom\.superpowers\sdd\add-refresh-token-rotation\drill
 ```
@@ -77,18 +79,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File services/acc/deploy/drill/se
 | 步 | 请求/动作 | 断言 |
 |---|---|---|
 | 0 | `/gateway/health` + Redis `PING` | 网关报 `redis=up`；Redis `PONG` |
-| 1 | `GET /api/v1/acc/captcha?type=IMAGE` → 从真实 Redis 读回答案 → `POST /api/v1/acc/captcha/verify` → `POST /api/v1/acc/auth/login` | 200；**响应体只有短 token**（无 `refreshToken` 字段）；`Set-Cookie` 带 `HttpOnly/Secure/SameSite=Lax/Path=/api/v1/acc/auth` + `Max-Age=604800`；短 token `exp-iat=900s` |
+| 1 | `GET /api/v1/acc/captcha?type=IMAGE` → 从真实 Redis 读回答案 → `POST /api/v1/acc/captcha/verify` → `POST /api/v1/acc/auth/login` | 200；**响应体只有短 token**（无 `refreshToken` 字段）；`Set-Cookie` 带 `HttpOnly/Secure/SameSite=Lax/Path=/api/v1/acc/auth` + `Max-Age=604800`；短 token `exp-iat=900s`；**1.5（A1 修复）**：族键 `acc:session:{fam}` TTL ≈ 7 天（1e5 秒量级，不是 900 量级） |
 | 2 | `GET /api/v1/acc/me`（Bearer 短 token） | 200 且返回真实库账户 |
-| 3 | `POST /api/v1/acc/auth/refresh`（Cookie 换发） | 200 + 新短 token + 新 `Set-Cookie`；Redis 族记录 `currentJti` 前移、旧 jti 进已轮换标记 |
-| 4 | **等 >5s（并发宽限窗口）**后重放旧 refresh，再用原短 token 访问 `/api/v1/acc/me` | 重放 401 + 2001；族 `status=REVOKED`；`revoked:jti:{jti}`=1 且 TTL∈[1,900]；**原短 token 与换发出的第二个短 token 都立即 401**（网关从 Redis 读吊销名单） |
+| 3 | `POST /api/v1/acc/auth/refresh`（Cookie 换发） | 200 + 新短 token + 新 `Set-Cookie`；Redis 族记录 `currentJti` 前移、旧 jti 进已轮换标记；**3.4/3.5（A1 修复）**：轮换后族键 TTL 仍 ≈ 7 天；族记录 `expiresAtMillis` 与族内短 token 到期时刻相差 > 1 天（族寿命按 refresh 计，未被 15 分钟污染） |
+| 3b | 带 `Origin` 的换发（R-A15 同源默认放行）：跨站 `https://evil.example.com` → 同源（入口转发原始 host 形态：网关 + `X-Forwarded-Proto/Host`）→ 同源（直连 ACC `http://127.0.0.1:8080`） | 跨站：401 + 2001 且**不轮换**（族 `currentJti` 未前移）；两种同源形态：200（默认无需配 `acc.session.allowed-origins`） |
+| 4 | **等 >5s（并发宽限窗口）**后重放旧 refresh，再用原短 token 访问 `/api/v1/acc/me` | 重放 401 + 2001；族 `status=REVOKED`；`revoked:jti:{jti}`=1 且 TTL∈[1,900]；**原短 token 与换发出的第二个短 token 都立即 401**（网关从 Redis 读吊销名单）；**4.6（A1 修复）**：重放后族记录仍 `REVOKED` **存在**且族键 TTL 仍 ≈ 7 天（记录寿命不被短 token 污染，重放长期可识别） |
 | 5 | 重新登录（新挑战/新票据） | 200，新会话族与旧族不同；新短 token 可用（200） |
 | 6 | `POST /api/v1/acc/auth/logout` → 再用该短 token 访问 `/api/v1/acc/me` → 直连 ACC 重复登出 | 登出 200 + `revoked=true` + `Max-Age=0`；随后 401（网关侧）；`revoked:jti` TTL∈[1,900]；重复登出仍 200（幂等，`revoked=false`） |
-| 7 | Redis `KEYS/TYPE/TTL` 遍历 `acc:session:*`、`acc:refresh:*`、`revoked:jti:*` | `acc:refresh:{jti}` TTL ≤ 604800（7 天）；`revoked:jti:{jti}` TTL ≤ 900；三类键同实例 |
+| 7 | Redis `KEYS/TYPE/TTL` 遍历 `acc:session:*`、`acc:refresh:*`、`revoked:jti:*` | `acc:refresh:{jti}` TTL ≤ 604800（7 天）；`revoked:jti:{jti}` TTL ≤ 900；三类键同实例；**7.4（A1 修复）**：`acc:session:*` 全部为 1e5 秒量级的族寿命（> 1e5 且 ≤ 604800）——**没有** 900 量级的族键 |
 | 8 | 审计与网关日志抽取 | ACC `acc.session.audit` 记 `SESSION_REFRESH_REPLAY`/`SESSION_LOGOUT`（不含 token 原文）；网关 `鉴权失败 … reason=Token 已吊销` |
 
 > 说明：refresh Cookie 按生产口径带 `Secure`，curl 的 cookie 引擎不会在 http 链路回带，
 > 故脚本从 `Set-Cookie` 头解析出长 token 并以**显式 `Cookie` 头**回放（等价浏览器行为，且不放松生产属性）；
 > 重复登出经网关必被吊销名单拦下（401），故幂等语义**直连 ACC** 观测。
+>
+> **来源校验的可达形态（2026-09-16 修复波 FIX-1 实测，务必知悉）**：ACC 的「同源默认放行」（裁定 R-A15）
+> 需要请求自身来源 = 浏览器看到的来源。**Spring Cloud Gateway 会把 `Host` 改写成 ACC 内网地址、且默认不
+> 转发原始 `Host`**，因此「裸网关」形态下 ACC 推断不出对外来源 → 浏览器换发仍会被判跨源而 401。两种解法
+> （任选其一，见 `services/gateway/deploy/README.md` §1 前提表）：① 配 `acc.session.allowed-origins`；
+> ② 让入口代理设置 `X-Forwarded-Host $host`（`services/gateway/deploy/nginx-gateway.conf.example` 已给出该行）。
+> 本脚本的 3.8 即验证 ② 形态（真机实测 200），3.9 验证直连形态（真机实测 200）。
 
 
 ## 4. 校验矩阵（2026-09-15 实测，gateway 18081 + ACC 8080 + MariaDB 33061）
@@ -166,8 +176,12 @@ java.lang.UnsupportedOperationException: io.lettuce.core.output.ValueOutput does
 - token 由 ACC 自身 `JwtCodec` 签发（M1 尚无登录接口，签发路径与未来登录一致），仅用于演练；
 - 外部核验库内容：`mysql -h 127.0.0.1 -P 33061 -u root acc -e "SELECT * FROM account"`（root 空口令，仅本机演练库）；
 - **Redis 由桩内嵌**（默认 6380，`-Ddrill.redis.port` 可改；该端口已有实例则复用）；
-  ACC 侧组合为 `acc.session.store=redis` + `acc.redis.host/port`（L1/R-A8：取 `redis` 而缺 `host` 会**启动失败**，
-  不会静默退化为内存会话存储）；
+  ACC 侧组合**固定**为 `acc.session.store=redis` + `acc.redis.host/port`（桩的默认值，见 `AccDrill#main`），
+  即启动校验的合法组合之一；L1/R-A8 + C1/R-A11 的两方向 fail-fast 都不会触发：
+  - 取 `redis` 而缺 `host` → **启动失败**（不会静默退化为内存会话存储）；
+  - 取 `memory`（含默认）而 `host` 已配置 → **同样启动失败**（防止「配了 Redis 却忘设开关」导致登出/踢人静默失效）。
+  故用 `-Ddrill.session.store=memory` 覆盖本桩的启动参数会**故意**启动失败——要跑内存会话请同时清空
+  `-Ddrill.redis.host=`，且此时跨进程吊销语义已不成立，不适用于本演练；
 - **启动顺序**：先 ACC（含 Redis）→ 起网关（网关启动即连 Redis，顺序颠倒会拿到 `redis=down`，需重启网关）；
 - **收尾必须停掉全部进程**（ACC 桩、网关、内嵌 Redis、内嵌 MariaDB），确认 `8080/18081/6380/33061` 全部释放
   （`netstat -ano | findstr "LISTENING"` + 四端口连接探测）；桩退出时会经 shutdown hook 停掉内嵌实例；

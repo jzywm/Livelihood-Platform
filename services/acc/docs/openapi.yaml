@@ -6,7 +6,7 @@ info:
     账户服务（ACC）前端接口文档。模块 I1 实名账户 + 钱包记账（= 功能点 I-01；含 I-06 强实名增强、
     登录页人机验证——页面码 G-01，与 TICKET 功能点 G-01 群众热线无关）。
     口径对齐：PDD §5.1 / §6.4.1；需求口径 PRD §5.11（I 组）。
-    - 本文件 paths 仅含前端可调接口（共 19 个），可直接喂 packages/api-client 生成 TS 类型。
+    - 本文件 paths 仅含前端可调接口（共 18 个），可直接喂 packages/api-client 生成 TS 类型。
     - 会话凭据（/acc/auth/*，v1.2.0 新增）：短 token 走响应体 + `Authorization: Bearer`；长 token 只走
       `Set-Cookie`（`HttpOnly; Secure; SameSite=Lax; Path=/api/v1/acc/auth`），前端不得读取或落 localStorage。
     - 服务端间接口（微信/支付宝实名回传回调）见文末 x-external-interfaces 附录，前端勿调。
