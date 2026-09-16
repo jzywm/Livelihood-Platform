@@ -27,8 +27,12 @@ spring:
               uri: ${GATEWAY_ACC_URI:http://localhost:8080}
               predicates:
                 - Path=/api/v1/acc/**
-              # 过滤器:路径重写 + 熔断实例按路由命名(审查 I3:任一后端劣化不应打开全路由熔断)
+              # 过滤器:保留原始 Host + 路径重写 + 熔断实例按路由命名(审查 I3:任一后端劣化不应打开全路由熔断)
+              # PreserveHostHeader(裁定 R-A16):SCG 默认会把 Host 改写成下游内网地址,ACC 的会话来源校验
+              # (同源默认放行,R-A15)需要「请求自身来源」= 浏览器看到的来源,故此处保留客户端/入口传来的
+              # 原始 Host;入口若另有代理,建议同时透传 X-Forwarded-Host(见 deploy/README.md §1 前提表)。
               filters:
+                - PreserveHostHeader
                 - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
                 - name: CircuitBreaker
                   args:
@@ -37,12 +41,13 @@ spring:
               metadata:
                 timeout: 1000        # 路由级超时:内部服务 1s(F4)
                 weight: 100          # 灰度权重预留,默认全量(F6,M1 后期启用)
-            # M1 初期预留(Python 服务就绪后启用;超时 5000 对齐 AI 分级;熔断实例各自命名):
+            # M1 初期预留(Python 服务就绪后启用;超时 5000 对齐 AI 分级;熔断实例各自命名;同样保留原始 Host):
             # - id: assist
             #   uri: http://localhost:8082
             #   predicates:
             #     - Path=/api/v1/assist/**
             #   filters:
+            #     - PreserveHostHeader
             #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
             #     - name: CircuitBreaker
             #       args: { name: assistCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
@@ -52,6 +57,7 @@ spring:
             #   predicates:
             #     - Path=/api/v1/aicore/**
             #   filters:
+            #     - PreserveHostHeader
             #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
             #     - name: CircuitBreaker
             #       args: { name: aicoreCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
@@ -62,6 +68,7 @@ spring:
             #   predicates:
             #     - Path=/api/v1/settle/**
             #   filters:
+            #     - PreserveHostHeader
             #     - RewritePath=/api/v1/(?<segment>.*), /$\{segment}
             #     - name: CircuitBreaker
             #       args: { name: settleCircuitBreaker, fallbackUri: 'forward:/gateway-fallback' }
