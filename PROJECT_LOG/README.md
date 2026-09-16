@@ -72,6 +72,7 @@
 - 2026-09-15 · **会话 10 · 复评修复波(N1 Important + 7 Minor)** · 验证:3 提交(`12ac50e`/`c9a8c40`/`72d13f7`)——网关承接工件 §14.3 状态自相矛盾修正、ACC 并发守卫用例恢复移入 `finally`(可重复运行)、`implement-gateway-service` D15/§14.1 承接标注落地且原任务状态不变;`.superpowers/sdd/*/progress.md` 记录 U1 交付与「tasks 勾选未回填」记账缺口
 - 2026-09-15 · **会话 11 · 双 token 会话组 6/7/8 收口:两处真实缺陷修复 + 真机闭环 + 服务基线 + 勾选回填** · 验证:**L1**(裁定 R-A8)`acc.session.store=memory|redis` 显式开关,取 redis 缺 `acc.redis.host` 即启动失败(不再静默退化为内存会话存储);**L4** 真机演练暴露的**真实生产缺陷**——`AccLettuceStringRedisOps.eval` 用 `VALUE` 解码整数回复,真实 Redis 上建族/轮换/吊销全失效(登录 503+5003),改用 `ScriptOutputType.INTEGER` 并补内嵌真实 Redis 回归用例(TDD 先 RED 后 GREEN);`services/acc/deploy/drill` 内嵌真实 Redis(6380)+ `session-drill.ps1` 三进程闭环 **25/25 断言通过**(登录→业务 200→换发轮换→旧 refresh 重放 401+2001 且整族吊销→原短 token 网关侧 401→重新登录→登出即刻 401;Redis `acc:session:*`/`acc:refresh:*`(≤7d)/`revoked:jti:*`(≤900s)逐键 TTL 核验),演练后四端口(8080/18081/6380/33061)全部释放;服务基线(ACC/网关 docs + 网关部署清单 15 组 + compose acc 服务 Redis 依赖与环境变量)、`openapi.apifox.json` 按既有脚本重打包;`tasks.md` 组 1~8 逐条回填实测证据;**ACC `verify` 385 用例 0 失败、网关 `verify` 150 用例 0 失败(含 jacoco 门禁)**
 
+- 2026-09-16 · **两变更最终评审与整改交付(网关保留 Host + ACC 会话族寿命修复)** · 验证:最终整体评审 16 需求/34 场景 → 33 ✅/1 ❌,Critical(族记录寿命塌缩)与 Important(来源校验/工件入库)全部整改并定向复评 ADDRESSED;ACC **410 用例** 0 失败(1 跳过)、网关 **154 用例** 0 失败 + jacoco 全过;真机演练 drill2 34 项 / drill3 37 项断言 0 失败(浏览器默认形态换发 200 且真轮换、跨源 401 且不轮换、族键 TTL 604800);提交 b4710e0/2782580/a9e7188/e6feaa0/d89a8d1/573a3be
 ## 关键决策(只追加)
 
 - 定位:To G + To C 都要,本质是**民生平台**
@@ -143,7 +144,7 @@
 
 ## 下一步
 
-- **★断点(2026-09-15 会话 9)**:① 修复波(N1 Important + N2/N3/N6/N7/N8;N4 parked、N5 已修,清单 `.superpowers/sdd/fix-acc-transaction-boundary/fix-wave-n.md`);② 任务一 组 6/7/8:真机演练内嵌 `embedded-redis` 跑通「建族→轮换→重放被拒且整族吊销→登出后短 token 立即 401」,**L1 待处理**(`acc.redis.host` 空时静默退化为内存会话存储 → 登出/踢人失效,需部署必填或 profile fail-fast)+ 任务 1.6 承接标注(控制器做);③ 最终整体评审(覆盖两变更)→ `commit-check` → 按粒度提交(两变更工件目录仍未入库);④ 已登记不入本变更:唯一键错误码 3008 翻译缺失、ACC 无 jacoco 覆盖率门禁(仓库级决策)。
+- **★断点(2026-09-16)**:① §10.1(Important)族记录 `status` 语义竞态 → 端口层「已吊销族拒绝轮换」信号 + 交错用例,单独一波;② §10.2 HTTPS 入口 `X-Forwarded-Proto` 部署前提复核;③ 有 Docker/DB 的环境复跑 `docker compose up`、Nginx 503 复演与 TBD-6 连接水位标定;④ 本机推送分支 + 复跑仓库 hook;⑤ 视需要 `openspec archive` 两变更(首次生成三个 capability 基线)。
 
 - **⭐ ACC 分支整合(2026-09-14 待用户拍板)**:finishing 菜单三选——推荐 ① 本地合并 `feature/前端页面开发` → main(可逆,沙箱无法 push 由用户本机 `git push origin main && git push gitee main`);② 勾销伞变更 `add-m1-core-capabilities` tasks 2.1/2.2(EVIDENCE.md 已备);③ `/openspec-archive-change implement-acc-service`。**硬提醒:I-9 月表滚动预建(2026-08 前上线,否则 9 月起 recordFlow 全线 5001)、I-8 装配三件套(workerId 租约/MyBatis-Spring/Lettuce)、I-1 Spring TX 装配 须排进伞变更任务**;I-2/I-3(role 恒 CONSUMER、mobile_hash 判重死路径)→ 伞变更 er.md v1.2+V3 迁移(realname_record 增 role/mobile/mobile_hash 列)。
 
