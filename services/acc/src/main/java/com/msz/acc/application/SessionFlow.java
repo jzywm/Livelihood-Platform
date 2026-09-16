@@ -109,8 +109,12 @@ public final class SessionFlow implements SessionOperations {
      *       签发新短 token（多标签页同时换发不会误伤）</li>
      *   <li>{@code Replay}：重放泄露信号——**吊销整族**（含族内未过期短 token 的 `jti`）
      *       并记安全审计事件，随后仍按 401/2001 拒绝</li>
-     *   <li>{@code Invalid}/{@code RetryableRace}：统一 401/2001，**不产生任何副作用**</li>
+     *   <li>{@code Invalid}：统一 401/2001，**不产生任何副作用**（其后的 {@code throw} 同时兜住
+     *       未来新增的拒绝型结果）</li>
      * </ul>
+     *
+     * <p><b>FIX-1/M3</b>：原 sealed 结果里有一个从未被构造、也从未被匹配的 {@code RetryableRace}
+     * （死类型 + Javadoc 与代码不一致），已删除——封接口是 sealed 的，新增分支在编译期即被强制处理。</p>
      */
     public RefreshOutcome refresh(String refreshToken) {
         ConsumeResult result = refreshTokenStore.consume(refreshToken);

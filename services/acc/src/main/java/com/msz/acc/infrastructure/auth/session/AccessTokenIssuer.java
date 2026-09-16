@@ -9,13 +9,20 @@ import java.util.UUID;
 
 /**
  * 短 token 签发口径（任务 3.6，spec「Access token claims match the gateway policy」，design D4）：
- * **15 分钟硬常量**、声明 {@code sub/role/mfa/jti/iat/exp}，另加 {@code typ=access} 与
- * {@code fam}（会话族）。
+ * 默认 **15 分钟**（{@code acc.session.access-token-ttl-seconds} 可调，夹紧到 {@code [60, 900]}）、
+ * 声明 {@code sub/role/mfa/jti/iat/exp}，另加 {@code typ=access} 与 {@code fam}（会话族）。
  *
  * <p>与网关策略的不变式：**ACC 签发 ≤ 网关上限 − 容差**。网关上限由
  * {@code gateway.auth.access-token-max-ttl}（默认 15m）+ {@code clock-skew}（默认 60s）守门，
- * ACC 侧固定 900s（= 15 分钟）——两侧不同源会漂移，故此处以**常量**而非可自由放大的配置表达，
+ * 故 ACC 侧的**上限**固定为 900s（= 15 分钟）——配置超上限只夹紧并告警，绝不放大
+ * （{@link #effectiveTtlSeconds(long)}；配置超限时由 {@code AccConfiguration#accessTokenIssuer} 打 WARN），
  * 并由 {@code AccessTokenIssuerTest} 用网关同批断言锁定（含超长必须被拒的反向守卫）。</p>
+ *
+ * <p><b>FIX-1/B6</b>：{@code acc.session.access-token-ttl-seconds} 原为「可配却被忽略」的键
+ * （永远按常量 900s 签发，运维改小它没有任何效果）——现改为**真正生效且夹紧**：区间
+ * {@code [ACCESS_TOKEN_TTL_MIN_SECONDS, ACCESS_TOKEN_TTL_SECONDS]}。同一有效值必须同时驱动
+ * **签发**与**族内 jti 绑定**（{@code RefreshTokenStore} 的 access TTL 参数），否则族记录里短 token
+ * 的到期时刻与实际不符，整族吊销写下的 `revoked:jti:*` TTL 会失真。</p>
  *
  * <p>{@code typ} 与 refresh 的 {@code typ=refresh} 对称：两者同算法同密钥，必须能相互区分，
  * 否则短 token 会被当成 refresh 使用（或反之）而绕过各自的判定。</p>
@@ -25,8 +32,22 @@ public final class AccessTokenIssuer {
     /** 短 token 有效期常量：15 分钟（PDD v1.18 §8.4.1 定档，网关策略上限同值 + 60s 容差）。 */
     public static final long ACCESS_TOKEN_TTL_SECONDS = 900L;
 
+    /** 可配置短 token 有效期的**下限**（秒）：避免把短 token 配成「一出即过期」（客户端永远用不上）。 */
+    public static final long ACCESS_TOKEN_TTL_MIN_SECONDS = 60L;
+
     /** 短 token 类型标记（与 refresh 区分）。 */
     public static final String TYPE_ACCESS = "access";
+
+    /**
+     * 把配置值 {@code acc.session.access-token-ttl-seconds} 夹紧到
+     * {@code [ACCESS_TOKEN_TTL_MIN_SECONDS, ACCESS_TOKEN_TTL_SECONDS]}（B6）。
+     *
+     * <p>上限 = 网关策略上限（15m），保证「ACC 签发 ≤ 网关上限 − 容差」不变式恒成立；
+     * 配置被改动（无论放大还是缩小）都会由装配层打 WARN，不会静默生效或静默忽略。</p>
+     */
+    public static long effectiveTtlSeconds(long configuredTtlSeconds) {
+        return Math.min(Math.max(configuredTtlSeconds, ACCESS_TOKEN_TTL_MIN_SECONDS), ACCESS_TOKEN_TTL_SECONDS);
+    }
 
     private static final String CLAIM_TYPE = "typ";
     private static final String CLAIM_FAMILY = "fam";

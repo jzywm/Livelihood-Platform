@@ -55,7 +55,7 @@ class AuthControllerTest {
     }
 
     private static MockMvc mockMvcWith(com.msz.acc.application.SessionOperations flow, OriginValidator validator, SessionCookie cookie) {
-        AuthController controller = new AuthController(flow, validator, cookie, new SessionViewMapper(),
+        AuthController controller = new AuthController(flow, validator, cookie, new SessionViewMapper(900L),
                 new com.msz.acc.infrastructure.auth.JwtCodec(FIXED_CLOCK), TestSessionTokens.FIXTURE_SECRET,
                 FIXED_CLOCK);
         // 注册全局异常处理器：断言 401/2001 与 503/5003 的映射口径
@@ -250,6 +250,43 @@ class AuthControllerTest {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    @DisplayName("R-A15 同源默认放行：未配置 allowed-origins 时，Origin = 请求自身来源的换发必须 200（原「登录可用、换发必 401」）")
+    void sameOriginOriginPassesWithoutAllowListConfiguration() throws Exception {
+        sessionFlow.refreshResult = new SessionFlow.RefreshOutcome(1001L, "CONSUMER", false, "fam_1",
+                        FIXTURE_ACCESS, "new-refresh");
+        // 默认装配：allowed-origins 为空（浏览器同源部署即可用）
+        mockMvc.perform(post("/acc/auth/refresh")
+                        .header("Cookie", "refresh_token=" + FIXTURE_REFRESH)
+                        .header("Origin", "http://localhost"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accessToken").value(FIXTURE_ACCESS));
+
+        assertThat(sessionFlow.refreshCalls).containsExactly(FIXTURE_REFRESH);
+    }
+
+    @Test
+    @DisplayName("R-A15 经网关/入口代理：同源判定取 X-Forwarded-Proto/Host（浏览器看到的对外来源）")
+    void sameOriginBehindProxyUsesForwardedOrigin() throws Exception {
+        sessionFlow.refreshResult = new SessionFlow.RefreshOutcome(1001L, "CONSUMER", false, "fam_1",
+                        FIXTURE_ACCESS, "new-refresh");
+        MockMvc strict = mockMvcWith(sessionFlow, new OriginValidator(""), cookieOf(true, "Lax"));
+
+        strict.perform(post("/acc/auth/refresh")
+                        .header("Cookie", "refresh_token=" + FIXTURE_REFRESH)
+                        .header("Origin", "https://app.example.com")
+                        .header("X-Forwarded-Proto", "https")
+                        .header("X-Forwarded-Host", "app.example.com"))
+                .andExpect(status().isOk());
+        // 同样的 X-Forwarded-* 但来源是别的站点 → 仍拒绝（转发头不能被跨站请求利用）
+        strict.perform(post("/acc/auth/refresh")
+                        .header("Cookie", "refresh_token=" + FIXTURE_REFRESH)
+                        .header("Origin", "https://evil.example.com")
+                        .header("X-Forwarded-Proto", "https")
+                        .header("X-Forwarded-Host", "app.example.com"))
+                .andExpect(status().isUnauthorized());
+    }
+
     // ---------- 登出 ----------
 
     @Test
@@ -288,6 +325,22 @@ class AuthControllerTest {
         Object[] call = sessionFlow.lastLogoutCall();
         assertThat(call[0]).isNull();
         assertThat(call[3]).isNull();
+    }
+
+    @Test
+    @DisplayName("FIX-1 登出：把 refresh 放进 Authorization: Bearer 时不当作短 token（typ 校验，避免给 rf_* 写 7 天冗余吊销键）")
+    void refreshTokenInBearerHeaderIsNotTreatedAsAccessToken() throws Exception {
+        sessionFlow.logoutResult = new SessionFlow.LogoutOutcome(true);
+
+        mockMvc.perform(post("/acc/auth/logout")
+                        .header("Authorization", "Bearer " + TestSessionTokens.refreshToken())
+                        .header("Cookie", "refresh_token=" + FIXTURE_REFRESH))
+                .andExpect(status().isOk());
+
+        Object[] call = sessionFlow.lastLogoutCall();
+        assertThat(call[0]).as("refresh 不是短 token：不得解析出它的 jti").isNull();
+        assertThat(call[1]).as("也不得把它的族当作短 token 所属族").isNull();
+        assertThat(call[3]).as("按「仅凭 Cookie 登出」路径处置（Cookie 兜底）").isEqualTo(FIXTURE_REFRESH);
     }
 
     @Test
@@ -364,7 +417,7 @@ class AuthControllerTest {
     @Test
     @DisplayName("SessionView：accountId 前缀 acc_、expiresIn=900、tokenType=Bearer、mfa 透传")
     void sessionViewShape() {
-        SessionView view = new SessionViewMapper().toView(
+        SessionView view = new SessionViewMapper(900L).toView(
                 new SessionFlow.RefreshOutcome(1001L, "REGULATOR", true, "fam_1", FIXTURE_ACCESS, FIXTURE_REFRESH));
 
         assertThat(view.accountId()).isEqualTo("acc_1001");

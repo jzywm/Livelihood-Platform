@@ -23,6 +23,8 @@ final class TestSessionTokens {
 
     static final String FAMILY_ID = "fam_fixture";
 
+    static final String REFRESH_JTI = "rf_fixture_0001";
+
     static final String FIXTURE_SECRET = "acc-jwt-fixture-secret-0123456789";
 
     static final String FIXTURE_ACCESS_TOKEN = accessToken();
@@ -41,5 +43,21 @@ final class TestSessionTokens {
         claims.put("fam", FAMILY_ID);
         claims.put("typ", "access");
         return codec.sign(claims, FIXTURE_SECRET, 900L);
+    }
+
+    /**
+     * 固定时刻签发一条 **refresh**（{@code typ=refresh}、7 天）：用于断言「把 refresh 放进
+     * {@code Authorization: Bearer} 时不得被当成短 token」——两者同算法同密钥，只能靠 {@code typ} 区分。
+     */
+    static String refreshToken() {
+        JwtCodec codec = new JwtCodec(Clock.fixed(Instant.ofEpochSecond(FIXED_EPOCH_SECOND), ZoneOffset.UTC));
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("sub", "1001");
+        claims.put("role", "CONSUMER");
+        claims.put("mfa", false);
+        claims.put("jti", REFRESH_JTI);
+        claims.put("fam", FAMILY_ID);
+        claims.put("typ", "refresh");
+        return codec.sign(claims, FIXTURE_SECRET, 604_800L);
     }
 }

@@ -13,10 +13,19 @@ import java.util.function.LongSupplier;
  *
  * <p>语义与 Redis 实现逐条对齐（同一套端口契约测试）；TTL 用注入的毫秒时钟判定，
  * 因此宽限窗口/到期行为在测试中完全可控、无 {@code Thread.sleep}。</p>
+ *
+ * <p><b>族记录的互斥（B11）</b>：族记录是整条 JSON 覆写，「读-改-写」必须互斥——并发绑定短 token jti
+ * 或与轮换交错时若各写各的，会丢掉别的线程刚写进去的 jti（该短 token 因此逃过整族吊销）。
+ * 故凡改动族记录的方法（{@code rotate}/{@code markRevoked}/{@code bindAccessJti}）都在
+ * {@link #familyLock} 上串行；每次写入的 TTL 取**更新后**记录的族到期时刻（A1）。</p>
  */
 public final class InMemorySessionStore implements SessionStore {
 
     private final Map<String, Entry> store = new ConcurrentHashMap<>();
+
+    /** 族记录「读-改-写」互斥锁（B11，见类注释）。 */
+    private final Object familyLock = new Object();
+
     private final LongSupplier clockMillis;
 
     public InMemorySessionStore(LongSupplier clockMillis) {
@@ -41,10 +50,15 @@ public final class InMemorySessionStore implements SessionStore {
     @Override
     public void rotate(FamilyRecord family, String newRefreshJti, long refreshTtlSeconds, String consumedJti) {
         long now = clockMillis.getAsLong();
-        store.remove(refreshKey(consumedJti));
-        store.put(refreshKey(newRefreshJti), new Entry(family.familyId(), now + refreshTtlSeconds * 1000L));
-        store.put(familyKey(family.familyId()),
-                new Entry(FamilyRecordJson.encode(family), family.expiresAtMillis()));
+        synchronized (familyLock) {
+            // B11：调用方可能拿着「消费旧 refresh 时的族快照」写回——先合并快照之后被并发绑定的 jti
+            FamilyRecord current = find(family.familyId());
+            FamilyRecord toWrite = current == null ? family : family.mergedWithAccessJtisOf(current, now);
+            store.remove(refreshKey(consumedJti));
+            store.put(refreshKey(newRefreshJti), new Entry(family.familyId(), now + refreshTtlSeconds * 1000L));
+            store.put(familyKey(family.familyId()),
+                    new Entry(FamilyRecordJson.encode(toWrite), toWrite.expiresAtMillis()));
+        }
     }
 
     @Override
@@ -56,25 +70,31 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public void markRevoked(String familyId) {
-        FamilyRecord family = find(familyId);
-        if (family == null) {
-            return;
+        synchronized (familyLock) {
+            FamilyRecord family = find(familyId);
+            if (family == null) {
+                return;
+            }
+            FamilyRecord revoked = new FamilyRecord(family.familyId(), family.accountId(), family.role(),
+                    family.mfa(), family.createdAtMillis(), family.expiresAtMillis(), FamilyRecord.STATUS_REVOKED,
+                    family.currentJti(), family.previousJti(), family.previousValidUntilMillis(),
+                    family.rotatedJtis(), family.accessJtis());
+            // A1：TTL 取更新后记录的族到期时刻
+            store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(revoked), revoked.expiresAtMillis()));
         }
-        FamilyRecord revoked = new FamilyRecord(family.familyId(), family.accountId(), family.role(),
-                family.mfa(), family.createdAtMillis(), family.expiresAtMillis(), FamilyRecord.STATUS_REVOKED,
-                family.currentJti(), family.previousJti(), family.previousValidUntilMillis(),
-                family.rotatedJtis(), family.accessJtis());
-        store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(revoked), family.expiresAtMillis()));
     }
 
     @Override
     public void bindAccessJti(String familyId, String accessJti, long expiresAtMillis) {
-        FamilyRecord family = find(familyId);
-        if (family == null) {
-            return;
+        synchronized (familyLock) {
+            FamilyRecord family = find(familyId);
+            if (family == null) {
+                return;
+            }
+            FamilyRecord updated = family.pruned(clockMillis.getAsLong()).withAccessJti(accessJti, expiresAtMillis);
+            // A1：族键 TTL 只由**族**到期时刻决定（原实现沿用更新前记录的值，是同一污染的传播点）
+            store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(updated), updated.expiresAtMillis()));
         }
-        FamilyRecord updated = family.pruned(clockMillis.getAsLong()).withAccessJti(accessJti, expiresAtMillis);
-        store.put(familyKey(familyId), new Entry(FamilyRecordJson.encode(updated), family.expiresAtMillis()));
     }
 
     @Override

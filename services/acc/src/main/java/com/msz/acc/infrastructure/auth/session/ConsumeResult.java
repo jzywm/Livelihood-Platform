@@ -35,8 +35,4 @@ public sealed interface ConsumeResult {
     /** 拒绝：refresh 缺失/签名非法/已过期/映射不存在（未知）；不区分原因，对外统一 2001。 */
     record Invalid() implements ConsumeResult {
     }
-
-    /** 判定为并发重试但当前族记录不可读（极端竞态）：重试一次换发即可，调用方要求客户端重试（401）。 */
-    record RetryableRace() implements ConsumeResult {
-    }
 }

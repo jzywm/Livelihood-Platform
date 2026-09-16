@@ -37,6 +37,14 @@ import java.io.IOException;
  * {@link IOException} 等未捕获受检异常与 {@link RuntimeException}/{@link Error} 同等处理。
  * 实现与该口径**无偏差**，有意偏离 Spring 默认（受检异常返回时提交）的理由见 design D6：ACC 现有异常
  * 全为非受检，而「受检异常默默提交半成品」是更危险的失败模式。</p>
+ *
+ * <p><b>已知残留：提交发生在响应写出之后（F6，2026-09-16 最终评审登记，与 design D6 的 F4 并列）</b>：
+ * 本边界在 {@code chain.doFilter} **返回之后**才提交，而 Servlet 容器可能在链内就已向客户端刷出响应
+ * （响应缓冲写满即刷，或链内显式 {@code flushBuffer()}）——于是存在「客户端已看到 200，提交随后失败」
+ * 的窗口：此时回滚已无法收回已写出的响应体。当前不可达（ACC 写端点响应体小，远小于容器响应缓冲；且
+ * 失败路径经 {@code GlobalExceptionHandler} 置位 {@code rollbackOnly} 提前转为回滚）。**将来新增流式/
+ * 大响应体写端点时必须重新评估**：改为「先缓冲响应、后提交、再刷出」，或把该端点移出本边界自行管事务
+ * （写端点响应体须小于容器响应缓冲，或改为缓冲后提交再刷出）。</p>
  */
 public final class TransactionBoundaryFilter implements Filter {
 

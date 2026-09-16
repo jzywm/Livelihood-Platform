@@ -6,6 +6,7 @@ import com.msz.acc.controller.dto.SessionView;
 import com.msz.acc.infrastructure.auth.AuthException;
 import com.msz.acc.infrastructure.auth.JwtCodec;
 import com.msz.acc.infrastructure.auth.OriginValidator;
+import com.msz.acc.infrastructure.auth.session.AccessTokenIssuer;
 import com.msz.acc.infrastructure.web.TraceIds;
 import com.msz.common.api.Envelope;
 import jakarta.servlet.http.HttpServletRequest;
@@ -111,14 +112,82 @@ public class AuthController {
         return Envelope.ok(new LogoutResult(outcome.revoked()), TraceIds.of(request));
     }
 
-    /** 来源校验（R-A3）：带来源头且不在允许列表 → 401 + 2001（且调用方不做任何轮换）。 */
+    /** 来源校验（R-A3 + R-A15）：带来源头、跨源且不在允许列表 → 401 + 2001（且调用方不做任何轮换）。 */
     private void requireTrustedOrigin(HttpServletRequest request) {
-        if (!originValidator.isAllowed(request.getHeader("Origin"), request.getHeader("Referer"))) {
+        if (!originValidator.isAllowed(request.getHeader("Origin"), request.getHeader("Referer"),
+                requestOrigin(request))) {
             throw new AuthException("来源不在允许列表");
         }
     }
 
-    /** 解析短 token 的 jti / 会话族 / 剩余有效期；无有效短 token 返回 null。 */
+    /**
+     * 请求自身来源（同源判据，R-A15）。
+     *
+     * <p>优先取入口/网关在转发时写入的 {@code X-Forwarded-Proto}/{@code X-Forwarded-Host}：
+     * 浏览器看到的来源是**对外**来源，而请求抵达 ACC 时 Host 已被入口改写（Nginx → 网关 → ACC），
+     * 只用 {@code request.getServerName()} 会把合法的同源请求误判为跨源（正是 I1 的症状）。</p>
+     *
+     * <p>为什么不担心伪造：CSRF 的载体是浏览器自动携带 Cookie 的**简单请求**，而简单请求不允许
+     * 携带自定义头（带自定义头会触发预检，服务端不返回 CORS 许可即被浏览器拦下）——攻击者无法
+     * 用受害者的 Cookie 伪造出「Origin + X-Forwarded-Host 同源」的请求。</p>
+     */
+    private static String requestOrigin(HttpServletRequest request) {
+        String scheme = firstHeaderValue(request.getHeader("X-Forwarded-Proto"));
+        String forwardedHost = firstHeaderValue(request.getHeader("X-Forwarded-Host"));
+        if (scheme == null && forwardedHost == null) {
+            // 无转发头（直连/本地联调）：用请求本身的 scheme/host/port
+            String host = request.getServerName();
+            return host == null || host.isBlank() ? null
+                    : request.getScheme() + "://" + host + ":" + request.getServerPort();
+        }
+        if (scheme == null) {
+            scheme = request.getScheme();
+        }
+        String host = forwardedHost == null ? request.getServerName() : forwardedHost;
+        int port = -1;
+        if (host != null) {
+            int colon = host.lastIndexOf(':');
+            if (colon > 0 && host.indexOf(']') < colon) {
+                port = parsePort(host.substring(colon + 1));
+                host = host.substring(0, colon);
+            }
+        }
+        if (host == null || host.isBlank()) {
+            return null;
+        }
+        if (port < 0) {
+            // 转发头未给端口 = 对外来源用的是该 scheme 的默认端口（**不能**回退到容器内部端口）
+            String forwardedPort = firstHeaderValue(request.getHeader("X-Forwarded-Port"));
+            port = forwardedPort == null ? -1 : parsePort(forwardedPort);
+        }
+        return scheme + "://" + host + (port > 0 ? ":" + port : "");
+    }
+
+    /** 取逗号分隔头部的第一个非空段（多级代理会追加，取第一段 = 最外层入口写入的值）。 */
+    private static String firstHeaderValue(String header) {
+        if (header == null || header.isBlank()) {
+            return null;
+        }
+        String first = header.split(",")[0].trim();
+        return first.isEmpty() ? null : first;
+    }
+
+    private static int parsePort(String value) {
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 解析短 token 的 jti / 会话族 / 剩余有效期；无有效短 token 返回 null。
+     *
+     * <p><b>FIX-1（M12）</b>：校验 {@code typ=access}——短 token 与 refresh 同算法同密钥，只验签会把
+     * 放进 {@code Authorization: Bearer} 的 **refresh** 也解析出 {@code jti}/{@code fam}，登出便给一个
+     * 非 access 的 jti 写 {@code revoked:jti:rf_*}（TTL 最长 7 天的冗余键）。非 access 一律按
+     * 「无短 token」处置，交由 Cookie 兜底路径。</p>
+     */
     private AccessClaims accessClaimsOf(HttpServletRequest request) {
         String header = request.getHeader("Authorization");
         if (header == null || !header.startsWith(BEARER_PREFIX)) {
@@ -129,6 +198,9 @@ public class AuthController {
             // 用与签发同一个 JwtCodec（含同一时钟）解析：过期判定的「现在」必须与签发侧同源，
             // 否则会因时钟不同步把刚签发的合法 token 误判为已过期
             Map<String, Object> claims = jwtCodec.verify(token, jwtSecret);
+            if (!AccessTokenIssuer.TYPE_ACCESS.equals(claims.get("typ"))) {
+                return null;
+            }
             Object jti = claims.get("jti");
             Object family = claims.get("fam");
             Object exp = claims.get("exp");

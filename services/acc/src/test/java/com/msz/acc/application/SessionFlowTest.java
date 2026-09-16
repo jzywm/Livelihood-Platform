@@ -83,6 +83,21 @@ class SessionFlowTest {
         return account;
     }
 
+    /** 用与生产同源的编解码器/密钥/时钟签发一条 refresh（合法签名 + 合法 typ），供存储故障用例使用。 */
+    private String validRefreshToken(String familyId, String jti) {
+        return codec().sign(Map.of("sub", "1001", "role", "CONSUMER", "mfa", false, "fam", familyId,
+                "jti", jti, "typ", RefreshTokenStore.TYPE_REFRESH), FIXTURE_SECRET, 604_800L);
+    }
+
+    /** 从 token 中读出 jti（断言族内标记用，不校验业务语义）。 */
+    private String jtiOf(String token) {
+        return (String) codec().verify(token, FIXTURE_SECRET).get("jti");
+    }
+
+    private static JwtCodec codec() {
+        return new JwtCodec(Clock.fixed(Instant.ofEpochMilli(FIXED_EPOCH_MILLIS), ZoneOffset.UTC));
+    }
+
     // ---------- 3.1 登录 ----------
 
     @Test
@@ -218,6 +233,60 @@ class SessionFlowTest {
         assertThatThrownBy(() -> flow.refresh(login.refreshToken())).isInstanceOf(AuthException.class);
     }
 
+    @Test
+    @DisplayName("FIX-1/A1 族寿命：轮换后族到期与「已轮换标记」按 refresh 有效期（7 天）计，不被 15 分钟短 token 污染")
+    void familyAndRotationMarkerLifetimeFollowRefreshTtl() {
+        when(accountMapper.selectByMobileHash(anyString())).thenReturn(account("ACTIVE", null));
+        SessionFlow.LoginOutcome login = flow.login(MOBILE, "ct_1");
+        String familyId = login.familyId();
+        String firstRefreshJti = jtiOf(login.refreshToken());
+
+        flow.refresh(login.refreshToken());
+
+        FamilyRecord family = store.find(familyId);
+        assertThat(family.expiresAtMillis())
+                .as("族到期 = 本次 refresh 签发时刻 + refresh 有效期（轮换会续期），与短 token 无关")
+                .isEqualTo(FIXED_EPOCH_MILLIS + 604_800_000L);
+        assertThat(store.rawTtlSeconds("acc:session:" + familyId))
+                .as("族键 TTL 必须是 7 天量级（1e5 秒），不是 900 秒量级")
+                .isBetween(604_790L, 604_800L);
+        assertThat(family.rotatedJtis())
+                .as("被轮换 jti 的标记保留到该 refresh 的原始到期时刻；塌缩成 900s 会让重放被误判为「未知 token」")
+                .containsEntry(firstRefreshJti, FIXED_EPOCH_MILLIS + 604_800_000L);
+        assertThat(family.accessJtis().values())
+                .as("短 token 的到期时刻只存在于 accessJtis 条目里（独立于族寿命）")
+                .allSatisfy(expiry -> assertThat(expiry).isEqualTo(FIXED_EPOCH_MILLIS + 900_000L));
+    }
+
+    @Test
+    @DisplayName("FIX-1/A1 安全承诺：轮换后超过 15 分钟（短 token 已过期）重放旧 refresh → 仍判重用：整族吊销 + 审计")
+    void replayLongAfterRotationStillRevokesWholeFamily() {
+        when(accountMapper.selectByMobileHash(anyString())).thenReturn(account("ACTIVE", null));
+        SessionFlow.LoginOutcome login = flow.login(MOBILE, "ct_1");
+        SessionFlow.RefreshOutcome first = flow.refresh(login.refreshToken());
+
+        // 15 分钟 + 1 秒：短 token 全部过期；被污染的「已轮换标记」恰在此刻到期 → 旧实现落入「未知 token」分支
+        clock.advanceSeconds(901);
+        flow.refresh(first.refreshToken());
+        assertThat(store.find(login.familyId()).revoked())
+                .as("refresh 未过期，15 分钟后正常换发必须成功（旧实现下族键已消失 → 401 强制重登）")
+                .isFalse();
+        String liveAccessJti = store.find(login.familyId()).accessJtis().keySet().iterator().next();
+
+        assertThatThrownBy(() -> flow.refresh(login.refreshToken())).isInstanceOf(AuthException.class);
+
+        assertThat(store.find(login.familyId()).revoked())
+                .as("重放必须整族吊销（REVOKED 记录保留），而不是只回 401「未知 token」")
+                .isTrue();
+        assertThat(store.rawValue("revoked:jti:" + liveAccessJti))
+                .as("整族吊销必须含「重放发生时仍未过期」的短 token（网关据此立即 401）")
+                .isEqualTo("1");
+        assertThat(store.rawTtlSeconds("revoked:jti:" + liveAccessJti)).isBetween(1L, 900L);
+        assertThat(auditLog.messages())
+                .as("重放必须留安全审计事件（可观测性）")
+                .anyMatch(m -> m.contains(SessionFlow.AUDIT_REFRESH_REPLAY) && m.contains(login.familyId()));
+    }
+
     // ---------- 3.4 并发宽限 ----------
 
     @Test
@@ -340,7 +409,15 @@ class SessionFlowTest {
                 .isInstanceOf(SessionStoreUnavailableException.class);
         assertThatThrownBy(() -> brokenFlow.logout("at_1", "fam_1", 100L, null))
                 .isInstanceOf(SessionStoreUnavailableException.class);
-        assertThatThrownBy(() -> brokenFlow.refresh("any")).isInstanceOf(RuntimeException.class);
+        // FIX-1/M1：原用 "any"（非法 JWT）——它在触达存储之前就抛 AuthException（RuntimeException 子类），
+        // 断言恒真。改为**合法签名/合法 typ** 的 refresh，证明失败确实来自存储不可用。
+        assertThatThrownBy(() -> brokenFlow.refresh(validRefreshToken("fam_store_down", "rf_store_down")))
+                .as("合法 refresh 必须真正触达存储后才失败")
+                .isInstanceOf(SessionStoreUnavailableException.class);
+        org.mockito.Mockito.verify(broken).find("fam_store_down");
+        // 反向对照：非法 token 在触存储之前就被拒（与上一条区分开，证明上一条并非恒真）
+        assertThatThrownBy(() -> brokenFlow.refresh("not-a-jwt")).isInstanceOf(AuthException.class);
+        org.mockito.Mockito.verify(broken, org.mockito.Mockito.never()).find("not-a-jwt");
     }
 
     // ---------- 7 签发口径 ----------

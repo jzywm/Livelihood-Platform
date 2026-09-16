@@ -91,24 +91,46 @@ class RedisSessionStoreContractTest extends AbstractSessionStoreContractTest {
     }
 
     @Test
-    @DisplayName("ROTATE 脚本：一次调用内 SET 族键 + DEL 旧映射 + SET 新映射（原子，无孤儿凭据窗口）")
+    @DisplayName("ROTATE 脚本：一次 EVAL 内 CAS 校验 + SET 族键 + DEL 旧映射 + SET 新映射（原子，无孤儿凭据窗口）")
     void rotateScriptIsAtomic() {
         SessionStore store = new RedisSessionStore(redis.ops(), clock);
         FamilyRecord family = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
                 T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of());
         store.issue(family, "rf-1", 604_800L);
         redis.clearCalls();
+        String snapshot = redis.rawValue("acc:session:fam_a");
 
         FamilyRecord rotated = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0,
                 T0 + 604_800_000L, FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1", T0 + 5_000L,
                 Map.of("rf-1", T0 + 604_800_000L), Map.of());
         store.rotate(rotated, "rf-2", 604_800L, "rf-1");
 
-        assertThat(redis.calls()).hasSize(1);
+        // B11：CAS 需要先取快照（GET），写入本身仍在**一次** EVAL 内完成
+        assertThat(redis.calls()).extracting(FakeRedis.Call::script).containsExactly("GET", "ROTATE");
         assertThat(redis.lastOf("ROTATE").keys())
                 .containsExactly("acc:session:fam_a", "acc:refresh:rf-2", "acc:refresh:rf-1");
+        assertThat(redis.lastOf("ROTATE").arg(0)).as("ARGV[1] = 新族值").contains("\"currentJti\":\"rf-2\"");
+        assertThat(redis.lastOf("ROTATE").arg(1)).as("ARGV[2] = 族 TTL 秒（= 族剩余有效期）").isEqualTo("604800");
+        assertThat(redis.lastOf("ROTATE").arg(4)).as("ARGV[5] = CAS 期望的族键旧值（快照）").isEqualTo(snapshot);
         assertThat(redis.rawValue("acc:refresh:rf-1")).isNull();
         assertThat(redis.rawValue("acc:refresh:rf-2")).isEqualTo("fam_a");
+    }
+
+    @Test
+    @DisplayName("B11 CAS 冲突：族键在快照之后被改过 → 脚本返回 0（不覆盖别人的写入），调用方重读后重试成功")
+    void casConflictIsDetectedInsteadOfLostUpdate() {
+        SessionStore store = new RedisSessionStore(redis.ops(), clock);
+        store.issue(new FamilyRecord("fam_a", 1001L, "CONSUMER", false, T0, T0 + 604_800_000L,
+                FamilyRecord.STATUS_ACTIVE, "rf-1", null, 0L, Map.of(), Map.of()), "rf-1", 604_800L);
+        redis.clearCalls();
+
+        // 第一次 EVAL 见到的是「被别人抢先改过」的族键 → 返回 0；随后重读重算 → 第二次写入成功
+        redis.failNextCasAttempts(1);
+        store.bindAccessJti("fam_a", "at-1", T0 + 900_000L);
+
+        assertThat(redis.calls()).extracting(FakeRedis.Call::script)
+                .containsExactly("GET", "CAS_MISS", "GET", "CAS_SET");
+        assertThat(store.find("fam_a").accessJtis()).containsKey("at-1");
     }
 
     @Test

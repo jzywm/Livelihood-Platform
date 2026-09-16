@@ -52,8 +52,24 @@ public final class RequestSqlSessionHolder {
         return scope.get() != null;
     }
 
-    /** 标记请求作用域开始：只建标记，**不获取数据库连接**（design D4）。 */
+    /**
+     * 标记请求作用域开始：只建标记，**不获取数据库连接**（design D4）。
+     *
+     * <p><b>不许重入（FIX-1/F5）</b>：同一线程已有作用域时**显式拒绝**（{@link IllegalStateException}）。
+     * 原实现无条件 {@code set(new RequestScope())} 覆盖——一旦容器把事务边界过滤器也挂到
+     * {@code FORWARD}/{@code ERROR}/{@code ASYNC} 派发上（或将来有人再注册一个同 urlPatterns 的边界），
+     * 内层进入会**静默丢弃外层作用域**：外层会话从不提交/回滚也从不 close（连接泄漏），
+     * 外层事务语义被内层顶替。选择「拒绝」而非「复用」的理由：复用会让内层的提交/回滚作用在外层事务上
+     * （把外层的边界提前结束），同样是静默的语义破坏；而「同一次请求内两次进入」本身即配置错误，
+     * 应当立刻炸出来。两个 {@code FilterRegistrationBean} 已显式声明只服务 {@code REQUEST} 派发
+     * （{@code AccConfiguration#trustedHeaderAuthFilterRegistration} /
+     * {@code #transactionBoundaryFilterRegistration}），当前不可达——本校验是防配置漂移的兜底。</p>
+     */
     public void beginRequest() {
+        if (scope.get() != null) {
+            throw new IllegalStateException(
+                    "当前线程已有请求作用域：beginRequest 不得重入（重复进入会丢弃外层会话/连接）");
+        }
         scope.set(new RequestScope());
     }
 

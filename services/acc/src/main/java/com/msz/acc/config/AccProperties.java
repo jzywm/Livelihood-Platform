@@ -12,11 +12,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code acc.jwt-secret}：JWT HS256 签名密钥（默认测试值）；**同时用于短 token 与 refresh**。</li>
  *   <li>{@code acc.channel.*-base-url}：实名/支付/账单通道基址（M1 默认本地占位，测试经 WireMock 注入）。</li>
  *   <li>{@code acc.redis.*}：会话存储 Redis 连接（R-A6）——{@code acc.session.store=redis} 时**必填**
- *       （缺 {@code host} 即启动失败，见 {@code AccConfiguration#sessionStore}）；未配置时
- *       {@code SessionStore} 由 {@code acc.session.store}（默认 {@code memory}）决定，进程内实现
- *       **仅单元测试/演练兜底，不可用于生产**（进程内存储无法与网关共享吊销名单 ⇒ 登出/踢人失效）。</li>
- *   <li>{@code acc.session.*}：会话凭据配置（R-A7 + L1/R-A8，与 PDD v1.18 §8.4.1 口径一致）：
- *       {@code store}（{@code memory}|{@code redis}，默认 {@code memory}；**生产必须设 redis**）。</li>
+ *       （缺 {@code host} 即启动失败，见 {@code AccConfiguration#sessionStore}）；反之，
+ *       **已配置 {@code host} 却不取 {@code redis}**（含默认 {@code memory}）同样启动失败（C1/R-A11），
+ *       避免「配了 Redis 却仍走进程内」的静默降级；进程内实现**仅单元测试/演练兜底，不可用于生产**
+ *       （无法与网关共享吊销名单 ⇒ 登出/踢人失效）。</li>
+ *   <li>{@code acc.session.*}：会话凭据配置（R-A7 + L1/R-A8 + C1/R-A11，与 PDD v1.18 §8.4.1 口径一致）：
+ *       {@code store}（{@code memory}|{@code redis}，默认 {@code memory}；**生产必须设 redis**）——
+ *       合法组合只有「{@code redis} + 非空 host」与「{@code memory} + 空 host」。</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "acc")
@@ -79,6 +81,8 @@ public class AccProperties {
      * 会话存储 Redis 连接（{@code acc.redis.*}）。
      *
      * <p>{@code host} 默认空串 = **未配置**。{@code acc.session.store=redis} 时必填（缺失即启动失败）；
+     * 反过来，{@code host} 已配置而 {@code acc.session.store} 仍为 {@code memory}（含默认值）同样启动失败
+     * （C1/R-A11：避免「配了 Redis 却仍走进程内」导致登出/踢人静默失效）。
      * 生产部署必须指向网关读取 `revoked:jti:*` 的**同一个实例**。</p>
      */
     public static class Redis {
@@ -130,10 +134,16 @@ public class AccProperties {
      */
     public static class Session {
 
-        /** 会话存储实现：{@code memory}（默认，仅测试/演练）| {@code redis}（生产，必须配 acc.redis.host）。 */
+        /**
+         * 会话存储实现：{@code memory}（默认，仅测试/演练；此时 {@code acc.redis.host} 必须为空）
+         * | {@code redis}（生产，必须配 acc.redis.host）。两个方向的错配均启动失败（R-A8 + C1/R-A11）。
+         */
         private String store = "memory";
 
-        /** 短 token 有效期（秒）。默认 900 = 15 分钟；**超过 15 分钟会被网关按策略拒绝**。 */
+        /**
+         * 短 token 有效期（秒）。默认 900 = 15 分钟；**可配且真正生效**，但夹紧到
+         * {@code [60, 900]}（FIX-1/B6：上限 = 网关策略上限，越界启动 WARN 并按边界签发）。
+         */
         private long accessTokenTtlSeconds = 900L;
 
         /** 长 token（refresh）有效期（秒）。默认 604800 = 7 天。 */
@@ -142,7 +152,13 @@ public class AccProperties {
         /** 轮换并发宽限窗口（秒）：窗口内重复换发按并发重试处理，不判泄露。 */
         private long rotationGraceSeconds = 5L;
 
-        /** 换发/仅凭 Cookie 登出允许的来源（逗号分隔，如 {@code https://app.example.com}）；默认空 = 仅同源。 */
+        /**
+         * 换发/仅凭 Cookie 登出允许的**跨源**来源（逗号分隔，如 {@code https://app.example.com}）。
+         *
+         * <p>默认空 = **只放行同源**（裁定 R-A15：{@code Origin} 与请求自身 scheme+host[:port] 一致即
+         * 直接放行，无需配置）；只有**前端与 API 跨源部署**时才需要在此列出前端入口来源。
+         * 带来源头、跨源且不在列表 → 401 + 2001（且不轮换任何 token）。</p>
+         */
         private String allowedOrigins = "";
 
         /** refresh Cookie 名。 */

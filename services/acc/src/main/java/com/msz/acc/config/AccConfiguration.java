@@ -66,6 +66,7 @@ import com.msz.common.idgen.IdGenException;
 import com.msz.common.idgen.SnowflakeIdGenerator;
 import com.msz.common.redis.StringRedisOps;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -250,7 +251,8 @@ public class AccConfiguration {
      * <p><b>口径（用户裁决 R-A6）</b>：不引 spring-data-redis 全家桶；生产**必须**配置 Redis 且与网关
      * 同实例，否则会话族与吊销名单不共享 ⇒ 登出/踢人失效——本端口同时服务验证码/哈希链尾，
      * 故仍按 {@code acc.redis.host} 择实现；而**会话存储**的择实现已改为显式开关
-     * {@code acc.session.store}（L1/R-A8，缺 host 即启动失败），见 {@link #sessionStore}。</p>
+     * {@code acc.session.store}（L1/R-A8 缺 host 即启动失败；C1/R-A11 反向「memory + 已配 host」同样启动失败），
+     * 见 {@link #sessionStore}。</p>
      *
      * <p>销毁：不显式声明 {@code destroyMethod}——Spring 会按「返回类型可达的 public close()/shutdown()」
      * 自动推断（Lettuce 实现是 {@code AutoCloseable}，内存实现没有该方法，框架会自行跳过），
@@ -276,7 +278,9 @@ public class AccConfiguration {
      *   <li>{@code redis}：生产语义——{@link RedisSessionStore}（Lua 原子写入 + fail-closed），
      *       且**必须配置 {@code acc.redis.host}**；缺失即抛 {@link IllegalStateException} **启动失败**，
      *       不再静默退化为进程内存储（否则换发/登出写下的吊销名单与网关读的不是同一份，登出/踢人静默失效）。</li>
-     *   <li>{@code memory}：{@link InMemorySessionStore}（仅单元测试/演练），**不触碰 Redis**。</li>
+     *   <li>{@code memory}：{@link InMemorySessionStore}（仅单元测试/演练），**不触碰 Redis**；此时
+     *       {@code acc.redis.host} **必须为空**——已配置却仍取 {@code memory}（含默认值）即抛
+     *       {@link IllegalStateException} **启动失败**（C1/R-A11，见下）。</li>
      *   <li>其它取值：拼错即启动失败（避免「写了 redis-xxx 却静默走内存」这类配置事故）。</li>
      * </ul>
      *
@@ -284,6 +288,12 @@ public class AccConfiguration {
      * 「未配置」与「显式选内存」不可区分——生产漏配 host 即失去吊销能力却照常启动，与 spec
      * `acc-session`「会话存储不可用时快速失败、绝不签发无法吊销的 token」相悖。现改为显式开关 +
      * 缺 host 启动失败，并把「生产必须设 {@code acc.session.store=redis}」写入部署件与服务基线。</p>
+     *
+     * <p><b>C1 加严（裁定 R-A11，2026-09-16）</b>：单向校验仍留一个静默降级口——生产配了
+     * {@code acc.redis.host} 却漏设 {@code acc.session.store=redis}（默认 {@code memory}）时照常启动，
+     * 会话族与吊销名单只落进程内 ⇒ 登出/踢人**静默失效**（安全洞）。故校验改为**两方向对称**：
+     * {@code redis} 而缺 host 失败、{@code memory} 而已配 host 失败；合法组合只有
+     * 「{@code redis} + 非空 host」（生产）与「{@code memory} + 空 host」（本地/测试）。</p>
      *
      * <p>存储运行期不可用时实现抛 {@link SessionStoreUnavailableException}，经
      * {@link com.msz.acc.controller.GlobalExceptionHandler} 统一映射 **503 + 5003**：
@@ -298,8 +308,9 @@ public class AccConfiguration {
         if ("memory".equals(store)) {
             String host = properties.getRedis().getHost();
             if (host != null && !host.isBlank()) {
-                log.warn("acc.session.store=memory 但 acc.redis.host 已配置：会话族与吊销名单仍只落在进程内——"
-                        + "仅限单元测试/演练；生产必须设 acc.session.store=redis（否则登出/踢人失效）");
+                throw new IllegalStateException("检测到 acc.redis.host 已配置但 acc.session.store=memory（默认）："
+                        + "会话存储会退化为进程内实现，登出/踢人将失效。"
+                        + "请显式设置 acc.session.store=redis（生产）或清空 acc.redis.host（本地/测试）");
             }
             return new InMemorySessionStore(sessionClock);
         }
@@ -489,21 +500,32 @@ public class AccConfiguration {
     }
 
     /**
-     * 短 token 签发器（任务 3.6）：有效期**常量 900s**（PDD v1.18 §8.4.1 定档），
-     * 同时读取 {@code acc.session.access-token-ttl-seconds} 以便部署侧核对——
-     * 配置值超过 15 分钟会启动即告警（网关按 15m+60s 上限拒绝，签了也没用）。
+     * 短 token 签发器（任务 3.6）：有效期取 {@code acc.session.access-token-ttl-seconds}（默认 900s），
+     * **真正生效但夹紧到 {@code [60, 900]}**（FIX-1/B6）——上限 = 网关策略上限
+     * （{@code gateway.auth.access-token-max-ttl} 15m + 容差），配置超出区间即启动 WARN 并按边界签发，
+     * 保持「ACC 签发值 ≤ 网关上限 − 容差」不变式（原实现完全忽略该键，属误导性配置面）。
      */
     @Bean
     public AccessTokenIssuer accessTokenIssuer(JwtCodec jwtCodec, AccProperties properties, Clock clock) {
+        long effective = effectiveAccessTokenTtlSeconds(properties);
+        return new AccessTokenIssuer(jwtCodec, properties.getJwtSecret(), effective, clock);
+    }
+
+    /**
+     * 有效短 token 有效期（秒）：配置值夹紧到 {@code [60, 900]}，越界即 WARN（不阻断启动）。
+     *
+     * <p>签发器与会话族内 jti 绑定共用本方法，保证「实际签发时长」与「族记录里记的到期时刻」同源。</p>
+     */
+    private long effectiveAccessTokenTtlSeconds(AccProperties properties) {
         long configured = properties.getSession().getAccessTokenTtlSeconds();
-        if (configured > AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS) {
-            log.error("acc.session.access-token-ttl-seconds={} 超过网关上限 {}s："
-                            + "网关会以「有效期超出上限」拒绝，实际仍按 {}s 签发（请改回 900）",
-                    configured, AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS,
-                    AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS);
+        long effective = AccessTokenIssuer.effectiveTtlSeconds(configured);
+        if (effective != configured) {
+            log.warn("acc.session.access-token-ttl-seconds={} 超出允许区间 [{}s, {}s]（上限 = 网关策略 "
+                            + "gateway.auth.access-token-max-ttl 15m + 容差）：已夹紧为 {}s",
+                    configured, AccessTokenIssuer.ACCESS_TOKEN_TTL_MIN_SECONDS,
+                    AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS, effective);
         }
-        return new AccessTokenIssuer(jwtCodec, properties.getJwtSecret(),
-                AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS, clock);
+        return effective;
     }
 
     /** refresh 签发/判定/轮换（design D2/D6）：TTL 与宽限窗口来自 {@code acc.session.*}。 */
@@ -513,7 +535,7 @@ public class AccConfiguration {
         return new RefreshTokenStore(sessionStore, jwtCodec, properties.getJwtSecret(),
                 properties.getSession().getRefreshTokenTtlSeconds(),
                 properties.getSession().getRotationGraceSeconds(),
-                AccessTokenIssuer.ACCESS_TOKEN_TTL_SECONDS, clock::millis);
+                effectiveAccessTokenTtlSeconds(properties), clock::millis);
     }
 
     /** 安全审计日志（重放/登出事件）：独立 logger 名，便于接入安全告警与日志留存口径。 */
@@ -526,26 +548,40 @@ public class AccConfiguration {
      * 会话端点 Cookie 口径（R-A7，design D6）：`HttpOnly; Secure; SameSite=<配置>;
      * Path=/api/v1/acc/auth`（**对外路径**，网关改写前口径，与 openapi 文档一致）；
      * Max-Age = refresh 有效期。
+     *
+     * <p><b>FIX-1/B8 守门</b>：{@code acc.session.cookie-secure=false} 时启动打 WARN 并写明
+     * 「仅本地/测试；生产必须 true」——不做 fail-fast（会打断本地 HTTP 演练），但误配必须可机器检知：
+     * 关闭 Secure 意味着 7 天 refresh 可能在明文链路上下发（spec R5 要求 Secure）。</p>
      */
     @Bean
     public SessionCookie sessionCookie(AccProperties properties) {
+        if (!properties.getSession().isCookieSecure()) {
+            log.warn("acc.session.cookie-secure=false：refresh Cookie 不带 Secure 属性，无法阻止明文链路下发"
+                    + "（7 天长效凭据）——仅限本地/测试环境；生产必须 acc.session.cookie-secure=true（HTTPS 入口）");
+        }
         return SessionCookie.forSessionEndpoints(properties.getSession().getCookieName(),
                 properties.getSession().isCookieSecure(), properties.getSession().getCookieSameSite(),
                 SessionCookie.SESSION_PATH, properties.getSession().getRefreshTokenTtlSeconds());
     }
 
-    /** 换发/仅凭 Cookie 登出的来源校验（R-A3）：允许列表来自 {@code acc.session.allowed-origins}。 */
+    /** 换发/仅凭 Cookie 登出的来源校验（R-A3 + R-A15）：跨源允许列表来自 {@code acc.session.allowed-origins}。 */
     @Bean
     public OriginValidator originValidator(AccProperties properties) {
         return new OriginValidator(properties.getSession().getAllowedOrigins());
     }
 
-    /** 会话控制器（openapi v1.2.0 `/acc/auth/{login,refresh,logout}`）。 */
+    /**
+     * 会话控制器（openapi v1.2.0 `/acc/auth/{login,refresh,logout}`）。
+     *
+     * <p>{@code SessionView.expiresIn} 用**有效**短 token 有效期（与签发同源，FIX-1/B6）：
+     * 配置被调小时若仍回报 900，客户端会拿着已过期的短 token 继续用。</p>
+     */
     @Bean
     public AuthController authController(SessionFlow sessionFlow, OriginValidator originValidator,
                                          SessionCookie sessionCookie, JwtCodec jwtCodec,
                                          AccProperties properties, Clock clock) {
-        return new AuthController(sessionFlow, originValidator, sessionCookie, new SessionViewMapper(),
+        return new AuthController(sessionFlow, originValidator, sessionCookie,
+                new SessionViewMapper(effectiveAccessTokenTtlSeconds(properties)),
                 jwtCodec, properties.getJwtSecret(), clock);
     }
 
@@ -554,12 +590,21 @@ public class AccConfiguration {
         return new TrustedHeaderAuthFilter(NO_AUTH_PATHS);
     }
 
+    /**
+     * 鉴权过滤器注册（order 1）。
+     *
+     * <p><b>FIX-1/F5</b>：显式声明只服务 {@code DispatcherType.REQUEST}。不声明时 Spring Boot 会走启发式
+     * （{@code AbstractFilterRegistrationBean#determineDispatcherTypes}：过滤器是
+     * {@code OncePerRequestFilter} 就给全部派发类型）——一次父类替换或派发方式变化就会让请求级会话
+     * 作用域被重入（见 {@code RequestSqlSessionHolder#beginRequest} 的拒绝口径）。</p>
+     */
     @Bean
     public FilterRegistrationBean<TrustedHeaderAuthFilter> trustedHeaderAuthFilterRegistration(
             TrustedHeaderAuthFilter filter) {
         FilterRegistrationBean<TrustedHeaderAuthFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(1);
         registration.addUrlPatterns("/acc/*");
+        registration.setDispatcherTypes(DispatcherType.REQUEST);
         return registration;
     }
 
@@ -571,6 +616,10 @@ public class AccConfiguration {
     /**
      * 事务边界过滤器注册（design D5）：order 2 —— 紧随鉴权过滤器（order 1）之后、控制器之前，
      * 同一个 {@code /acc/*} 口径；进入请求只标记作用域（不取连接），结束提交/回滚并关闭会话。
+     *
+     * <p><b>FIX-1/F5</b>：显式声明只服务 {@code DispatcherType.REQUEST}——本过滤器持有请求级事务语义，
+     * 被 {@code FORWARD}/{@code ERROR}/{@code ASYNC} 派发重入会让外层事务被顶替、连接泄漏
+     * （{@code beginRequest} 已加显式拒绝作为兜底，见 {@code RequestSqlSessionHolder}）。</p>
      */
     @Bean
     public FilterRegistrationBean<TransactionBoundaryFilter> transactionBoundaryFilterRegistration(
@@ -578,6 +627,7 @@ public class AccConfiguration {
         FilterRegistrationBean<TransactionBoundaryFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(2);
         registration.addUrlPatterns("/acc/*");
+        registration.setDispatcherTypes(DispatcherType.REQUEST);
         return registration;
     }
 

@@ -82,6 +82,31 @@ class RequestSqlSessionHolderTest {
     }
 
     @Test
+    @DisplayName("FIX-1/F5 嵌套 beginRequest（同一线程已有作用域）：显式拒绝，不静默覆盖外层会话/连接")
+    void nestedBeginRequestIsRejectedInsteadOfSilentlyOverwritingScope() throws Throwable {
+        SqlSessionFactory factory = mock(SqlSessionFactory.class);
+        SqlSession session = mock(SqlSession.class);
+        when(factory.openSession(false)).thenReturn(session);
+        RequestSqlSessionHolder holder = new RequestSqlSessionHolder(factory);
+
+        holder.beginRequest();
+        try {
+            SqlSession outer = holder.currentSession();
+
+            assertThatThrownBy(holder::beginRequest)
+                    .as("重复进入（FORWARD/ERROR/异步派发或误加过滤器）必须炸，而不是丢弃外层会话")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("已有请求作用域");
+
+            assertThat(holder.isRequestActive()).as("拒绝不得破坏已有作用域").isTrue();
+            assertThat(holder.currentSession()).as("外层会话必须原样保留").isSameAs(outer);
+        } finally {
+            holder.endRequest();
+        }
+        verify(session).close();
+    }
+
+    @Test
     @DisplayName("1.1 无请求上下文：降级为单次自动提交会话，调用后立即关闭")
     void standaloneFallsBackToAutocommitSessionAndClosesIt() throws Throwable {
         SqlSessionFactory factory = mock(SqlSessionFactory.class);

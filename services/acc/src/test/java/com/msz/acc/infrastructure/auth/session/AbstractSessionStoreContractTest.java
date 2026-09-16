@@ -2,12 +2,21 @@ package com.msz.acc.infrastructure.auth.session;
 
 import com.msz.acc.application.port.SessionStore;
 import com.msz.acc.infrastructure.auth.JwtCodec;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -19,6 +28,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>子类只负责给出实现与可控时钟——{@code InMemorySessionStoreContractTest}（直跑内存实现）与
  * {@code RedisSessionStoreContractTest}（Lettuce 实现 + 假客户端）**通过同一套断言**，
  * 因此两种实现的语义差异在测试层面不可能悄悄漂移（任务 2.2 验证口径）。</p>
+ *
+ * <p><b>最终评审修复波（FIX-1）追加的三条契约</b>：① {@code bindAccessJti} 只能追加短 token jti，
+ * **不得改变族记录的到期时刻与族键 TTL**（A1：族寿命由 refresh 有效期决定，短 token 的到期时刻
+ * 写进族记录会让重用检测窗口从 7 天塌缩到 15 分钟）；② 族记录的读-改-写**并发安全**——并发绑定
+ * 不丢 jti（B11：丢掉的 jti 会逃过整族吊销）；③ 轮换写回时不得丢掉「快照之后被并发绑定」的 jti。</p>
  */
 abstract class AbstractSessionStoreContractTest {
 
@@ -163,12 +177,98 @@ abstract class AbstractSessionStoreContractTest {
     }
 
     @Test
+    @DisplayName("FIX-1/A1 回归：bindAccessJti 不得缩短族寿命（族到期与外层族键 TTL 仍 ≈ refresh 有效期，不是 15 分钟）")
+    void bindAccessJtiKeepsFamilyLifetime() {
+        store.issue(family("fam_a", "rf-1"), "rf-1", REFRESH_TTL_SECONDS);
+        long ttlBefore = rawTtl(SessionStore.FAMILY_KEY_PREFIX + "fam_a");
+
+        clock.advanceSeconds(60);
+        store.bindAccessJti("fam_a", "at-1", clock.now() + ACCESS_TTL_SECONDS * 1000L);
+
+        FamilyRecord back = store.find("fam_a");
+        assertThat(back.expiresAtMillis())
+                .as("族到期时刻只能由 refresh 有效期决定；短 token 的到期时刻不得写进族记录")
+                .isEqualTo(T0 + REFRESH_TTL_SECONDS * 1000L);
+        assertThat(back.accessJtis())
+                .as("短 token 的到期时刻只进 accessJtis 这一条目")
+                .containsEntry("at-1", clock.now() + ACCESS_TTL_SECONDS * 1000L);
+
+        long ttlAfter = rawTtl(SessionStore.FAMILY_KEY_PREFIX + "fam_a");
+        assertThat(ttlAfter)
+                .as("族键 TTL 只随时间流逝（60s），不得塌缩到短 token 量级")
+                .isEqualTo(ttlBefore - 60L);
+        assertThat(ttlAfter)
+                .as("族键必须活过短 token 有效期，否则轮换后 15 分钟族记录消失、重放无法识别")
+                .isGreaterThan(ACCESS_TTL_SECONDS);
+    }
+
+    @Test
+    @DisplayName("FIX-1/B11 并发：8 线程 × 8 轮并发 bindAccessJti 后族内 jti 集合无丢失（读-改-写必须原子）")
+    void concurrentBindAccessJtiKeepsEveryJti() throws Exception {
+        store.issue(family("fam_a", "rf-1"), "rf-1", REFRESH_TTL_SECONDS);
+        int threads = 8;
+        int rounds = 8;
+        Set<String> expected = new LinkedHashSet<>();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 0; round < rounds; round++) {
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<?>> futures = new ArrayList<>();
+                for (int slot = 0; slot < threads; slot++) {
+                    String jti = "at-r" + round + "-t" + slot;
+                    expected.add(jti);
+                    futures.add(pool.submit(() -> {
+                        start.await();
+                        store.bindAccessJti("fam_a", jti, clock.now() + ACCESS_TTL_SECONDS * 1000L);
+                        return null;
+                    }));
+                }
+                start.countDown();
+                for (Future<?> future : futures) {
+                    future.get(10, TimeUnit.SECONDS);
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(store.find("fam_a").accessJtis().keySet())
+                .as("丢掉的 jti 会逃过整族吊销（该短 token 在剩余有效期内仍可用）")
+                .containsExactlyInAnyOrderElementsOf(expected);
+    }
+
+    @Test
+    @DisplayName("FIX-1/B11 并发：轮换按「旧快照」写回时不得丢掉快照之后被并发绑定的 jti")
+    void rotateKeepsJtisBoundAfterItsSnapshot() {
+        store.issue(family("fam_a", "rf-1"), "rf-1", REFRESH_TTL_SECONDS);
+        store.bindAccessJti("fam_a", "at-before", clock.now() + ACCESS_TTL_SECONDS * 1000L);
+        // 轮换调用方在消费旧 refresh 时读到的族快照（此刻还没有 at-after）
+        FamilyRecord snapshot = store.find("fam_a");
+        FamilyRecord rotated = new FamilyRecord("fam_a", 1001L, "CONSUMER", false, snapshot.createdAtMillis(),
+                clock.now() + REFRESH_TTL_SECONDS * 1000L, FamilyRecord.STATUS_ACTIVE, "rf-2", "rf-1",
+                clock.now() + 5_000L, Map.of("rf-1", snapshot.expiresAtMillis()), snapshot.accessJtis());
+
+        // 竞态：另一请求在本线程写回之前绑定了新的短 token jti
+        store.bindAccessJti("fam_a", "at-after", clock.now() + ACCESS_TTL_SECONDS * 1000L);
+
+        store.rotate(rotated, "rf-2", REFRESH_TTL_SECONDS, "rf-1");
+
+        FamilyRecord back = store.find("fam_a");
+        assertThat(back.currentJti()).isEqualTo("rf-2");
+        assertThat(back.accessJtis())
+                .as("轮换写回必须合并最新族记录（否则并发绑定的短 token 逃过整族吊销）")
+                .containsKeys("at-before", "at-after");
+    }
+
+    @Test
     @DisplayName("存储不可用：ping 抛 SessionStoreUnavailableException（fail-closed，不静默降级）")
     void unavailableStoreFailsFast() {
         SessionStore broken = brokenStore();
         if (broken == null) {
-            // 本实现的「不可用」只能由底层客户端故障触发，其行为由 RedisSessionStoreTest 覆盖
-            return;
+            // FIX-1/M2：本实现的「不可用」不是可注入状态（内存实现无底层客户端故障面）。
+            // 显式 abort（记为 skipped）而非静默 return——后者是一条「什么也不断言却计为通过」的假绿用例。
+            Assumptions.abort("本实现（" + store.getClass().getSimpleName()
+                    + "）的不可用状态不可注入：fail-closed 由 RedisSessionStoreContractTest#redisFailureFailsFast 覆盖");
         }
         assertThatThrownBy(broken::ping)
                 .isInstanceOf(SessionStoreUnavailableException.class);
