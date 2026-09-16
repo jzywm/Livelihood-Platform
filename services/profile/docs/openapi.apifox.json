@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "画像服务 PROFILE · 接口文档",
-    "version": "1.0.0",
-    "description": "画像服务（PROFILE）前端接口文档。模块 J7 个人画像中心：J-07 画像构建与数据授权、J-08 画像管理页（四权）、\nJ-09 个性化商品/服务推荐增强、J-10 个性化信息推荐、J-11 个性化使用引导；商铺画像与选择性监管【M2，§5.11.1.4】。\n口径对齐：PDD §5.11 / §6.4.11；需求口径 PRD §5.12（J 组 J7）、`28-个人画像与个性化推荐需求.md`；\n边界依据 SSOT §2.11。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 服务端间接口（ASSIST 个性化推荐输出）见文末 x-external-interfaces 附录，前端勿调。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 红线（C7）：最小化收集；履历/行为/评论入画像需授权可撤回；四权齐全；**价格不因画像差异化（不杀熟）**；\n  未成年人不建行为/购买画像（仅必要实名）；画像标签加密存储、脱敏输出、来源可查可解释；操作审计；\n  删除后衍生数据 30 天内清理。商铺画像 = 特征集合，信用分 = CRED 派生的可公示评分，不另立第二套评分（C8）。\n- 里程碑：【M1 基础】画像构建/四权/授权管理/推荐基础；【M2 完整】购买数据接入 + 商铺画像与选择性监管。\n"
+    "version": "1.1.0",
+    "description": "画像服务（PROFILE）前端接口文档。模块 J7 个人画像中心：J-07 画像构建与数据授权、J-08 画像管理页（四权）、\nJ-09 个性化商品/服务推荐增强、J-10 个性化信息推荐、J-11 个性化使用引导；商铺画像与选择性监管【M2，§5.11.1.4】；\n**用户习惯与购买影响因素（长期记忆）【M1 起，2026-09-16 增】**。\n口径对齐：PDD v1.19 §5.11 / §6.4.11 / §4.4；需求口径 PRD §5.12（J 组 J7）、`28-个人画像与个性化推荐需求.md`；\n边界依据 SSOT v2.0 §2.11 / §3 / §4.16-C16。\n- 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。\n- 服务端间接口（ASSIST 个性化推荐输出）见文末 x-external-interfaces 附录，前端勿调。\n- 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。\n- 红线（C7）：最小化收集；履历/行为/评论入画像需授权可撤回；四权齐全；**价格不因画像差异化（不杀熟）**；\n  未成年人不建行为/购买画像（仅必要实名）；画像标签加密存储、脱敏输出、来源可查可解释；操作审计；\n  删除后衍生数据 30 天内清理。商铺画像 = 特征集合，信用分 = CRED 派生的可公示评分，不另立第二套评分（C8）。\n- **习惯与购买影响因素（2026-09-16 定档）**：本服务为长期记忆类数据的**唯一权威存储**（`profile_habit` /\n  `profile_habit_factor` / `behavior_daily_agg`）；权重计算由 AICORE **无状态提供**（`POST /aicore/habit/summarize`，\n  只算不存）；**只存「权重 + 样本量 + 可解释证据」，不存人格推断标签**；权重**只进推荐排序、不进定价链路**；\n  「不留跨会话记忆」（R-06）指**对话原文**，习惯结论属 J-07 画像类数据、不在 R-06 管辖范围内；**不引入 PostgreSQL**。\n- 里程碑：【M1 基础】画像构建/四权/授权管理/推荐基础/习惯与购买影响因素；【M2 完整】购买数据接入（`sampleSource=PURCHASE`）\n  + 商铺画像与选择性监管。\n"
   },
   "servers": [
     {
@@ -31,6 +31,10 @@
     {
       "name": "feed",
       "description": "个性化信息与引导（J-10/J-11）"
+    },
+    {
+      "name": "habit",
+      "description": "用户习惯与购买影响因素（长期记忆，J-08 四权 / J-09 排序）"
     },
     {
       "name": "merchant",
@@ -79,6 +83,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -96,7 +101,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -207,12 +213,51 @@
                             },
                             "authStatus": {
                               "type": "string",
-                              "description": "个性化开关状态（关闭后推荐回退通用规则）",
+                              "description": "个性化开关状态（关闭后推荐回退通用规则、停止行为采集与习惯重算）",
                               "enum": [
                                 "ENABLED",
                                 "DISABLED"
                               ],
                               "example": "ENABLED"
+                            },
+                            "habits": {
+                              "type": "array",
+                              "description": "习惯与购买影响因素摘要（可选内嵌，2026-09-16 增；完整口径见 GET /profile/me/habits）",
+                              "items": {
+                                "type": "object",
+                                "description": "习惯摘要（内嵌于 GET /profile/me，完整内容见 GET /profile/me/habits）",
+                                "required": [
+                                  "habitType",
+                                  "topicLabel",
+                                  "weight"
+                                ],
+                                "properties": {
+                                  "habitType": {
+                                    "type": "string",
+                                    "description": "习惯类型（六类，2026-09-16 定档）",
+                                    "enum": [
+                                      "CATEGORY_PREF",
+                                      "PRICE_BAND",
+                                      "TIME_WINDOW",
+                                      "FREQUENCY",
+                                      "SUPPLIER_TRUST",
+                                      "CHANNEL"
+                                    ],
+                                    "example": "CATEGORY_PREF"
+                                  },
+                                  "topicLabel": {
+                                    "type": "string",
+                                    "example": "食材·粮油"
+                                  },
+                                  "weight": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "example": 0.72
+                                  }
+                                }
+                              }
                             },
                             "updatedAt": {
                               "type": "string",
@@ -254,6 +299,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -271,7 +317,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -375,6 +422,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -392,7 +440,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -473,6 +522,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -490,7 +540,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -550,6 +601,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -567,7 +619,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -638,6 +691,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -655,7 +709,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -737,6 +792,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -754,7 +810,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -827,6 +884,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -844,7 +902,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -920,6 +979,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -937,7 +997,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -1041,6 +1102,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -1058,7 +1120,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -1146,6 +1209,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -1163,7 +1227,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -1223,6 +1288,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -1240,7 +1306,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -1340,6 +1407,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -1357,7 +1425,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -1501,6 +1570,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -1518,7 +1588,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -1618,6 +1689,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -1635,7 +1707,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -1773,6 +1846,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -1790,7 +1864,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -1863,6 +1938,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -1880,7 +1956,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -1990,6 +2067,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -2007,7 +2085,697 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/profile/me/habits": {
+      "get": {
+        "tags": [
+          "habit"
+        ],
+        "summary": "查看我的习惯与购买影响因素【M1 · J-08 四权之查看】",
+        "description": "画像管理页「我的习惯」查看（四权之查看，2026-09-16 增）：返回习惯结论（六类 habitType：品类偏好/\n价格带/时段/频次/供应商信任/渠道）与购买影响因素权重（十类 factorCode）；**只存`权重 + 样本量 +\n可解释证据`，不返回人格推断标签**；来源可查可解释（evidence 为结构化证据摘要，不含对话原文）。\n关闭个性化（authStatus=DISABLED）→ 返回上次结论且 personalized=false，并停止重算；\n未成年人不建行为/购买画像 → 返回空列表。习惯属 J-07 画像类数据，不在 R-06 对话原文红线管辖范围内。\n仅本人可见，越权 → 2002；未登录 → 2001；本接口调用写入审计（action=VIEW）。\n",
+        "responses": {
+          "200": {
+            "description": "成功，返回习惯与影响因素（含样本来源与置信度）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            2004,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            3011,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002,
+                            5003
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "habits",
+                            "factors",
+                            "personalized",
+                            "sampleSource",
+                            "updatedAt"
+                          ],
+                          "properties": {
+                            "habits": {
+                              "type": "array",
+                              "description": "习惯结论（六类，重算覆盖式更新）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "habitId",
+                                  "habitType",
+                                  "topicKey",
+                                  "weight",
+                                  "confidence",
+                                  "sampleCount",
+                                  "sampleSource"
+                                ],
+                                "properties": {
+                                  "habitId": {
+                                    "type": "string",
+                                    "description": "习惯号（hab_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+                                    "example": "hab_8f7e6d5c4b3a"
+                                  },
+                                  "habitType": {
+                                    "type": "string",
+                                    "description": "习惯类型（六类，2026-09-16 定档）",
+                                    "enum": [
+                                      "CATEGORY_PREF",
+                                      "PRICE_BAND",
+                                      "TIME_WINDOW",
+                                      "FREQUENCY",
+                                      "SUPPLIER_TRUST",
+                                      "CHANNEL"
+                                    ],
+                                    "example": "CATEGORY_PREF"
+                                  },
+                                  "topicKey": {
+                                    "type": "string",
+                                    "description": "习惯主题键（品类码/价格带码/时段码/供应商 ID/渠道码）",
+                                    "example": "CAT_FOOD_GRAIN"
+                                  },
+                                  "topicLabel": {
+                                    "type": "string",
+                                    "description": "主题可读名（脱敏展示，如 食材·粮油）",
+                                    "example": "食材·粮油"
+                                  },
+                                  "weight": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "description": "习惯权重 0~1（同 habitType 内归一化；仅用于推荐排序）",
+                                    "example": 0.72
+                                  },
+                                  "confidence": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "description": "置信度 0~1（样本不足示弱，推荐理由中弱化）",
+                                    "example": 0.85
+                                  },
+                                  "sampleCount": {
+                                    "type": "integer",
+                                    "format": "int32",
+                                    "description": "支撑样本量（决策事件条数）",
+                                    "example": 37
+                                  },
+                                  "sampleSource": {
+                                    "type": "string",
+                                    "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+                                    "enum": [
+                                      "BEHAVIOR",
+                                      "PURCHASE",
+                                      "MIXED"
+                                    ],
+                                    "example": "BEHAVIOR"
+                                  },
+                                  "evidence": {
+                                    "type": "array",
+                                    "description": "典型证据（可解释输出，不含对话原文）",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "summary"
+                                      ],
+                                      "properties": {
+                                        "summary": {
+                                          "type": "string",
+                                          "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                                          "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                                        },
+                                        "occurredAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "description": "证据发生时间",
+                                          "example": "2026-09-10T09:30:00Z"
+                                        },
+                                        "subjectType": {
+                                          "type": "string",
+                                          "description": "证据标的类型（品类/商品/供应商）",
+                                          "enum": [
+                                            "CATEGORY",
+                                            "ITEM",
+                                            "SUPPLIER"
+                                          ],
+                                          "example": "CATEGORY"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "lastSeenAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "最近观测时间",
+                                    "example": "2026-09-15T10:00:00Z"
+                                  }
+                                }
+                              }
+                            },
+                            "factors": {
+                              "type": "array",
+                              "description": "购买影响因素权重（十类因素码）",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "factorId",
+                                  "factorCode",
+                                  "weight",
+                                  "confidence",
+                                  "sampleCount"
+                                ],
+                                "properties": {
+                                  "factorId": {
+                                    "type": "string",
+                                    "description": "因素号（fac_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+                                    "example": "fac_3a2b1c0d9e8f"
+                                  },
+                                  "factorCode": {
+                                    "type": "string",
+                                    "description": "购买影响因素码（十类，2026-09-16 定档；运营期可配置扩展）",
+                                    "enum": [
+                                      "PRICE",
+                                      "CREDIT",
+                                      "TRACE",
+                                      "REVIEW",
+                                      "DELIVERY",
+                                      "BRAND",
+                                      "PROMO",
+                                      "SPEC",
+                                      "FRESHNESS",
+                                      "CERT"
+                                    ],
+                                    "example": "PRICE"
+                                  },
+                                  "weight": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "description": "该因素在该用户决策中的影响权重 0~1（同账号内归一化；**只进排序、不进定价**）",
+                                    "example": 0.42
+                                  },
+                                  "confidence": {
+                                    "type": "number",
+                                    "format": "float",
+                                    "minimum": 0,
+                                    "maximum": 1,
+                                    "example": 0.8
+                                  },
+                                  "sampleCount": {
+                                    "type": "integer",
+                                    "format": "int32",
+                                    "description": "参与统计的决策次数",
+                                    "example": 17
+                                  },
+                                  "evidence": {
+                                    "type": "array",
+                                    "description": "典型对比证据（如「17 次采购中 11 次在同类中选择单价较低且溯源完整的选项」）",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "summary"
+                                      ],
+                                      "properties": {
+                                        "summary": {
+                                          "type": "string",
+                                          "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                                          "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                                        },
+                                        "occurredAt": {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "description": "证据发生时间",
+                                          "example": "2026-09-10T09:30:00Z"
+                                        },
+                                        "subjectType": {
+                                          "type": "string",
+                                          "description": "证据标的类型（品类/商品/供应商）",
+                                          "enum": [
+                                            "CATEGORY",
+                                            "ITEM",
+                                            "SUPPLIER"
+                                          ],
+                                          "example": "CATEGORY"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "lastEvidenceAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "example": "2026-09-15T10:00:00Z"
+                                  }
+                                }
+                              }
+                            },
+                            "personalized": {
+                              "type": "boolean",
+                              "description": "是否个性化（authStatus=DISABLED → false，保留上次结论、已停止重算）",
+                              "example": true
+                            },
+                            "sampleSource": {
+                              "type": "string",
+                              "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+                              "enum": [
+                                "BEHAVIOR",
+                                "PURCHASE",
+                                "MIXED"
+                              ],
+                              "example": "BEHAVIOR"
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "description": "最近一次重算时间",
+                              "example": "2026-09-16T02:00:00Z"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        2004,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002,
+                        5003
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2001,
+                  "message": "未登录或 Token 已失效",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限 / 水平越权（code=2002）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        2004,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002,
+                        5003
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "提示信息（面向用户，可直接展示）",
+                      "example": "ok"
+                    },
+                    "data": {
+                      "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                    },
+                    "traceId": {
+                      "type": "string",
+                      "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                      "example": "3f2a1b9c8d7e6f50"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "服务端时间（UTC，ISO 8601）",
+                      "example": "2026-01-15T10:30:00Z"
+                    }
+                  }
+                },
+                "example": {
+                  "code": 2002,
+                  "message": "无权限访问该资源",
+                  "data": null,
+                  "traceId": "3f2a1b9c8d7e6f50",
+                  "timestamp": "2026-01-15T10:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "habit"
+        ],
+        "summary": "清除我的习惯与购买影响因素【M1 · J-08 四权之删除】",
+        "description": "四权之删除的习惯侧入口（danger 二次确认，2026-09-16 增）：清除习惯结论与影响因素权重\n（置 status=DELETED + cleanupDeadline=删除日+30 天，衍生数据 30 天内清理），不影响基本功能；\n清除后个性化推荐回退通用规则；操作写入审计（action=DELETE，detail=清除习惯与影响因素）。\n幂等：重复调用返回同结果（PURGED）。\n",
+        "responses": {
+          "200": {
+            "description": "成功，习惯与影响因素已清除（衍生数据 30 天内清理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                      "required": [
+                        "code",
+                        "message",
+                        "traceId",
+                        "timestamp"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "format": "int32",
+                          "description": "平台统一业务码（分段），详见 PDD §6.2",
+                          "enum": [
+                            0,
+                            1001,
+                            1002,
+                            1003,
+                            2001,
+                            2002,
+                            2003,
+                            2004,
+                            3001,
+                            3002,
+                            3003,
+                            3004,
+                            3005,
+                            3006,
+                            3007,
+                            3008,
+                            3009,
+                            3010,
+                            3011,
+                            4001,
+                            4002,
+                            4003,
+                            4004,
+                            5000,
+                            5001,
+                            5002,
+                            5003
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "提示信息（面向用户，可直接展示）",
+                          "example": "ok"
+                        },
+                        "data": {
+                          "description": "业务数据（成功时有值，失败为 null；具体类型由各响应 allOf 覆写）"
+                        },
+                        "traceId": {
+                          "type": "string",
+                          "description": "链路追踪 ID，透传 SkyWalking，用于排障",
+                          "example": "3f2a1b9c8d7e6f50"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "服务端时间（UTC，ISO 8601）",
+                          "example": "2026-01-15T10:30:00Z"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "status",
+                            "cleanupDays"
+                          ],
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "description": "清除状态（幂等，重复调用返回同结果）",
+                              "enum": [
+                                "PURGED"
+                              ],
+                              "example": "PURGED"
+                            },
+                            "cleanupDays": {
+                              "type": "integer",
+                              "format": "int32",
+                              "description": "衍生数据清理期限（天）",
+                              "example": 30
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录 / Token 失效（code=2001）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "统一响应包络，所有接口成功/失败均返回此结构，data 为业务数据。\n业务码分段：0 成功 / 1xxx 参数校验 / 2xxx 鉴权权限 / 3xxx 业务规则 / 4xxx 第三方依赖 / 5xxx 系统。\n前端可用「code === 0」判断成功。\n",
+                  "required": [
+                    "code",
+                    "message",
+                    "traceId",
+                    "timestamp"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "integer",
+                      "format": "int32",
+                      "description": "平台统一业务码（分段），详见 PDD §6.2",
+                      "enum": [
+                        0,
+                        1001,
+                        1002,
+                        1003,
+                        2001,
+                        2002,
+                        2003,
+                        2004,
+                        3001,
+                        3002,
+                        3003,
+                        3004,
+                        3005,
+                        3006,
+                        3007,
+                        3008,
+                        3009,
+                        3010,
+                        3011,
+                        4001,
+                        4002,
+                        4003,
+                        4004,
+                        5000,
+                        5001,
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -2092,6 +2860,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -2109,7 +2878,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {
@@ -2240,6 +3010,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -2257,7 +3028,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -2317,6 +3089,7 @@
                         2001,
                         2002,
                         2003,
+                        2004,
                         3001,
                         3002,
                         3003,
@@ -2334,7 +3107,8 @@
                         4004,
                         5000,
                         5001,
-                        5002
+                        5002,
+                        5003
                       ]
                     },
                     "message": {
@@ -2536,12 +3310,51 @@
           },
           "authStatus": {
             "type": "string",
-            "description": "个性化开关状态（关闭后推荐回退通用规则）",
+            "description": "个性化开关状态（关闭后推荐回退通用规则、停止行为采集与习惯重算）",
             "enum": [
               "ENABLED",
               "DISABLED"
             ],
             "example": "ENABLED"
+          },
+          "habits": {
+            "type": "array",
+            "description": "习惯与购买影响因素摘要（可选内嵌，2026-09-16 增；完整口径见 GET /profile/me/habits）",
+            "items": {
+              "type": "object",
+              "description": "习惯摘要（内嵌于 GET /profile/me，完整内容见 GET /profile/me/habits）",
+              "required": [
+                "habitType",
+                "topicLabel",
+                "weight"
+              ],
+              "properties": {
+                "habitType": {
+                  "type": "string",
+                  "description": "习惯类型（六类，2026-09-16 定档）",
+                  "enum": [
+                    "CATEGORY_PREF",
+                    "PRICE_BAND",
+                    "TIME_WINDOW",
+                    "FREQUENCY",
+                    "SUPPLIER_TRUST",
+                    "CHANNEL"
+                  ],
+                  "example": "CATEGORY_PREF"
+                },
+                "topicLabel": {
+                  "type": "string",
+                  "example": "食材·粮油"
+                },
+                "weight": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "example": 0.72
+                }
+              }
+            }
           },
           "updatedAt": {
             "type": "string",
@@ -2807,6 +3620,586 @@
             }
           }
         ]
+      },
+      "HabitType": {
+        "type": "string",
+        "description": "习惯类型（六类，2026-09-16 定档）",
+        "enum": [
+          "CATEGORY_PREF",
+          "PRICE_BAND",
+          "TIME_WINDOW",
+          "FREQUENCY",
+          "SUPPLIER_TRUST",
+          "CHANNEL"
+        ],
+        "example": "CATEGORY_PREF"
+      },
+      "HabitFactorCode": {
+        "type": "string",
+        "description": "购买影响因素码（十类，2026-09-16 定档；运营期可配置扩展）",
+        "enum": [
+          "PRICE",
+          "CREDIT",
+          "TRACE",
+          "REVIEW",
+          "DELIVERY",
+          "BRAND",
+          "PROMO",
+          "SPEC",
+          "FRESHNESS",
+          "CERT"
+        ],
+        "example": "PRICE"
+      },
+      "HabitSampleSource": {
+        "type": "string",
+        "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+        "enum": [
+          "BEHAVIOR",
+          "PURCHASE",
+          "MIXED"
+        ],
+        "example": "BEHAVIOR"
+      },
+      "HabitItem": {
+        "type": "object",
+        "required": [
+          "habitId",
+          "habitType",
+          "topicKey",
+          "weight",
+          "confidence",
+          "sampleCount",
+          "sampleSource"
+        ],
+        "properties": {
+          "habitId": {
+            "type": "string",
+            "description": "习惯号（hab_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+            "example": "hab_8f7e6d5c4b3a"
+          },
+          "habitType": {
+            "type": "string",
+            "description": "习惯类型（六类，2026-09-16 定档）",
+            "enum": [
+              "CATEGORY_PREF",
+              "PRICE_BAND",
+              "TIME_WINDOW",
+              "FREQUENCY",
+              "SUPPLIER_TRUST",
+              "CHANNEL"
+            ],
+            "example": "CATEGORY_PREF"
+          },
+          "topicKey": {
+            "type": "string",
+            "description": "习惯主题键（品类码/价格带码/时段码/供应商 ID/渠道码）",
+            "example": "CAT_FOOD_GRAIN"
+          },
+          "topicLabel": {
+            "type": "string",
+            "description": "主题可读名（脱敏展示，如 食材·粮油）",
+            "example": "食材·粮油"
+          },
+          "weight": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "习惯权重 0~1（同 habitType 内归一化；仅用于推荐排序）",
+            "example": 0.72
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "置信度 0~1（样本不足示弱，推荐理由中弱化）",
+            "example": 0.85
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "支撑样本量（决策事件条数）",
+            "example": 37
+          },
+          "sampleSource": {
+            "type": "string",
+            "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+            "enum": [
+              "BEHAVIOR",
+              "PURCHASE",
+              "MIXED"
+            ],
+            "example": "BEHAVIOR"
+          },
+          "evidence": {
+            "type": "array",
+            "description": "典型证据（可解释输出，不含对话原文）",
+            "items": {
+              "type": "object",
+              "required": [
+                "summary"
+              ],
+              "properties": {
+                "summary": {
+                  "type": "string",
+                  "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                  "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                },
+                "occurredAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "证据发生时间",
+                  "example": "2026-09-10T09:30:00Z"
+                },
+                "subjectType": {
+                  "type": "string",
+                  "description": "证据标的类型（品类/商品/供应商）",
+                  "enum": [
+                    "CATEGORY",
+                    "ITEM",
+                    "SUPPLIER"
+                  ],
+                  "example": "CATEGORY"
+                }
+              }
+            }
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "最近观测时间",
+            "example": "2026-09-15T10:00:00Z"
+          }
+        }
+      },
+      "HabitFactor": {
+        "type": "object",
+        "required": [
+          "factorId",
+          "factorCode",
+          "weight",
+          "confidence",
+          "sampleCount"
+        ],
+        "properties": {
+          "factorId": {
+            "type": "string",
+            "description": "因素号（fac_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+            "example": "fac_3a2b1c0d9e8f"
+          },
+          "factorCode": {
+            "type": "string",
+            "description": "购买影响因素码（十类，2026-09-16 定档；运营期可配置扩展）",
+            "enum": [
+              "PRICE",
+              "CREDIT",
+              "TRACE",
+              "REVIEW",
+              "DELIVERY",
+              "BRAND",
+              "PROMO",
+              "SPEC",
+              "FRESHNESS",
+              "CERT"
+            ],
+            "example": "PRICE"
+          },
+          "weight": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "该因素在该用户决策中的影响权重 0~1（同账号内归一化；**只进排序、不进定价**）",
+            "example": 0.42
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.8
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "参与统计的决策次数",
+            "example": 17
+          },
+          "evidence": {
+            "type": "array",
+            "description": "典型对比证据（如「17 次采购中 11 次在同类中选择单价较低且溯源完整的选项」）",
+            "items": {
+              "type": "object",
+              "required": [
+                "summary"
+              ],
+              "properties": {
+                "summary": {
+                  "type": "string",
+                  "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                  "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                },
+                "occurredAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "证据发生时间",
+                  "example": "2026-09-10T09:30:00Z"
+                },
+                "subjectType": {
+                  "type": "string",
+                  "description": "证据标的类型（品类/商品/供应商）",
+                  "enum": [
+                    "CATEGORY",
+                    "ITEM",
+                    "SUPPLIER"
+                  ],
+                  "example": "CATEGORY"
+                }
+              }
+            }
+          },
+          "lastEvidenceAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-15T10:00:00Z"
+          }
+        }
+      },
+      "HabitEvidence": {
+        "type": "object",
+        "required": [
+          "summary"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+            "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "证据发生时间",
+            "example": "2026-09-10T09:30:00Z"
+          },
+          "subjectType": {
+            "type": "string",
+            "description": "证据标的类型（品类/商品/供应商）",
+            "enum": [
+              "CATEGORY",
+              "ITEM",
+              "SUPPLIER"
+            ],
+            "example": "CATEGORY"
+          }
+        }
+      },
+      "HabitSummary": {
+        "type": "object",
+        "description": "习惯摘要（内嵌于 GET /profile/me，完整内容见 GET /profile/me/habits）",
+        "required": [
+          "habitType",
+          "topicLabel",
+          "weight"
+        ],
+        "properties": {
+          "habitType": {
+            "type": "string",
+            "description": "习惯类型（六类，2026-09-16 定档）",
+            "enum": [
+              "CATEGORY_PREF",
+              "PRICE_BAND",
+              "TIME_WINDOW",
+              "FREQUENCY",
+              "SUPPLIER_TRUST",
+              "CHANNEL"
+            ],
+            "example": "CATEGORY_PREF"
+          },
+          "topicLabel": {
+            "type": "string",
+            "example": "食材·粮油"
+          },
+          "weight": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.72
+          }
+        }
+      },
+      "HabitResult": {
+        "type": "object",
+        "required": [
+          "habits",
+          "factors",
+          "personalized",
+          "sampleSource",
+          "updatedAt"
+        ],
+        "properties": {
+          "habits": {
+            "type": "array",
+            "description": "习惯结论（六类，重算覆盖式更新）",
+            "items": {
+              "type": "object",
+              "required": [
+                "habitId",
+                "habitType",
+                "topicKey",
+                "weight",
+                "confidence",
+                "sampleCount",
+                "sampleSource"
+              ],
+              "properties": {
+                "habitId": {
+                  "type": "string",
+                  "description": "习惯号（hab_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+                  "example": "hab_8f7e6d5c4b3a"
+                },
+                "habitType": {
+                  "type": "string",
+                  "description": "习惯类型（六类，2026-09-16 定档）",
+                  "enum": [
+                    "CATEGORY_PREF",
+                    "PRICE_BAND",
+                    "TIME_WINDOW",
+                    "FREQUENCY",
+                    "SUPPLIER_TRUST",
+                    "CHANNEL"
+                  ],
+                  "example": "CATEGORY_PREF"
+                },
+                "topicKey": {
+                  "type": "string",
+                  "description": "习惯主题键（品类码/价格带码/时段码/供应商 ID/渠道码）",
+                  "example": "CAT_FOOD_GRAIN"
+                },
+                "topicLabel": {
+                  "type": "string",
+                  "description": "主题可读名（脱敏展示，如 食材·粮油）",
+                  "example": "食材·粮油"
+                },
+                "weight": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "习惯权重 0~1（同 habitType 内归一化；仅用于推荐排序）",
+                  "example": 0.72
+                },
+                "confidence": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "置信度 0~1（样本不足示弱，推荐理由中弱化）",
+                  "example": 0.85
+                },
+                "sampleCount": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "支撑样本量（决策事件条数）",
+                  "example": 37
+                },
+                "sampleSource": {
+                  "type": "string",
+                  "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+                  "enum": [
+                    "BEHAVIOR",
+                    "PURCHASE",
+                    "MIXED"
+                  ],
+                  "example": "BEHAVIOR"
+                },
+                "evidence": {
+                  "type": "array",
+                  "description": "典型证据（可解释输出，不含对话原文）",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "summary"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string",
+                        "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                        "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "证据发生时间",
+                        "example": "2026-09-10T09:30:00Z"
+                      },
+                      "subjectType": {
+                        "type": "string",
+                        "description": "证据标的类型（品类/商品/供应商）",
+                        "enum": [
+                          "CATEGORY",
+                          "ITEM",
+                          "SUPPLIER"
+                        ],
+                        "example": "CATEGORY"
+                      }
+                    }
+                  }
+                },
+                "lastSeenAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "最近观测时间",
+                  "example": "2026-09-15T10:00:00Z"
+                }
+              }
+            }
+          },
+          "factors": {
+            "type": "array",
+            "description": "购买影响因素权重（十类因素码）",
+            "items": {
+              "type": "object",
+              "required": [
+                "factorId",
+                "factorCode",
+                "weight",
+                "confidence",
+                "sampleCount"
+              ],
+              "properties": {
+                "factorId": {
+                  "type": "string",
+                  "description": "因素号（fac_ 前缀，由 AICORE 无状态计算产出、本服务原样落库）",
+                  "example": "fac_3a2b1c0d9e8f"
+                },
+                "factorCode": {
+                  "type": "string",
+                  "description": "购买影响因素码（十类，2026-09-16 定档；运营期可配置扩展）",
+                  "enum": [
+                    "PRICE",
+                    "CREDIT",
+                    "TRACE",
+                    "REVIEW",
+                    "DELIVERY",
+                    "BRAND",
+                    "PROMO",
+                    "SPEC",
+                    "FRESHNESS",
+                    "CERT"
+                  ],
+                  "example": "PRICE"
+                },
+                "weight": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "该因素在该用户决策中的影响权重 0~1（同账号内归一化；**只进排序、不进定价**）",
+                  "example": 0.42
+                },
+                "confidence": {
+                  "type": "number",
+                  "format": "float",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "example": 0.8
+                },
+                "sampleCount": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "参与统计的决策次数",
+                  "example": 17
+                },
+                "evidence": {
+                  "type": "array",
+                  "description": "典型对比证据（如「17 次采购中 11 次在同类中选择单价较低且溯源完整的选项」）",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "summary"
+                    ],
+                    "properties": {
+                      "summary": {
+                        "type": "string",
+                        "description": "证据可读说明（脱敏，仅描述行为与标的，不含对话原文与个人信息）",
+                        "example": "近 90 天内 11 次在同类中选择了溯源链完整的选项"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "证据发生时间",
+                        "example": "2026-09-10T09:30:00Z"
+                      },
+                      "subjectType": {
+                        "type": "string",
+                        "description": "证据标的类型（品类/商品/供应商）",
+                        "enum": [
+                          "CATEGORY",
+                          "ITEM",
+                          "SUPPLIER"
+                        ],
+                        "example": "CATEGORY"
+                      }
+                    }
+                  }
+                },
+                "lastEvidenceAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "example": "2026-09-15T10:00:00Z"
+                }
+              }
+            }
+          },
+          "personalized": {
+            "type": "boolean",
+            "description": "是否个性化（authStatus=DISABLED → false，保留上次结论、已停止重算）",
+            "example": true
+          },
+          "sampleSource": {
+            "type": "string",
+            "description": "样本来源（诚信标记）：M1 行为近似 / M2 交易 / 混合",
+            "enum": [
+              "BEHAVIOR",
+              "PURCHASE",
+              "MIXED"
+            ],
+            "example": "BEHAVIOR"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "最近一次重算时间",
+            "example": "2026-09-16T02:00:00Z"
+          }
+        }
+      },
+      "HabitPurgeResult": {
+        "type": "object",
+        "required": [
+          "status",
+          "cleanupDays"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "清除状态（幂等，重复调用返回同结果）",
+            "enum": [
+              "PURGED"
+            ],
+            "example": "PURGED"
+          },
+          "cleanupDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "衍生数据清理期限（天）",
+            "example": 30
+          }
+        }
       },
       "FeedType": {
         "type": "string",
@@ -3122,7 +4515,7 @@
     }
   },
   "x-external-interfaces": {
-    "description": "服务端间接口（内部调用），前端勿调，不在上方 paths 中。\n出方向依赖：\n- 数据源：ACC（实名）、CRED/EMP（履历/信用）、行为日志（浏览/搜索/会话，脱敏后入画像、不含对话原文）——行为日志经 MQ `profile.behavior` 消费入 `behavior_event` 表（无前端上报接口；存储/索引见 `services/profile/docs/er.md` §6.4/§7.4）；\n- 被依赖：ASSIST 调本服务获取授权画像权重叠加推荐排序（J-09，叠加不替代、价格与画像无关）；\n  DASH 商铺画像 → 分级监管（选择性监管，预警只推送线索不自动执法）；\n- 商铺申诉画像特征复用 A-07/D-03 机制（本服务不建第二套申诉）。\n",
+    "description": "服务端间接口（内部调用），前端勿调，不在上方 paths 中。\n出方向依赖：\n- 数据源：ACC（实名）、CRED/EMP（履历/信用）、行为日志（浏览/搜索/会话，脱敏后入画像、不含对话原文）——行为日志经 MQ `profile.behavior` 消费入 `behavior_event` 表（无前端上报接口；存储/索引见 `services/profile/docs/er.md` §6.4/§7.4）；\n  **TRADE（交易事实，M2 起，用于 `sampleSource=PURCHASE`）**；\n- **调用（无状态计算，2026-09-16 增）**：本服务向 **AICORE `POST /aicore/habit/summarize`** 发起习惯与购买影响因素计算——\n  入参为 `behavior_daily_agg` 日聚合产物（**不含对话原文**），出参为习惯/因素结论信封，由本服务落\n  `profile_habit` / `profile_habit_factor`；**AICORE 只算不存、不建记忆表**（边界基准 v2.0 §2.12/§4.16-C16）；\n  服务端间鉴权（内部 Token）+ 幂等 + 限流；调用失败 → 保留上一版结论、不阻塞画像读写。接口 schema 以\n  `services/aicore/docs/openapi.yaml` `x-external-interfaces` 为唯一可手改源；\n- 被依赖：ASSIST 调本服务获取授权画像**与习惯/影响因素权重**叠加推荐排序（J-09，叠加不替代、**价格与画像无关**）；\n  DASH 商铺画像 → 分级监管（选择性监管，预警只推送线索不自动执法）；\n- 商铺申诉画像特征复用 A-07/D-03 机制（本服务不建第二套申诉）。\n- **技术选型口径**：本服务与习惯类数据**沿用 MySQL**（共享主库 + `profile_` schema 前缀隔离），**不引入 PostgreSQL**；\n  短期会话记忆归 Redis（ASSIST，30 分钟 TTL），与长期习惯分属两条数据线（PDD v1.19 §4.4）。\n",
     "endpoints": [
       {
         "method": "POST",
@@ -3131,7 +4524,7 @@
           "me"
         ],
         "summary": "个性化推荐输出（服务端间，ASSIST → PROFILE）",
-        "description": "ASSIST 推荐场景调用（PDD §6.4.11 recommend，标「内部」）：基于授权画像计算推荐权重\n（职业加权/价格敏感度/适龄过滤），叠加于 J-03 规则排序之上、叠加不替代；\n理由标注画像依据、价格与画像无关（不杀熟）；关闭个性化 → 返回通用规则结果。\n服务端间鉴权（内部 Token）；越权账号访问 → 2002。前端永远不调用此接口。\n",
+        "description": "ASSIST 推荐场景调用（PDD §6.4.11 recommend，标「内部」）：基于授权画像**与习惯/购买影响因素权重**计算推荐权重\n（职业加权/价格敏感度/适龄过滤/习惯品类加权/因素权重叠加），叠加于 J-03 规则排序之上、叠加不替代；\n理由标注画像依据（**含习惯依据，可解释**）、价格与画像无关（不杀熟）；关闭个性化 → 返回通用规则结果。\n习惯权重来源为本服务 `profile_habit` / `profile_habit_factor`（长期记忆唯一权威存储，2026-09-16 增）；\n权重重算经 AICORE `POST /aicore/habit/summarize`（无状态）。\n服务端间鉴权（内部 Token）；越权账号访问 → 2002。前端永远不调用此接口。\n",
         "requestBody": {
           "description": "推荐请求（服务端间报文）",
           "content": {
@@ -3185,6 +4578,7 @@
                             2001,
                             2002,
                             2003,
+                            2004,
                             3001,
                             3002,
                             3003,
@@ -3202,7 +4596,8 @@
                             4004,
                             5000,
                             5001,
-                            5002
+                            5002,
+                            5003
                           ]
                         },
                         "message": {

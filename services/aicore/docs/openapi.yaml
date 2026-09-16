@@ -1,17 +1,21 @@
 openapi: 3.0.3
 info:
   title: AI 能力中心 AICORE · 接口文档
-  version: 1.0.0
+  version: 1.1.0
   description: |
     AI 能力中心（AICORE）前端接口文档。模块 K：证照 OCR（K-01）、AI 网关底座（K-02）、
     视觉合规审核工作台（K-03）、图像问答（K-04）、后厨直播异常识别（K-05）、风险预测预警（K-06）。
-    口径对齐：PDD §5.12 / §6.4.13（接口草案扩展为异步任务 + 人工复核闭环）；需求口径 PRD §5.13（K 组）、
-    `29-AI能力中心需求.md`、功能列表 K-01~K-06。
+    口径对齐：PDD v1.19 §5.12 / §6.4.13（接口草案扩展为异步任务 + 人工复核闭环）；需求口径 PRD §5.13（K 组）、
+    `29-AI能力中心需求.md`、功能列表 K-01~K-06；边界依据 SSOT v2.0 §2.12 / §3 / §4.16-C16。
     - 本文件 paths 仅含前端可调接口，可直接喂 packages/api-client 生成 TS 类型。
-    - 服务端间接口（直播帧识别任务、批量风险扫描）见文末 x-external-interfaces 附录，前端勿调。
+    - 服务端间接口（直播帧识别任务、批量风险扫描、**习惯权重无状态计算**）见文末 x-external-interfaces 附录，前端勿调。
     - 公共组件（Envelope / PageResult / 错误码 / 分页 / 鉴权）引用 ../../_common/openapi.yaml，勿复制内联。
     - 平台红线：AI 只标记不决策（C8）；图像脱敏前置（去人脸/车牌，R-05）；云视觉不用于训练、数据不出域；
       复核结果只用于平台调优、不回流第三方。里程碑标注：【M1】网关+OCR、【M2】视觉审核/图像问答/后厨识别、【M3】风险预测。
+    - **记忆与习惯边界（2026-09-16 定档）**：本服务**不持有用户长期记忆、不建记忆表、不存对话原文**——仅提供
+      `POST /aicore/habit/summarize` **无状态计算**（只算不存），权威存储归 PROFILE（`profile_habit` /
+      `profile_habit_factor` / `behavior_daily_agg`）；短期会话记忆归 Redis（ASSIST 30 分钟 TTL）。
+      **平台不引入 PostgreSQL**；本服务独立库维持 MySQL 8（PDD v1.19 §4.4、SSOT v2.0 §2.12/§4.16-C16）。
 servers:
   - url: https://api.example.com/api/v1
     description: 生产（示例域名）
@@ -30,6 +34,8 @@ tags:
     description: 后厨直播异常识别（K-05）
   - name: risk
     description: 风险预测预警（K-06）
+  - name: habit
+    description: 习惯与购买影响因素无状态计算（服务端间，PROFILE → AICORE；只算不存）
 
 security:
   - bearerAuth: []
@@ -1076,6 +1082,11 @@ x-external-interfaces:
     **证照 OCR 预审结果（POST /aicore/ocr 返回 taskId）由 CRED 侧经内部接口拉取/轮询（CRED→AICORE 入方向），
     AICORE 不主动回写——建档人工核验以 OCR 预审为参考（K-01 → A-01 闭环）；**
     云视觉/OCR 通道经 KMS 密钥、签数据合规协议（不用于训练、数据不出域）。
+    入方向（其他服务 → AICORE，2026-09-16 增）：
+    - **PROFILE → AICORE `POST /aicore/habit/summarize`**：习惯与购买影响因素**无状态计算**——入参为 PROFILE 侧
+      `behavior_daily_agg` 日聚合（**不含对话原文**），出参为习惯/因素结论信封（`hab_`/`fac_` 号 + 权重 + 置信度 +
+      可解释证据），由 PROFILE 落 `profile_habit` / `profile_habit_factor`。**AICORE 只算不存、不建记忆表**；
+      算法迭代（纯统计 → 平台自建小模型）不触发数据迁移（SSOT v2.0 §2.12/§4.16-C16）。
   endpoints:
     - method: POST
       path: /aicore/kitchen/anomalies
@@ -1145,3 +1156,228 @@ x-external-interfaces:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+    - method: POST
+      path: /aicore/habit/summarize
+      tags: [habit]
+      summary: 习惯与购买影响因素计算（服务端间，PROFILE → AICORE，M1）
+      description: |
+        **无状态计算接口（2026-09-16 增）**：PROFILE 传入 `behavior_daily_agg` 日聚合（已脱敏、**不含对话原文**），
+        AICORE 返回习惯结论与购买影响因素权重信封，由 PROFILE 落 `profile_habit` / `profile_habit_factor`。
+        **本服务只算不存、不建记忆表、不落任何用户长期记忆**（SSOT v2.0 §2.12/§4.16-C16）；算法迭代不触发数据迁移。
+        计算口径（初值，可随请求覆盖并随结论回执以便追溯）：
+        - 滚动窗口 90 天（★运行标定）、时间衰减（新证据权重 > 旧证据）；
+        - 习惯生效最小样本量 20 条决策事件，低于则 `confidence` 示弱；
+        - 六类习惯（CATEGORY_PREF / PRICE_BAND / TIME_WINDOW / FREQUENCY / SUPPLIER_TRUST / CHANNEL）；
+        - 十类因素码（PRICE / CREDIT / TRACE / REVIEW / DELIVERY / BRAND / PROMO / SPEC / FRESHNESS / CERT）；
+        - **只输出「权重 + 样本量 + 可解释证据」，不输出人格推断标签**；**权重只用于推荐排序、不进入定价链路**（不杀熟，R-07/C7）。
+        服务端间鉴权（内部 Token）+ 幂等（同 `accountId` + `periodEnd` 幂等，重算覆盖）+ 限流；
+        `sampleSource` 必须如实回传（M1 无交易数据 → `BEHAVIOR`，行为近似；M2 交易接入后 → `PURCHASE`/`MIXED`）。
+        异常：`behaviorDailyAgg` 为空或样本不足 → 返回 `isEmpty=true` 与空数组（不报错、不硬凑）；
+        依赖超时 → 5002；越权账号访问 → 2002。前端永远不调用此接口。
+      requestBody:
+        description: 习惯计算请求（服务端间报文）
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, periodStart, periodEnd, behaviorDailyAgg]
+              properties:
+                accountId:
+                  type: string
+                  description: 用户账号（ACC 权威 ID，只读引用不重新发号）
+                  example: acc_8f7e6d5c4b3a
+                periodStart:
+                  type: string
+                  format: date
+                  description: 统计窗口起始日（含）
+                  example: '2026-06-18'
+                periodEnd:
+                  type: string
+                  format: date
+                  description: 统计窗口结束日（含）；与 accountId 组成幂等键
+                  example: '2026-09-16'
+                sampleSource:
+                  type: string
+                  description: 样本来源诚信标记（缺省 BEHAVIOR）
+                  enum: [BEHAVIOR, PURCHASE, MIXED]
+                  example: BEHAVIOR
+                windowDays:
+                  type: integer
+                  format: int32
+                  description: 滚动窗口天数（缺省 90，★运行标定）
+                  example: 90
+                minSampleCount:
+                  type: integer
+                  format: int32
+                  description: 习惯生效最小样本量（缺省 20，低于则置信度示弱）
+                  example: 20
+                behaviorDailyAgg:
+                  type: array
+                  description: 行为日聚合入参（对应 PROFILE `behavior_daily_agg`；已脱敏、不含对话原文）
+                  items:
+                    type: object
+                    required: [statDate, eventType, eventCount]
+                    properties:
+                      statDate:
+                        type: string
+                        format: date
+                        example: '2026-09-15'
+                      eventType:
+                        type: string
+                        description: 行为类型（浏览/搜索/会话）
+                        example: VIEW
+                      categoryCode:
+                        type: string
+                        description: 品类码（非品类行为可空）
+                        example: CAT_FOOD_GRAIN
+                      eventCount:
+                        type: integer
+                        format: int32
+                        example: 12
+                      dwellSeconds:
+                        type: integer
+                        format: int32
+                        example: 480
+                      priceBand:
+                        type: string
+                        description: 当日价格带（LOW/MID/HIGH）
+                        enum: [LOW, MID, HIGH]
+                        example: MID
+                      factorSnapshot:
+                        type: object
+                        description: 当日可观测因素快照（信用/溯源/好评/时效等，聚合值）
+                        additionalProperties: true
+      responses:
+        '200':
+          description: 计算成功，返回习惯与购买影响因素结论（由 PROFILE 落库）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [accountId, habits, factors, sampleSource, computedAt]
+                        properties:
+                          accountId:
+                            type: string
+                            example: acc_8f7e6d5c4b3a
+                          habits:
+                            type: array
+                            description: 习惯结论（六类；空数组表示样本不足）
+                            items:
+                              type: object
+                              required: [habitId, habitType, topicKey, weight, confidence, sampleCount]
+                              properties:
+                                habitId:
+                                  type: string
+                                  description: 习惯号（hab_ 前缀；由本服务生成，PROFILE 原样落库）
+                                  example: hab_8f7e6d5c4b3a
+                                habitType:
+                                  type: string
+                                  enum: [CATEGORY_PREF, PRICE_BAND, TIME_WINDOW, FREQUENCY, SUPPLIER_TRUST, CHANNEL]
+                                  example: CATEGORY_PREF
+                                topicKey:
+                                  type: string
+                                  example: CAT_FOOD_GRAIN
+                                topicLabel:
+                                  type: string
+                                  example: 食材·粮油
+                                weight:
+                                  type: number
+                                  format: float
+                                  minimum: 0
+                                  maximum: 1
+                                  example: 0.72
+                                confidence:
+                                  type: number
+                                  format: float
+                                  minimum: 0
+                                  maximum: 1
+                                  example: 0.85
+                                sampleCount:
+                                  type: integer
+                                  format: int32
+                                  example: 37
+                                evidence:
+                                  type: array
+                                  description: 典型证据（可解释输出，不含对话原文）
+                                  items:
+                                    type: object
+                                    required: [summary]
+                                    properties:
+                                      summary:
+                                        type: string
+                                        example: 近 90 天内 11 次在同类中选择了溯源链完整的选项
+                                      occurredAt:
+                                        type: string
+                                        format: date-time
+                                        example: '2026-09-10T09:30:00Z'
+                          factors:
+                            type: array
+                            description: 购买影响因素权重（十类因素码；**只进排序、不进定价**）
+                            items:
+                              type: object
+                              required: [factorId, factorCode, weight, confidence, sampleCount]
+                              properties:
+                                factorId:
+                                  type: string
+                                  description: 因素号（fac_ 前缀；由本服务生成，PROFILE 原样落库）
+                                  example: fac_3a2b1c0d9e8f
+                                factorCode:
+                                  type: string
+                                  enum: [PRICE, CREDIT, TRACE, REVIEW, DELIVERY, BRAND, PROMO, SPEC, FRESHNESS, CERT]
+                                  example: PRICE
+                                weight:
+                                  type: number
+                                  format: float
+                                  minimum: 0
+                                  maximum: 1
+                                  example: 0.42
+                                confidence:
+                                  type: number
+                                  format: float
+                                  minimum: 0
+                                  maximum: 1
+                                  example: 0.80
+                                sampleCount:
+                                  type: integer
+                                  format: int32
+                                  example: 17
+                                evidence:
+                                  type: array
+                                  items:
+                                    type: object
+                                    required: [summary]
+                                    properties:
+                                      summary:
+                                        type: string
+                                        example: 17 次采购中 11 次在同类中选择单价较低且溯源完整的选项
+                          isEmpty:
+                            type: boolean
+                            description: 是否样本不足（true → habits/factors 为空数组，不硬凑）
+                            example: false
+                          sampleSource:
+                            type: string
+                            enum: [BEHAVIOR, PURCHASE, MIXED]
+                            example: BEHAVIOR
+                          windowDays:
+                            type: integer
+                            format: int32
+                            description: 实际使用的窗口天数（回执便于追溯口径）
+                            example: 90
+                          modelMeta:
+                            type: object
+                            description: 算法血缘（算法版本/promptVersion/阈值快照；结论可追溯）
+                            additionalProperties: true
+                          computedAt:
+                            type: string
+                            format: date-time
+                            example: '2026-09-16T02:00:00Z'
+        '401':
+          $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
