@@ -248,8 +248,9 @@ public class AccConfiguration {
      * 有界超时 2s/1s）；未配置 → {@link InMemoryStringRedisOps}（单测/演练兜底）。
      *
      * <p><b>口径（用户裁决 R-A6）</b>：不引 spring-data-redis 全家桶；生产**必须**配置 Redis 且与网关
-     * 同实例，否则会话族与吊销名单不共享 ⇒ 登出/踢人失效——{@link SessionStore} 的选型会打印告警，
-     * 该限制同时写入 PDD v1.18 / 高并发 v0.9 / 边界基准 v1.9 与两份服务基线。</p>
+     * 同实例，否则会话族与吊销名单不共享 ⇒ 登出/踢人失效——本端口同时服务验证码/哈希链尾，
+     * 故仍按 {@code acc.redis.host} 择实现；而**会话存储**的择实现已改为显式开关
+     * {@code acc.session.store}（L1/R-A8，缺 host 即启动失败），见 {@link #sessionStore}。</p>
      *
      * <p>销毁：不显式声明 {@code destroyMethod}——Spring 会按「返回类型可达的 public close()/shutdown()」
      * 自动推断（Lettuce 实现是 {@code AutoCloseable}，内存实现没有该方法，框架会自行跳过），
@@ -268,22 +269,51 @@ public class AccConfiguration {
     }
 
     /**
-     * 会话存储端口（design D2/D3/D8）：{@code acc.redis.host} 配置了 → {@link RedisSessionStore}
-     * （Lua 原子写入 + fail-closed），未配置 → {@link InMemorySessionStore}（测试/演练兜底）。
+     * 会话存储端口（design D2/D3/D8 + L1 修复裁定 R-A8）：由**显式开关**
+     * {@code acc.session.store=memory|redis}（默认 {@code memory}）决定实现。
      *
-     * <p>存储不可用时实现抛 {@link SessionStoreUnavailableException}，经
+     * <ul>
+     *   <li>{@code redis}：生产语义——{@link RedisSessionStore}（Lua 原子写入 + fail-closed），
+     *       且**必须配置 {@code acc.redis.host}**；缺失即抛 {@link IllegalStateException} **启动失败**，
+     *       不再静默退化为进程内存储（否则换发/登出写下的吊销名单与网关读的不是同一份，登出/踢人静默失效）。</li>
+     *   <li>{@code memory}：{@link InMemorySessionStore}（仅单元测试/演练），**不触碰 Redis**。</li>
+     *   <li>其它取值：拼错即启动失败（避免「写了 redis-xxx 却静默走内存」这类配置事故）。</li>
+     * </ul>
+     *
+     * <p><b>L1 记录（2026-09-16 复评修复波）</b>：原实现以 {@code acc.redis.host} 是否为空隐式择实现，
+     * 「未配置」与「显式选内存」不可区分——生产漏配 host 即失去吊销能力却照常启动，与 spec
+     * `acc-session`「会话存储不可用时快速失败、绝不签发无法吊销的 token」相悖。现改为显式开关 +
+     * 缺 host 启动失败，并把「生产必须设 {@code acc.session.store=redis}」写入部署件与服务基线。</p>
+     *
+     * <p>存储运行期不可用时实现抛 {@link SessionStoreUnavailableException}，经
      * {@link com.msz.acc.controller.GlobalExceptionHandler} 统一映射 **503 + 5003**：
      * 登录/换发/登出**快速失败**，绝不签发无法吊销的 token。</p>
      */
     @Bean
     public SessionStore sessionStore(AccProperties properties, StringRedisOps stringRedisOps,
                                      Clock clock) {
-        String host = properties.getRedis().getHost();
+        String store = properties.getSession().getStore() == null
+                ? "" : properties.getSession().getStore().trim().toLowerCase();
         LongSupplier sessionClock = clock::millis;
-        if (host == null || host.isBlank()) {
+        if ("memory".equals(store)) {
+            String host = properties.getRedis().getHost();
+            if (host != null && !host.isBlank()) {
+                log.warn("acc.session.store=memory 但 acc.redis.host 已配置：会话族与吊销名单仍只落在进程内——"
+                        + "仅限单元测试/演练；生产必须设 acc.session.store=redis（否则登出/踢人失效）");
+            }
             return new InMemorySessionStore(sessionClock);
         }
-        return new RedisSessionStore(stringRedisOps, sessionClock);
+        if ("redis".equals(store)) {
+            String host = properties.getRedis().getHost();
+            if (host == null || host.isBlank()) {
+                throw new IllegalStateException("acc.session.store=redis 需配置 acc.redis.host（生产会话存储）："
+                        + "缺少 Redis 时会话族与吊销名单无法与网关共享 ⇒ 登出/踢人失效；"
+                        + "本地/测试请显式设 acc.session.store=memory");
+            }
+            return new RedisSessionStore(stringRedisOps, sessionClock);
+        }
+        throw new IllegalStateException("acc.session.store=" + properties.getSession().getStore()
+                + " 非法：仅支持 memory（测试/演练）| redis（生产，需配 acc.redis.host）");
     }
 
     @Bean

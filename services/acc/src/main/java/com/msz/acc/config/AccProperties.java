@@ -11,10 +11,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code acc.realname.authorize-url-template}：实名授权跳转模板，占位符 {@code {bizId}}。</li>
  *   <li>{@code acc.jwt-secret}：JWT HS256 签名密钥（默认测试值）；**同时用于短 token 与 refresh**。</li>
  *   <li>{@code acc.channel.*-base-url}：实名/支付/账单通道基址（M1 默认本地占位，测试经 WireMock 注入）。</li>
- *   <li>{@code acc.redis.*}：会话存储 Redis 连接（R-A6）——{@code host} 留空视为未配置，
- *       此时 {@code SessionStore} 退化为进程内实现（**仅单元测试/演练兜底，不可用于生产**，
- *       进程内存储无法与网关共享吊销名单 ⇒ 登出/踢人失效）。</li>
- *   <li>{@code acc.session.*}：会话凭据配置（R-A7，与 PDD v1.18 §8.4.1 口径一致）。</li>
+ *   <li>{@code acc.redis.*}：会话存储 Redis 连接（R-A6）——{@code acc.session.store=redis} 时**必填**
+ *       （缺 {@code host} 即启动失败，见 {@code AccConfiguration#sessionStore}）；未配置时
+ *       {@code SessionStore} 由 {@code acc.session.store}（默认 {@code memory}）决定，进程内实现
+ *       **仅单元测试/演练兜底，不可用于生产**（进程内存储无法与网关共享吊销名单 ⇒ 登出/踢人失效）。</li>
+ *   <li>{@code acc.session.*}：会话凭据配置（R-A7 + L1/R-A8，与 PDD v1.18 §8.4.1 口径一致）：
+ *       {@code store}（{@code memory}|{@code redis}，默认 {@code memory}；**生产必须设 redis**）。</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "acc")
@@ -76,8 +78,8 @@ public class AccProperties {
     /**
      * 会话存储 Redis 连接（{@code acc.redis.*}）。
      *
-     * <p>{@code host} 默认空串 = **未配置**：此时会话存储用进程内实现（测试/演练兜底）。
-     * 生产部署必须配置，且必须指向网关读取 `revoked:jti:*` 的**同一个实例**。</p>
+     * <p>{@code host} 默认空串 = **未配置**。{@code acc.session.store=redis} 时必填（缺失即启动失败）；
+     * 生产部署必须指向网关读取 `revoked:jti:*` 的**同一个实例**。</p>
      */
     public static class Redis {
 
@@ -128,6 +130,9 @@ public class AccProperties {
      */
     public static class Session {
 
+        /** 会话存储实现：{@code memory}（默认，仅测试/演练）| {@code redis}（生产，必须配 acc.redis.host）。 */
+        private String store = "memory";
+
         /** 短 token 有效期（秒）。默认 900 = 15 分钟；**超过 15 分钟会被网关按策略拒绝**。 */
         private long accessTokenTtlSeconds = 900L;
 
@@ -148,6 +153,14 @@ public class AccProperties {
 
         /** refresh Cookie SameSite 取值（Lax/Strict/None；None 需配合 Secure）。 */
         private String cookieSameSite = "Lax";
+
+        public String getStore() {
+            return store;
+        }
+
+        public void setStore(String store) {
+            this.store = store;
+        }
 
         public long getAccessTokenTtlSeconds() {
             return accessTokenTtlSeconds;

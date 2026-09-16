@@ -17,8 +17,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 会话存储装配（任务 2.3）：由 {@code acc.redis.host} 决定实现——配置了 → Redis（生产），
- * 未配置 → 进程内兜底（测试/演练，且**口径为不可用于生产**，文档三处同步）。
+ * 会话存储装配（任务 2.3 + L1 修复裁定 R-A8）：由**显式开关** {@code acc.session.store=memory|redis}
+ * 决定实现——{@code redis} → {@link RedisSessionStore}（生产，必须配 {@code acc.redis.host}，
+ * 缺失即**启动 fail-fast**）；{@code memory}（默认）→ {@link InMemorySessionStore}，**绝不触碰 Redis**。
+ *
+ * <p>L1 背景：原实现「{@code acc.redis.host} 为空即静默退化为内存」——生产误配不报错，登出/踢人
+ * 静默失效，与 spec `acc-session` 的 fail-closed 要求相悖。开关化的关键在于让「未配置」与
+ * 「显式选内存」**可区分**：想用内存必须写明，写了 redis 就必须给 host。</p>
  *
  * <p>fail-closed 断言用「故障端口」直接驱动装配出来的 {@link RedisSessionStore}：存储抛错必须
  * 上抛 {@link SessionStoreUnavailableException}，**不产生任何写入**（不签发无法吊销的 token）。</p>
@@ -28,7 +33,7 @@ class SessionStoreAssemblyTest {
     private final AccConfiguration configuration = new AccConfiguration();
 
     @Test
-    @DisplayName("2.3 未配置 acc.redis.host → 进程内兜底实现（保证单测/演练无需 Redis）")
+    @DisplayName("2.3 默认（acc.session.store=memory）→ 进程内兜底实现（保证单测/演练无需 Redis）")
     void unconfiguredRedisFallsBackToInMemory() {
         AccProperties properties = new AccProperties();
         SessionStore store = configuration.sessionStore(properties, new InMemoryStringRedisOps(),
@@ -38,9 +43,10 @@ class SessionStoreAssemblyTest {
     }
 
     @Test
-    @DisplayName("2.3 配置 acc.redis.host → Redis 实现（生产语义：与网关共享吊销名单）")
+    @DisplayName("2.3 acc.session.store=redis → Redis 实现（生产语义：与网关共享吊销名单）")
     void configuredRedisUsesRedisStore() {
         AccProperties properties = new AccProperties();
+        properties.getSession().setStore("redis");
         properties.getRedis().setHost("127.0.0.1");
 
         SessionStore store = configuration.sessionStore(properties, new InMemoryStringRedisOps(),
@@ -50,19 +56,52 @@ class SessionStoreAssemblyTest {
     }
 
     @Test
-    @DisplayName("2.3 host 为空白（含空格）也视为未配置，不退化为「连不上就降级」的模糊状态")
-    void blankHostTreatedAsUnconfigured() {
+    @DisplayName("L1/R-A8 acc.session.store=redis 但 acc.redis.host 为空 → 启动 fail-fast（不再静默退化）")
+    void storeRedisWithBlankHostFailsFast() {
         AccProperties properties = new AccProperties();
+        properties.getSession().setStore("redis");
         properties.getRedis().setHost("   ");
 
-        assertThat(configuration.sessionStore(properties, new InMemoryStringRedisOps(), Clock.systemUTC()))
-                .isInstanceOf(InMemorySessionStore.class);
+        assertThatThrownBy(() -> configuration.sessionStore(properties, new InMemoryStringRedisOps(),
+                Clock.systemUTC()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("acc.session.store=redis")
+                .hasMessageContaining("acc.redis.host");
+    }
+
+    @Test
+    @DisplayName("L1/R-A8 acc.session.store 取值非法 → 启动 fail-fast（避免拼错即静默退化）")
+    void unknownStoreValueFailsFast() {
+        AccProperties properties = new AccProperties();
+        properties.getSession().setStore("redis-cluster");
+
+        assertThatThrownBy(() -> configuration.sessionStore(properties, new InMemoryStringRedisOps(),
+                Clock.systemUTC()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("acc.session.store");
+    }
+
+    @Test
+    @DisplayName("L1/R-A8 显式 memory：即使配了 host 与「一用就炸」的端口也绝不触碰 Redis")
+    void storeMemoryNeverTouchesRedis() {
+        AccProperties properties = new AccProperties();
+        properties.getSession().setStore("memory");
+        properties.getRedis().setHost("127.0.0.1");
+
+        SessionStore store = configuration.sessionStore(properties, new BrokenStringRedisOps(), Clock.systemUTC());
+
+        assertThat(store).isInstanceOf(InMemorySessionStore.class);
+        // 端口每次调用都抛错：以下调用若发生任何 Redis 委托都会失败
+        store.ping();
+        assertThat(store.consume("rf-never-touched")).isFalse();
+        assertThat(store.find("fam-never-touched")).isNull();
     }
 
     @Test
     @DisplayName("2.3 fail-closed：存储故障时 issue/find/consume/revoke 全部上抛，且无任何写入副作用")
     void brokenStoreFailsClosedWithoutSideEffects() {
         AccProperties properties = new AccProperties();
+        properties.getSession().setStore("redis");
         properties.getRedis().setHost("127.0.0.1");
         SessionStore store = configuration.sessionStore(properties, new BrokenStringRedisOps(), Clock.systemUTC());
 
