@@ -223,7 +223,19 @@ Pydantic Settings，`env: dev | test | prod` 三套。
 
 **两条强取向**：
 1. **必填项一律不给默认值**（`design.md` L250）：默认值会把配置错误隐藏到运行时。
-2. **`extra="forbid"`**：写了不存在的配置项要报错，而非默默忽略——防止「以为配了其实没配」。
+2. **未识别的配置项必须报错**，而非默默忽略——防止「以为配了其实没配」。
+
+> **第 2 条不能只靠 `extra="forbid"` 实现（2026-09-17 实测）**：`pydantic-settings` 2.15 的
+> `EnvSettingsSource` **没有 extra 分支**，未识别的 `AICORE_*` 环境变量会被**静默忽略**——
+> 实测：裸 `BaseSettings` 加 `extra="forbid"` 后设置 `PROBE_UNKNOWN_VAR`，构造仍然成功、无任何告警。
+> 也就是说照字面写 `extra="forbid"` 会让本条**看起来实现、实际落空**，且因静默而无迹可循。
+> 实现须把未识别的环境变量**显式交给** `extra` 校验（本项目做法：自定义一个
+> `PydanticBaseSettingsSource` 子类挂进 `settings_customise_sources`，见 `core/config.py`），
+> 并用**阴性用例**守住（注入 `AICORE_TYPO_FIELD` → 必须抛 `ValidationError`）。
+>
+> 另注意 `ValidationError.input` 会**携带其它字段的原始值（含 `mysql_password`）**，
+> 故生成启动拒绝信息时**只能取 `loc` / `msg`**；同理 `repr(Settings)` 含口令，
+> 启动日志一律走不含口令的 `mysql_dsn`。
 
 新增依赖：**`structlog`**（PDD L1747 指定的 Python 侧日志库，探测时未装）。
 
