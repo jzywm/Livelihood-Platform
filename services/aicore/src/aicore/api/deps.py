@@ -13,5 +13,10 @@ from fastapi import Request
 
 
 def get_settings(request: Request) -> Any:
-    """返回组合根装配的 Settings 实例。Task 2.1 定类型。"""
+    """返回组合根装配的 Settings 实例。Task 2.1 定类型。
+
+    注意：`app.state.settings` 由 Task 2.1 装配，在那之前调用本函数会抛 AttributeError
+    （Starlette `State.__getattr__` 在属性缺失时即抛）。此处刻意不做兜底取值：
+    配置缺失必须在启动/装配期暴露，用 getattr 默认值掩盖只会把误配置推迟到运行期。
+    """
     return request.app.state.settings
