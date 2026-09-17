@@ -186,6 +186,25 @@ services/aicore/
 不含 `raise` 即判违规。误报（如 `except: return default` 的合法场景）由**显式豁免注释**处理——
 宁可让人解释一次，也不要它悄悄漏掉。
 
+**豁免指令的正式写法：`# ai-allow-swallow: <理由>`（理由必填）**（2026-09-17 实测确定）。
+早期的 `# noqa: ai-allow-swallow: <理由>` 写法**语法上仍被扫描接受**，但会让 ruff 把
+`ai-allow-swallow` 当成一个 noqa 规则码，**每次使用都打印 `Invalid # noqa directive` 警告**
+（实测 7 种变体，无一能既保留 `noqa:` 前缀又不告警），故正式口径改为不带前缀的写法，
+旧写法保留兼容以免既有文档失效。
+
+**规则 6 的已知边界（有意接受，非遗漏）**：
+① **不下降进嵌套作用域** —— 处理器体内嵌 `def` / `lambda` / `class` 里的 `raise` **不**算该处理器抛异常，
+因为那种 `raise` 在处理器自身的控制流中并不会终止它；这是"偏严"取向的必然结果。
+② **条件重抛被接受** —— `if strict: raise` 后接 `return` 不判违规（代价：极少数真实漏判）。
+③ 扫描以 `ExceptHandler` 为单位，多层 `try` 各自独立判定。
+
+**契约的传递语义必须显式声明（2026-09-17 实测）**：`forbidden` 契约默认 `allow_indirect_imports = False`，
+会沿调用链报出**传递**依赖——实测在「`api` 只导入 `service`、`service` 只导入 `repository`」
+（无任何 `api → repository` 直接导入）的树上，默认配置判 **BROKEN** 并打印传递链；
+加 `allow_indirect_imports = true` 后正确放行。故 `api-no-repo-provider` 必须显式声明
+`allow_indirect_imports = true`：它的契约名写的就是「不得**直接**依赖」，而 `api → service → repository`
+正是本设计要的分层路径。若不声明，待后续任务落地真实导入，检查会对**正确架构**误报。
+
 **固化为检查的验收方式**：**阴性用例**。故意引入一处违规导入 → 检查必须失败；移除 → 必须通过。
 只写「规则存在」不算数，须证明它会响。
 
