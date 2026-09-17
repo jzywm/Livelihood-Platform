@@ -9,9 +9,12 @@ description = "AI 能力中心服务（AICORE）· 民生甄选平台"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141",
-    # starlette 是被直接 import 的（main.py 的中间件基类、core/trace.py 的 ASGI 类型），
-    # 不能只靠 fastapi 的传递依赖：一旦上游更换实现或调整依赖，本服务会在部署时才炸。
-    "starlette>=1.6",
+    # starlette 是被直接 import 的（main.py 的中间件基类与 build_middleware_stack 覆盖、
+    # core/trace.py 的 ASGI 类型），不能只靠 fastapi 的传递依赖：fastapi 只要求
+    # starlette>=0.46.0 且无上界，上游一旦更换实现或调整依赖，本服务会在部署时才炸。
+    # 上界 <2 是刻意的：main.py 覆盖了 Starlette 内部约定的 build_middleware_stack，
+    # 大版本升级需人工复核该覆盖仍成立，而不是被动接受破坏性变更。
+    "starlette>=1.6,<2",
     "uvicorn[standard]>=0.53",
     "pydantic>=2.13",
     "pydantic-settings>=2.15",
