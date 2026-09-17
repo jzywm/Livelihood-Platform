@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicore"
+version = "0.1.0"
+description = "AI 能力中心服务（AICORE）· 民生甄选平台"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.53",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "sqlalchemy>=2.0.54",
+    "pymysql>=1.2",
+    "redis>=8.1",
+    "httpx>=0.28",
+    "alembic>=1.20",
+    "structlog>=24.0",
+    "cryptography>=50.0",
+    "pillow>=12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "import-linter>=2.15",
+    "ruff>=0.16",
+    "mypy>=2.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+# 注释与文档使用中文是本仓库的强制要求（DEVELOPMENT_CONSTRAINTS.md §2），
+# 而 RUF001/RUF002/RUF003 会把中文全角标点（：；，等）判为「歧义字符」并报错。
+# 关闭这三条，使 Ruff 与中文文档策略相容；其余 RUF 规则保持开启。
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = "-q"
+markers = [
+    "integration: 需要真实 MySQL / Redis 的端到端用例，默认不执行",
+]
+
+[tool.coverage.run]
+source = ["src/aicore"]
+omit = ["src/aicore/main.py", "src/aicore/provider/deepseek.py", "src/aicore/provider/cloud_vision.py", "src/aicore/provider/cloud_ocr.py"]
+
+[tool.coverage.report]
+fail_under = 80
