@@ -9,6 +9,27 @@ source_modules =
 forbidden_modules =
     aicore.repository
     aicore.provider
+# allow_indirect_imports = true：只禁止「直接依赖」，依据是设计原文本身。
+# design.md 禁止项 1 的措辞是「api/ MUST NOT **直接导入** repository/ 或 provider/——路由只调 service」，
+# 分层的允许方向是 api → service → {provider 抽象, repository, port}。
+# 而 forbidden 契约默认 false 会走 find_shortest_chains，把 api → service → repository
+# 这条**正是要放行的**路径判成违规。用默认值等于把架构本身钉成红灯。
+# 实测（api 只 import service、service 只 import repository，全树无 api → repository 直接导入）：
+#   默认 false => BROKEN，打印链路 pkg.api.routes -> pkg.service.svc / pkg.service.svc -> pkg.repository.repo
+#   true      => KEPT
+# 代价与兜底（已实测，非推断）：放开间接路径后，api 经由 service 间接触碰 repository / provider
+# 不再由本契约拦。逐条实测结论——不存在漏口：
+#   api → service → repository → provider.deepseek / provider.mock
+#        => 契约 2 BROKEN（service 间接导入 provider.* 仍违规，中间隔 repository 也拦得住）
+#   core → api → service
+#        => 契约 4 BROKEN（core 间接依赖业务层）
+#   repository → provider → service（反向两跳）
+#        => 契约 3 BROKEN（反向依赖 service，中间隔 provider 一样算）
+#   api → service → port（不触碰 provider/repository）
+#        => 4 kept，这正是设计要放行的路径（port 是 service 的合法出向边界）
+# 唯一被放开的形态是 api → service → provider.base：禁止项 2 明示合法（只依赖 Protocol），
+# 也正是 api 取模型的正常路径。
+allow_indirect_imports = true
 
 [importlinter:contract:service-provider-impl]
 name = service 层只可与 provider.base 交互，不得依赖具体通道实现
@@ -16,6 +37,14 @@ type = forbidden
 source_modules =
     aicore.service
 forbidden_modules =
+    # 含 aicore.provider 整包：provider/__init__.py 若再导出「非 aicore.provider.*」的符号
+    # （例：from aicore.port.x import …），service `import aicore.provider` 就会拿到它，
+    # 而这条边（service -> aicore.provider）不等于任何具体实现的模块名，只列下面 5 个实现模块会漏掉。
+    # 实测对照（临时探针：门面再导出 aicore.port.facade_probe，service 写 `import aicore.provider`）：
+    #   未列 aicore.provider => 4 kept（漏判）；列了 => 契约 2 BROKEN。见 test_provider_facade_reexport_is_forbidden。
+    # 门面若只再导出 aicore.provider.mock 之类，间接链路本就能查到（会打印两跳链路），
+    # 但那依赖"实现模块被逐个列全"；列出整包让这条防线不依赖枚举的完备性。
+    aicore.provider
     aicore.provider.mock
     aicore.provider.selector
     aicore.provider.deepseek
@@ -32,6 +61,9 @@ forbidden_modules =
 #   aicore.service.**  -> aicore.provider.base  => 命中
 ignore_imports =
     aicore.service.** -> aicore.provider.base
+# 间接路径同样违规（未开 allow_indirect_imports，用默认 false）：
+# 「service 只可与 provider.base 交互」不因中间隔了一层就成立——service → repository → provider.mock
+# 照样把具体通道实现绑进了 service。默认 false 才是与规则 2 同向的取舍。
 # forbidden 契约默认 unmatched_ignore_imports_alerting=error：放行表达式匹配不到任何真实导入
 # 即判契约失败。当前 service 各模块仍是 docstring 空壳，尚未出现 service -> provider.base 的
 # 导入，用默认值会让「干净代码」正例直接变红，整套分层检查形同虚设。改为 warn 后：正例通过，
@@ -48,6 +80,10 @@ source_modules =
     aicore.port
 forbidden_modules =
     aicore.service
+# 间接路径同样违规（未开 allow_indirect_imports，用默认 false）：
+# 禁止项 3 要封的是「反向依赖 service」这件事本身，而不是某种写法。
+# 反向层 → service → provider.deepseek 之类多跳链路一旦成立，反向依赖就已实际存在，
+# 中间隔一跳不改变事实。放行间接路径才会出现「契约说 KEPT、实际已经反向依赖」的假绿。
 
 [importlinter:contract:core-independent]
 name = core 不得依赖任何业务层
@@ -62,3 +98,7 @@ forbidden_modules =
     aicore.provider
     aicore.repository
     aicore.port
+# 间接路径同样违规（未开 allow_indirect_imports，用默认 false）：
+# core 是横切层，须能被任何层安全 import；只要存在 core → … → 业务层 的链路，
+# core 就会随业务层一起被拖进依赖环，与「不依赖任何业务层」直接冲突。
+# 本契约三条不变量均取默认 false，与契约 1 的 true 形成对照：只有明确写「直接」的规则才放行间接。
