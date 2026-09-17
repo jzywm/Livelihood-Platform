@@ -1,7 +1,7 @@
 """外部模型通道 Protocol。
 
 service 层 MUST 只依赖本文件的 Protocol，MUST NOT 导入任何具体实现
-（mock / deepseek / cloud_vision / cloud_ocr）——由 setup.cfg 的 import-linter 契约强制。
+（mock / deepseek / cloud_vision / cloud_ocr）——由 .importlinter 的 import-linter 契约强制。
 """
 
 from __future__ import annotations
