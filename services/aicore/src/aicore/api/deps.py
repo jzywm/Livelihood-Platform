@@ -7,16 +7,20 @@ MUST NOT 在此构造具体 Provider / repository —— 具体实现只在 main
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import Request
 
+from aicore.core.config import Settings
 
-def get_settings(request: Request) -> Any:
-    """返回组合根装配的 Settings 实例。Task 2.1 定类型。
 
-    注意：`app.state.settings` 由 Task 2.1 装配，在那之前调用本函数会抛 AttributeError
+def get_settings(request: Request) -> Settings:
+    """返回组合根装配到 `app.state.settings` 的 Settings 实例。
+
+    注意：`app.state.settings` 由组合根在启动期装配，在那之前调用本函数会抛 AttributeError
     （Starlette `State.__getattr__` 在属性缺失时即抛）。此处刻意不做兜底取值：
     配置缺失必须在启动/装配期暴露，用 getattr 默认值掩盖只会把误配置推迟到运行期。
     """
-    return request.app.state.settings
+    # 显式落一个具名变量：`request.app.state` 是 Any，直接 return 会被 mypy 记为
+    # 「returning Any from function declared to return Settings」；改回 `-> Any` 又会让
+    # 类型注解失去意义。
+    settings: Settings = request.app.state.settings
+    return settings
