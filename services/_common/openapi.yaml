@@ -113,6 +113,37 @@ components:
             data: null
             traceId: 3f2a1b9c8d7e6f50
             timestamp: '2026-01-15T10:30:00Z'
+    RateLimited:
+      description: |
+        触发限流（code=2004 请求过于频繁）。
+        HTTP 状态码 429 与业务码 2004 必须同时出现——前端按 `code === 0` 判断成功，
+        故限流响应体必须携带业务码，不能只有 HTTP 状态码。
+        网关级限流（IP/账号/接口档位）与服务域内成本护栏（日配额/预算）共用本码。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 2004
+            message: 请求过于频繁，请稍后重试
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
+    DependencyTimeout:
+      description: |
+        依赖超时 / 熔断（code=5002）。
+        与第三方业务失败（4001/4002/4003/4004）严格区分：前者是「没等到响应」，后者是「等到了失败」，
+        两者计数与告警口径不同，运维据此区分「通道故障」与「依赖劣化」。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+          example:
+            code: 5002
+            message: 依赖超时或熔断
+            data: null
+            traceId: 3f2a1b9c8d7e6f50
+            timestamp: '2026-01-15T10:30:00Z'
 
   schemas:
     Envelope:

@@ -77,23 +77,33 @@ paths:
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '429':
-          description: 触发限流（Redis 令牌桶按账号限流，成本护栏）
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
         '502':
-          description: OCR 通道失败或超时（code=4003，任务降级转人工核验队列）
+          description: OCR 通道失败（code=4003，任务降级转人工核验队列，不阻塞入驻流程）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
               example:
                 code: 4003
-                message: OCR 通道失败或超时，已转人工核验
+                message: OCR 通道失败，已转人工核验
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+        '504':
+          $ref: '../../_common/openapi.yaml#/components/responses/DependencyTimeout'
   /aicore/tasks/{taskId}:
     get:
       tags: [task]
@@ -129,6 +139,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
   /aicore/vision/reviews:
     post:
       tags: [vision]
@@ -164,6 +188,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
         '502':
           description: 视觉通道失败或超时（code=4003，任务进人工复核队列原样流转，AI 标记缺席不阻塞）
           content:
@@ -176,6 +214,8 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+        '504':
+          $ref: '../../_common/openapi.yaml#/components/responses/DependencyTimeout'
     get:
       tags: [vision]
       summary: 视觉审核工作台列表【M2 · K-03】
@@ -243,6 +283,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
   /aicore/vision/reviews/{reviewId}:
     get:
       tags: [vision]
@@ -276,6 +330,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
   /aicore/vision/reviews/{reviewId}/verdict:
     post:
       tags: [vision]
@@ -321,7 +389,7 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
-        '422':
+        '409':
           description: 状态不允许（code=3007，记录已复核，不可重复提交）
           content:
             application/json:
@@ -333,6 +401,35 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+        '422':
+          description: |
+            参数校验失败（code=1001 参数缺失 / 1002 参数格式错误 / 1003 枚举或范围非法）。
+            FastAPI 默认返回 422 与框架自有结构，MUST 收编为平台信封与 1xxx 业务码，
+            使前端只需按 code 判断，不出现两套响应格式。
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 1002
+                message: 参数格式错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
   /aicore/vision/qa:
     post:
       tags: [qa]
@@ -365,11 +462,19 @@ paths:
         '401':
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '429':
-          description: 触发限流（Redis 令牌桶按账号限流，防滥用）
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
           content:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
         '502':
           description: 视觉通道失败或超时（code=4003，前端引导转人工/投诉入口）
           content:
@@ -382,6 +487,8 @@ paths:
                 data: null
                 traceId: 3f2a1b9c8d7e6f50
                 timestamp: '2026-01-15T10:30:00Z'
+        '504':
+          $ref: '../../_common/openapi.yaml#/components/responses/DependencyTimeout'
   /aicore/kitchen/anomalies:
     get:
       tags: [kitchen]
@@ -439,6 +546,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
   /aicore/risk/merchants:
     get:
       tags: [risk]
@@ -495,6 +616,20 @@ paths:
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
   /aicore/risk/predict:
     post:
       tags: [risk]
@@ -530,6 +665,22 @@ paths:
         '404':
           $ref: '../../_common/openapi.yaml#/components/responses/NotFound'
 
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '504':
+          $ref: '../../_common/openapi.yaml#/components/responses/DependencyTimeout'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
 components:
   schemas:
     DocType:
@@ -1125,6 +1276,46 @@ x-external-interfaces:
                     properties:
                       data:
                         $ref: '#/components/schemas/TaskAccepted'
+        '504':
+          description: 依赖超时 / 熔断（code=5002，内部调用不计入终端限流档位）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5002
+                message: 依赖超时或熔断
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '401':
+          description: 内部凭据缺失或无效（code=2001，服务端间接口 MUST NOT 接受终端用户令牌）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 2001
+                message: 内部凭据缺失或无效
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
     - method: POST
       path: /aicore/risk/scan
       tags: [risk]
@@ -1156,6 +1347,46 @@ x-external-interfaces:
             application/json:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+        '504':
+          description: 依赖超时 / 熔断（code=5002，内部调用不计入终端限流档位）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5002
+                message: 依赖超时或熔断
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '403':
+          $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '401':
+          description: 内部凭据缺失或无效（code=2001，服务端间接口 MUST NOT 接受终端用户令牌）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 2001
+                message: 内部凭据缺失或无效
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
     - method: POST
       path: /aicore/habit/summarize
       tags: [habit]
@@ -1381,3 +1612,29 @@ x-external-interfaces:
           $ref: '../../_common/openapi.yaml#/components/responses/Unauthorized'
         '403':
           $ref: '../../_common/openapi.yaml#/components/responses/Forbidden'
+        '504':
+          description: 依赖超时 / 熔断（code=5002，内部调用不计入终端限流档位）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5002
+                message: 依赖超时或熔断
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'
+        '429':
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+        '500':
+          description: 内部错误（code=5000，堆栈只进日志不进响应体）
+          content:
+            application/json:
+              schema:
+                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+              example:
+                code: 5000
+                message: 服务内部错误
+                data: null
+                traceId: 3f2a1b9c8d7e6f50
+                timestamp: '2026-01-15T10:30:00Z'

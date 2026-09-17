@@ -65,11 +65,8 @@ paths:
                       data:
                         $ref: '#/components/schemas/CaptchaChallenge'
         '429':
-          description: 触发限流（登录爆破限速）
-          content:
-            application/json:
-              schema:
-                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+          description: 触发限流（验证码请求限速，业务码 2004）
   /acc/captcha/verify:
     post:
       tags: [captcha]
@@ -259,11 +256,8 @@ paths:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
         '429':
-          description: 触发限流（网关级 IP 限流，2004）
-          content:
-            application/json:
-              schema:
-                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+          description: 触发限流（网关级 IP 限流，业务码 2004）
         '503':
           description: 会话存储（Redis）不可用，快速失败且不签发任何 token（5003）
           content:
@@ -320,11 +314,8 @@ paths:
               schema:
                 $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
         '429':
-          description: 触发限流（网关级 IP 限流，2004）
-          content:
-            application/json:
-              schema:
-                $ref: '../../_common/openapi.yaml#/components/schemas/Envelope'
+          $ref: '../../_common/openapi.yaml#/components/responses/RateLimited'
+          description: 触发限流（网关级 IP 限流，业务码 2004）
         '503':
           description: 会话存储（Redis）不可用，快速失败（5003）
           content:
