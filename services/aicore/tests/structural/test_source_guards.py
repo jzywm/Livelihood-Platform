@@ -145,11 +145,41 @@ def test_guard_detects_swallowing() -> None:
     assert find_swallowed_exceptions(good) == []
 
 
+def _legacy_find_swallowed(source: str) -> list[int]:
+    """修复轮 1 **之前**的判定方式（`ast.walk` 全深度下探），只作判别力对照。
+
+    复刻自计划文档首版片段：处理块内任意深度的 raise（含嵌套 def/lambda/class、内层
+    except）都会让该处理块被判成"已重新抛出"。留在测试里是为了让每个边界子例都能自证
+    有判别力——旧实现漏报、新实现报违规，才说明该子例真的在测边界，而不是跟着实现一起绿。
+    """
+    hits: list[int] = []
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        raises = any(isinstance(inner, ast.Raise) for stmt in node.body for inner in ast.walk(stmt))
+        if not raises:
+            hits.append(node.lineno)
+    return hits
+
+
+def assert_boundary_is_discriminating(name: str, source: str) -> None:
+    """边界子例自检：旧实现（`ast.walk`）漏报、新实现报违规，两条都必须成立。"""
+    assert _legacy_find_swallowed(source) == [], (
+        f"{name} 子例失去判别力：修复前的 ast.walk 实现也报了违规，"
+        f"说明该样本没把 raise 藏进嵌套作用域"
+    )
+    assert find_swallowed_exceptions(source) == [4], (
+        f"{name} 子例未被检出：嵌套作用域边界失守（嵌套作用域里的 raise 被当成重新抛出）"
+    )
+
+
 def test_guard_ignores_raise_inside_nested_scope() -> None:
     """嵌套作用域里的 raise 不算处理块重新抛出：外层吞异常仍须被检出。
 
-    修复前的实现用 ast.walk 全深度下探，嵌套 def 里的 raise 会把外层处理块
-    误判为"已重新抛出"——这是静默漏报，与「偏严」取向相反。
+    修复前的实现用 ast.walk 全深度下探，嵌套作用域里的 raise 会把外层处理块误判为
+    "已重新抛出"——这是静默漏报，与「偏严」取向相反。每个子例都经
+    assert_boundary_is_discriminating 自证判别力（旧实现漏报 / 新实现报违规）。
     """
     nested_def = (
         "def f():\n"
@@ -161,18 +191,35 @@ def test_guard_ignores_raise_inside_nested_scope() -> None:
         "        _swallow()\n"
         "        return None\n"
     )
-    assert find_swallowed_exceptions(nested_def) == [4]
+    assert_boundary_is_discriminating("nested_def", nested_def)
 
+    nested_async_def = (
+        "async def f():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except Exception:\n"
+        "        async def _swallow():\n"
+        "            raise RuntimeError('与本次处理无关')\n"
+        "        await _swallow()\n"
+        "        return None\n"
+    )
+    assert_boundary_is_discriminating("nested_async_def", nested_async_def)
+
+    # lambda 体是 expression，写不出 raise 语句（语法事实见本文件末的专项用例）；
+    # 所以让 lambda 去调用处理块内的嵌套 def：raise 真实存在于处理块内，修复前的 ast.walk
+    # 照样会把它当成本处理块"已重新抛出"而漏报。
     nested_lambda = (
         "def f():\n"
         "    try:\n"
         "        return 1\n"
         "    except Exception:\n"
-        "        handler = lambda: exec('raise RuntimeError()')\n"
+        "        def _reraise():\n"
+        "            raise RuntimeError('与本次处理无关')\n"
+        "        handler = lambda: _reraise()\n"
         "        handler()\n"
         "        return None\n"
     )
-    assert find_swallowed_exceptions(nested_lambda) == [4]
+    assert_boundary_is_discriminating("nested_lambda", nested_lambda)
 
     nested_class = (
         "def f():\n"
@@ -183,7 +230,7 @@ def test_guard_ignores_raise_inside_nested_scope() -> None:
         "            raise RuntimeError('类体，与本次处理无关')\n"
         "        return None\n"
     )
-    assert find_swallowed_exceptions(nested_class) == [4]
+    assert_boundary_is_discriminating("nested_class", nested_class)
 
     nested_try = (
         "def f():\n"
@@ -196,8 +243,56 @@ def test_guard_ignores_raise_inside_nested_scope() -> None:
         "            raise\n"
         "        return None\n"
     )
-    # 外层 except（第 4 行）吞异常 → 违规；内层 except（第 7 行）自己 raise → 不违规。
-    assert find_swallowed_exceptions(nested_try) == [4]
+    # 外层 except（第 4 行）吞异常 → 违规；内层（第 7 行）自己 raise → 不违规，故只返回 [4]。
+    assert_boundary_is_discriminating("nested_try", nested_try)
+
+
+def test_handler_flow_stops_at_lambda_boundary() -> None:
+    """lambda 边界：遍历必须止步于 lambda 体。
+
+    lambda 体内写不出 raise（见下一条用例），故这里用普通表达式当标记来验证边界：
+    若 Lambda 不再算嵌套作用域，iter_handler_flow 就会交出 lambda 体内的
+    _lambda_body_marker——那意味着任何能放进 lambda 体的节点都会被误当成本处理块的
+    重新抛出。raise 暂时进不去 lambda，但边界一旦松开就是现成的漏报口。
+    """
+    source = (
+        "def f():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except Exception:\n"
+        "        handler = lambda: _lambda_body_marker()\n"
+        "        return None\n"
+    )
+    tree = ast.parse(source)
+    handler = next(node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler))
+    reached = {node.id for node in iter_handler_flow(handler) if isinstance(node, ast.Name)}
+    assert "_lambda_body_marker" not in reached, (
+        f"遍历越过 lambda 边界，下探到 lambda 体内：交出的名字有 {sorted(reached)}"
+    )
+
+
+def test_lambda_body_cannot_hold_raise_statement() -> None:
+    """语法事实：lambda 体是 expression、raise 是语句 —— 源码里不存在「Lambda 子树内含 Raise」。
+
+    这正是上一版 lambda 子例失去判别力的根因：当时把 raise 写在字符串里
+    （`lambda: exec('raise RuntimeError()')`），AST 里根本没有 Raise 节点，
+    旧实现（ast.walk）与新实现都报 [4]，断言对两侧同样成立，等于没测边界。
+    下面把这条"不判别"证据固化下来，并确认"把 raise 写进 lambda 体"确实是语法错误。
+    """
+    with pytest.raises(SyntaxError):
+        ast.parse("handler = lambda: (raise RuntimeError())\n")
+
+    string_form = (
+        "def f():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except Exception:\n"
+        "        handler = lambda: exec('raise RuntimeError()')\n"
+        "        return None\n"
+    )
+    # 两侧结果一致 —— 故这种样本无法用来证明 lambda 边界。
+    assert _legacy_find_swallowed(string_form) == [4]
+    assert find_swallowed_exceptions(string_form) == [4]
 
 
 def test_guard_accepts_conditional_reraise() -> None:

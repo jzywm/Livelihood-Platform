@@ -101,4 +101,5 @@ forbidden_modules =
 # 间接路径同样违规（未开 allow_indirect_imports，用默认 false）：
 # core 是横切层，须能被任何层安全 import；只要存在 core → … → 业务层 的链路，
 # core 就会随业务层一起被拖进依赖环，与「不依赖任何业务层」直接冲突。
-# 本契约三条不变量均取默认 false，与契约 1 的 true 形成对照：只有明确写「直接」的规则才放行间接。
+# 契约 2、3、4 均未写 allow_indirect_imports（三次都取默认 false），与契约 1 的 true 形成对照：
+# 只有明确写「直接」的规则才放行间接。

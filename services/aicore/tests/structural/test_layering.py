@@ -75,24 +75,34 @@ def lint() -> Callable[..., bool]:
     return lint_imports
 
 
+def read_source_exact(path: Path) -> str:
+    """按 UTF-8 读源码，且不做换行翻译（保持磁盘上的 CRLF / LF 原样）。"""
+    return path.read_bytes().decode("utf-8")
+
+
 @contextmanager
 def probe_files(files: dict[Path, str]) -> Iterator[None]:
-    """临时写入探针文件，退出时无条件还原（含异常路径）。
+    """临时写入探针文件，退出时无条件按**原始字节**还原（含异常路径）。
 
     探针写在真实源码树里——import-linter 只认磁盘上的包结构，无法喂内存源码。
     文件名为 *_probe.py，不会与真实模块重名；退出时逐个删除，
-    被覆盖的既有文件按内容还原，故注入不会留下改动（git diff 为空是关键证据）。
+    被覆盖的既有文件按字节回填，故注入不会留下改动（git diff 为空是关键证据）。
+
+    备份/还原一律走 bytes：文本模式会做换行翻译（Windows 上 write_text 把 \n 写成 \r\n），
+    若被覆盖的文件在磁盘上是 LF（core.autocrlf 非 true 的检出），还原就会把它改写成 CRLF——
+    测试自己改了仓库，而 core.autocrlf=true 的检出里 git status 反而看不出来。
+    字节读写对行尾完全中立；写入同样走 bytes，探针内容按源字符串原样落盘。
     """
-    backup = {path: path.read_text(encoding="utf-8") for path in files if path.exists()}
+    backup = {path: path.read_bytes() for path in files if path.exists()}
     try:
         for path, content in files.items():
-            path.write_text(content, encoding="utf-8")
+            path.write_bytes(content.encode("utf-8"))
         importlib.invalidate_caches()
         yield
     finally:
         for path in files:
             if path in backup:
-                path.write_text(backup[path], encoding="utf-8")
+                path.write_bytes(backup[path])
             else:
                 path.unlink(missing_ok=True)
         importlib.invalidate_caches()
@@ -114,7 +124,14 @@ def lint_once(
 
 
 def test_layering_contracts_pass(lint: Callable[..., bool]) -> None:
-    """干净代码上，全部分层契约必须通过，且不得有未匹配的放行表达式。"""
+    """干净代码上，四条契约必须全部 KEPT（即 lint_imports 的整体布尔值为 True）。
+
+    这条断言**不能**证明放行表达式都匹配到了真实导入：.importlinter 里
+    unmatched_ignore_imports_alerting = warn，未匹配只打印 warning，不会让返回值变 False。
+    当前确实存在一条未匹配警告（aicore.service.** -> aicore.provider.base，service 层尚无
+    真实 Protocol 导入，属已知状态），那条放行由 test_allowed_provider_base_import_is_kept
+    与 test_ignore_imports_still_needed_for_provider_base 正面守着。
+    """
     assert lint_once(lint) is True
 
 
@@ -127,8 +144,16 @@ def test_contract_goes_red_on_violation(lint: Callable[..., bool], probe: Probe)
         assert lint_once(lint, probe.contract_id) is False, (
             f"{probe.contract_id} 未响：{probe.rule} 的注入探针 {probe.probe_relpath} 没让契约变红"
         )
-        # 再全量判一次：确认注入的违规没有顺带打翻其它契约（只由该契约负责）。
+        # 再全量判一次：整体必须变红。
         assert lint_once(lint) is False
+        # "变红只由该契约负责"必须逐条查证：其余三条契约仍须 KEPT。
+        # 整体布尔值只说明"有契约红了"，看不出是谁红的，故这里不能省成一句断言。
+        for other in PROBES:
+            if other.contract_id == probe.contract_id:
+                continue
+            assert lint_once(lint, other.contract_id) is True, (
+                f"注入 {probe.probe_relpath} 后 {other.contract_id} 也变红：{other.rule}"
+            )
 
 
 def test_allowed_provider_base_import_is_kept(lint: Callable[..., bool]) -> None:
@@ -174,12 +199,14 @@ def test_provider_facade_reexport_is_forbidden(lint: Callable[..., bool]) -> Non
     只列 5 个具体实现模块的配置会漏掉 service -> aicore.provider -> aicore.port.x 这条链。
     """
     facade_export = SRC / "port" / "facade_probe.py"
+    # 按原样读门面：不做换行翻译，追加行沿用文件自身的行尾，探针文件不出现混合行尾。
+    init_source = read_source_exact(PROVIDER_INIT)
+    newline = "\r\n" if "\r\n" in init_source else "\n"
     with probe_files(
         {
             facade_export: '"""探针：被 provider 门面再导出的相邻层模块。"""\n',
             PROVIDER_INIT: (
-                PROVIDER_INIT.read_text(encoding="utf-8")
-                + "from aicore.port.facade_probe import *  # noqa: F403\n"
+                init_source + f"from aicore.port.facade_probe import *  # noqa: F403{newline}"
             ),
             SRC / "service" / "svc_probe.py": "import aicore.provider\n",
         }
