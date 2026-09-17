@@ -77,6 +77,22 @@ addopts = "-q"
 markers = [
     "integration: 需要真实 MySQL / Redis 的端到端用例，默认不执行",
 ]
+# 定向静默两条**来自第三方库内部**的弃用警告，使测试输出保持干净。
+# 两条都不是本项目代码的问题，且都无法在不改依赖的前提下修掉：
+#   1) fastapi/testclient.py:1 —— starlette 的 StarletteDeprecationWarning，提示
+#      「用 httpx 已弃用，建议装 httpx2」。本项目不引入 httpx2（见设计文档偏差 V2）。
+#      httpx2 落地后删除本行。
+#   2) starlette/testclient.py:53 —— anyio.abc.BlockingPortal 别名弃用，位于 starlette 自身源码内。
+# 只按 message 精确匹配，不整类静默 DeprecationWarning，以免掩盖本项目引入的新警告。
+#
+# 为什么不加 "error" 兜底：这两条警告由 conftest 在**导入期**触发（fixture 内延迟导入
+# TestClient 已实测无法规避——warnings.warn 发生在 starlette 模块层），而 pytest 应用
+# filterwarnings 的时机在 conftest 导入之后，故 "error" 会在收集阶段直接报错（exit 4），
+# 而非在本项目的用例上失败。若将来要让新警告失败，应在 CI 层用 `-W error` 并排除这两条。
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated",
+]
 
 [tool.coverage.run]
 source = ["src/aicore"]
