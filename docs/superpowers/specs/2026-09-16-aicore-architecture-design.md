@@ -159,11 +159,24 @@ services/aicore/
 | # | 禁止项 | 固化手段 |
 |---|---|---|
 | 1 | `api/` MUST NOT 直接导入 `repository/` 或 `provider/` | import-linter `forbidden` 契约 |
-| 2 | `service/` MUST NOT 导入任何具体 Provider 实现，只依赖 `provider/base.py` 的 Protocol | import-linter `forbidden` 契约 |
+| 2 | `service/` MUST NOT 导入任何具体 Provider 实现，只依赖 `provider/base.py` 的 Protocol | import-linter `forbidden` 契约（放行表达式**必须用递归通配**，见下） |
 | 3 | `repository/` 与 `provider/` MUST NOT 导入 `service/` | import-linter `forbidden` 契约 |
-| 4 | `core/` MUST NOT 导入 `service/` / `provider/` / `repository/` | import-linter `forbidden` 契约 |
+| 4 | `core/` MUST NOT 导入任何业务层（`api/` / `service/` / `provider/` / `repository/` / `port/`） | import-linter `forbidden` 契约 |
 | 5 | 只有 `provider/` 下的模块可发起外部模型 HTTP 调用 | AST 扫描断言（`httpx` 调用点） |
 | 6 | `service/desensitize.py` 与 `service/verdict.py` MUST NOT 出现「异常后继续执行」的分支 | AST 扫描断言 |
+
+**规则 2 的放行表达式必须写递归通配 `aicore.service.**`（2026-09-17 实测修正）**：
+`ignore_imports` 中的 importer 名若写成非通配的 `aicore.service`，**只精确匹配该模块自身、不覆盖子模块**
+（grimp 3.17 实测：非通配 0 命中、`.*` 与 `.**` 命中）。而 service 的代码都在子模块里
+（`service/desensitize.py` 等），故非通配写法是一条**永远失效的放行声明**，会让契约整体失败。
+另须设 `unmatched_ignore_imports_alerting = warn` —— `forbidden` 契约默认 `error`，
+放行表达式匹配不到真实导入即判失败，会使空壳阶段的干净代码正例直接变红；
+设 `warn` 后正例通过，且放行写错时仍留警告线索，不至于静默失效。
+
+**规则 4 补入 `api/`（2026-09-17）**：原文只列 `service` / `provider` / `repository`，
+漏了 `api` —— `api` 同属业务层，且分层图（`api → service`）意味着 `core → api` 会成环。
+实测补入 `aicore.api` 后干净代码仍 4 kept、注入 `core → api` 被抓、
+且 `service → provider.mock` 的防线未被削弱。
 
 **为什么规则 5、6 不用 import-linter**：它只能表达「模块 A 不导入模块 B」，表达不了「某个包内不得出现某类调用」
 与「`except` 块不得静默放行」。后两者恰是**合规红线**（D4 脱敏失败即拒绝、D5 无人工结论不回写），
