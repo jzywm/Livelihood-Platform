@@ -447,7 +447,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 
 【合规红线 D5 / C8】无人工复核结论则 MUST NOT 存在回写入口，MUST NOT 出现绕过人工结论的
 回写分支——本文件受 tests/structural/test_source_guards.py 的 AST 扫描强制。
-确需吞掉异常时，必须在该 except 行加 `# noqa: ai-allow-swallow: <理由>` 显式豁免。
+确需吞掉异常时，必须在该 except 行加 `# ai-allow-swallow: <理由>` 显式豁免（理由必填，见修复轮 1 更正）。
 
 第 8 组实现具体回写入口；本任务仅建文件以保证结构检查从第一天起生效。
 """
@@ -460,7 +460,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 
 【合规红线 D4 / R-03】脱敏失败或超时 MUST 拒绝外发，MUST NOT 出现「异常后继续执行」
 的降级分支——本文件受 tests/structural/test_source_guards.py 的 AST 扫描强制。
-确需吞掉异常时，必须在该 except 行加 `# noqa: ai-allow-swallow: <理由>` 显式豁免。
+确需吞掉异常时，必须在该 except 行加 `# ai-allow-swallow: <理由>` 显式豁免（理由必填，见修复轮 1 更正）。
 
 第 4 组实现具体算法；本任务仅建文件以保证结构检查从第一天起生效。
 """
@@ -826,6 +826,10 @@ Expected: `2 passed`
 
 - [ ] **Step 5: 写规则 5、6 的 AST 扫描用例**
 
+> **修复轮 1 提示**：下面这段代码块是首版写法，规则 6 的扫描函数已被修复轮改写
+> （不再下探嵌套 def/lambda/class/内层 except）。以
+> `services/aicore/tests/structural/test_source_guards.py` 的实际内容为准，勿照抄本片段。**
+
 `tests/structural/test_source_guards.py`：
 
 ```python
@@ -836,7 +840,12 @@ Expected: `2 passed`
         的降级分支（D4 脱敏失败即拒绝、D5 无人工结论不回写）。
 
 规则 6 取向为「偏严 + 显式豁免」：不含 raise 的 except 即判违规，
-确需吞异常时必须写 `# noqa: ai-allow-swallow: <理由>` —— 宁可让人解释一次，也不漏掉。
+确需吞异常时必须写 `# ai-allow-swallow: <理由>` —— 宁可让人解释一次，也不漏掉。
+
+> **修复轮 1 更正（评审 M9）**：豁免指令的正式写法是 `# ai-allow-swallow: <理由>`（不带 `noqa:` 前缀），
+> 本文档下列片段已同步更新。早期口径 `# noqa: ai-allow-swallow: <理由>` 语法上仍被扫描接受，
+> 但 ruff 会把 `ai-allow-swallow` 当成 noqa 规则码，每次使用都打印一条 `Invalid # noqa directive` 警告，
+> 故新代码一律用不带前缀的正式写法。理由必填不变（裸指令不算豁免）。
 """
 
 from __future__ import annotations
@@ -857,7 +866,7 @@ HTTP_IMPORT_RE = re.compile(
 )
 
 GUARDED_FILES = ("service/desensitize.py", "service/verdict.py")
-SWALLOW_EXEMPT = re.compile(r"#\s*noqa:\s*ai-allow-swallow")
+SWALLOW_EXEMPT = re.compile(r"#\s*ai-allow-swallow:\s*\S+")
 
 
 def iter_python_files() -> list[Path]:
@@ -900,7 +909,7 @@ def test_no_silent_degradation_in_guarded_files(relative: str) -> None:
     assert not offenders, (
         f"{relative} 在第 {offenders} 行的 except 块中未重新抛出异常。"
         f"脱敏失败必须拒绝外发、无人工结论不得回写；确需吞异常请加 "
-        f"`# noqa: ai-allow-swallow: <理由>` 显式豁免。"
+        f"`# ai-allow-swallow: <理由>` 显式豁免。"
     )
 
 
