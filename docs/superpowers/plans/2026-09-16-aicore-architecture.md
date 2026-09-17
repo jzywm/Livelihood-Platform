@@ -774,7 +774,17 @@ forbidden_modules =
     aicore.provider.cloud_vision
     aicore.provider.cloud_ocr
 ignore_imports =
-    aicore.service -> aicore.provider.base
+    aicore.service.** -> aicore.provider.base
+# 必须写递归通配 `aicore.service.**`，不能写 `aicore.service`：实测（grimp 3.17）
+# 非通配的 importer 名只精确匹配该模块自身、不覆盖子模块，而 service 的代码都在子模块里，
+# 故非通配写法恒匹配不到任何边，是一条永远失效的放行声明。三种写法的实测对照：
+#   aicore.service     -> aicore.provider.base  => 0 命中
+#   aicore.service.*   -> aicore.provider.base  => 命中
+#   aicore.service.**  -> aicore.provider.base  => 命中
+# 另：forbidden 契约默认 unmatched_ignore_imports_alerting=error，放行表达式匹配不到真实
+# 导入即判契约失败；当前各模块仍是空壳（尚无 service -> provider.base 的实际导入），用默认值
+# 会让干净代码的正例直接变红。故设为 warn：正例通过，且放行写错时仍会留下警告线索。
+unmatched_ignore_imports_alerting = warn
 
 [importlinter:contract:no-reverse-dependency]
 name = repository / provider / port 不得反向依赖 service
@@ -792,6 +802,7 @@ type = forbidden
 source_modules =
     aicore.core
 forbidden_modules =
+    aicore.api
     aicore.service
     aicore.provider
     aicore.repository
