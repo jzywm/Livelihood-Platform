@@ -679,6 +679,14 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 
 `tests/structural/test_layering.py`：
 
+> **以仓库实际文件为准**：下面是首版参考模板，权威定义是
+> `services/aicore/tests/structural/test_layering.py`。已落地的版本与本片段有三处差异，
+> 照抄会把旧写法写回去：
+> 1. 四条契约**各自**一条参数化阴性用例（`PROBES`），不是一条笼统的"注入违规"用例；
+> 2. 所有 lint 调用传 `cache_dir=None` 关缓存，**不再**用 `shutil.rmtree` 清
+>    `.import_linter_cache/`；
+> 3. 另有「放行正例」与「抽掉 ignore_imports 必变红」两条反证用例。
+
 ```python
 """分层依赖规则检查。
 
@@ -691,7 +699,6 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 from __future__ import annotations
 
 import importlib
-import shutil
 from pathlib import Path
 
 import pytest
@@ -728,7 +735,8 @@ def test_violation_is_detected(lint: object) -> None:
     finally:
         target.unlink()
         importlib.invalidate_caches()
-        shutil.rmtree(PROJECT_ROOT / ".import_linter_cache", ignore_errors=True)
+        # 缓存：shipped 版本所有 lint 调用都传 cache_dir=None，不再需要 rmtree 清理
+        # （.import_linter_cache/ 根本不会生成）。
 
     assert lint(config_filename=str(CONFIG), no_logo=True) is True
 ```
@@ -747,6 +755,10 @@ Expected: FAIL —— `FileNotFoundError` 或 `lint_imports` 读配置报错
 - [ ] **Step 3: 写 `.importlinter`（用 Python 写以确保 UTF-8）**
 
 ```powershell
+# 注意：以下为参考模板。**权威定义是仓库中的 services/aicore/.importlinter 本身**——
+# 该文件含多处实测得出的关键设置（allow_indirect_imports、递归通配 ignore_imports、
+# unmatched_ignore_imports_alerting、aicore.provider 整包禁止），每处都带注释说明依据。
+# 若本模板与之不一致，以实际文件为准；不要照抄本模板覆盖它。
 $root = "D:\progrom\services\aicore"
 & "$root\.venv\Scripts\python.exe" -c @"
 from pathlib import Path
@@ -756,6 +768,9 @@ root_package = aicore
 [importlinter:contract:api-no-repo-provider]
 name = api 层不得直接依赖 repository / provider
 type = forbidden
+# 必须显式写 true：forbidden 默认 false 会沿调用链报**传递**依赖，
+# 而 api -> service -> repository 正是本设计的分层路径，实测会被误判为违规。
+allow_indirect_imports = true
 source_modules =
     aicore.api
 forbidden_modules =
@@ -768,6 +783,7 @@ type = forbidden
 source_modules =
     aicore.service
 forbidden_modules =
+    aicore.provider
     aicore.provider.mock
     aicore.provider.selector
     aicore.provider.deepseek
@@ -813,7 +829,7 @@ print('.importlinter 已写入（UTF-8）')
 "@
 ```
 
-- [ ] **Step 4: 运行，确认两个用例都通过**
+- [ ] **Step 4: 运行，确认全部用例通过（用例数以仓库实际文件为准，见 Step 1 提示）**
 
 ```powershell
 $root = "D:\progrom\services\aicore"
@@ -822,13 +838,18 @@ Push-Location $root
 Pop-Location
 ```
 
-Expected: `2 passed`
+Expected: 全部 passed。用例数以仓库实际文件为准：shipped 版本是四条契约的参数化阴性用例
+（每条注入一处违规，并逐条确认其余三条契约仍 KEPT）+ 两条放行反证，不再是首版的 2 个。
 
 - [ ] **Step 5: 写规则 5、6 的 AST 扫描用例**
 
 > **修复轮 1 提示**：下面这段代码块是首版写法，规则 6 的扫描函数已被修复轮改写
 > （不再下探嵌套 def/lambda/class/内层 except）。以
 > `services/aicore/tests/structural/test_source_guards.py` 的实际内容为准，勿照抄本片段。**
+>
+> 豁免指令也以实际文件为准：shipped 实现是 `SWALLOW_EXEMPT_PATTERNS`（正式写法
+> `# ai-allow-swallow: <理由>` + 兼容写法 `# noqa: ai-allow-swallow: <理由>`，两条正则、理由必填）
+> 与 `has_swallow_exemption()`，而本片段只有一条只认正式写法的 `SWALLOW_EXEMPT`。
 
 `tests/structural/test_source_guards.py`：
 
