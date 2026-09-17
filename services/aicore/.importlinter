@@ -1,0 +1,61 @@
+[importlinter]
+root_package = aicore
+
+[importlinter:contract:api-no-repo-provider]
+name = api 层不得直接依赖 repository / provider
+type = forbidden
+source_modules =
+    aicore.api
+forbidden_modules =
+    aicore.repository
+    aicore.provider
+
+[importlinter:contract:service-provider-impl]
+name = service 层只可与 provider.base 交互，不得依赖具体通道实现
+type = forbidden
+source_modules =
+    aicore.service
+forbidden_modules =
+    aicore.provider.mock
+    aicore.provider.selector
+    aicore.provider.deepseek
+    aicore.provider.cloud_vision
+    aicore.provider.cloud_ocr
+# 放行 service 层的 Protocol 依赖：service 只可与 provider/base.py 交互。
+# 必须写 `aicore.service.**`（递归通配）而非 brief 原文的 `aicore.service`：
+# 经 grimp 3.17 实测，导入表达式的「非通配」模块名只精确匹配该模块自身，不覆盖其子模块——
+# 而 service 的代码都在子模块里（service/desensitize.py 等），
+# 故 `aicore.service -> aicore.provider.base` 恒匹配不到任何边，是一条永远失效的放行声明。
+# 实测对照（临时探针 src/aicore/service/_il_probe.py 内含 from aicore.provider import base）：
+#   aicore.service     -> aicore.provider.base  => []（不匹配）
+#   aicore.service.*   -> aicore.provider.base  => 命中
+#   aicore.service.**  -> aicore.provider.base  => 命中
+ignore_imports =
+    aicore.service.** -> aicore.provider.base
+# forbidden 契约默认 unmatched_ignore_imports_alerting=error：放行表达式匹配不到任何真实导入
+# 即判契约失败。当前 service 各模块仍是 docstring 空壳，尚未出现 service -> provider.base 的
+# 导入，用默认值会让「干净代码」正例直接变红，整套分层检查形同虚设。改为 warn 后：正例通过，
+# Task 4 落地真实 Protocol 导入时该警告自动消失；若那时仍未消失，说明放行写错了。
+# 注意这是一个静默失效点，放行表达式一旦写错不会有人发现，故此处保留 warn 而非 none。
+unmatched_ignore_imports_alerting = warn
+
+[importlinter:contract:no-reverse-dependency]
+name = repository / provider / port 不得反向依赖 service
+type = forbidden
+source_modules =
+    aicore.repository
+    aicore.provider
+    aicore.port
+forbidden_modules =
+    aicore.service
+
+[importlinter:contract:core-independent]
+name = core 不得依赖任何业务层
+type = forbidden
+source_modules =
+    aicore.core
+forbidden_modules =
+    aicore.service
+    aicore.provider
+    aicore.repository
+    aicore.port
