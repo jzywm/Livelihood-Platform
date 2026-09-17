@@ -30,6 +30,9 @@ dev = [
     "import-linter>=2.15",
     "ruff>=0.16",
     "mypy>=2.3",
+    # tests/conftest.py 的 anyio_backend 夹具是 brief 强制项；
+    # anyio 此前只是 pytest-asyncio 的传递依赖，显式声明后夹具才有直接的依赖归属（Task 1.4 继续扩展该文件）。
+    "anyio>=4.15",
 ]
 
 [tool.setuptools.packages.find]
@@ -41,10 +44,17 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
-# 注释与文档使用中文是本仓库的强制要求（DEVELOPMENT_CONSTRAINTS.md §2），
-# 而 RUF001/RUF002/RUF003 会把中文全角标点（：；，等）判为「歧义字符」并报错。
-# 关闭这三条，使 Ruff 与中文文档策略相容；其余 RUF 规则保持开启。
-ignore = ["RUF001", "RUF002", "RUF003"]
+# 注释与文档使用中文是本仓库的强制要求（DEVELOPMENT_CONSTRAINTS.md §2）。
+# 注意：不要用 ignore 关闭 RUF001/RUF002/RUF003 —— 那会连带关掉字符串字面量里的
+# 易混字符检测，而那里才是该规则安全价值最高的地方（西里尔字母 а、全角数字
+# 悄悄混进环境变量名 / 字典键 / 断言字符串时，只有这三条规则能发现）。
+# 因此改为逐个放行中文文档实际用到的全角标点，规则本身全部保持开启：
+#   （ U+FF08 全角左括号    ） U+FF09 全角右括号
+#   ： U+FF1A 全角冒号      ； U+FF1B 全角分号
+# 本集合由 ruff check --output-format=json 实测得出（本仓库当前仅这 4 个字符触发），
+# 它们只出现在中文注释与 docstring 中，不参与标识符与键值，放行无安全代价。
+# 后续若中文文档引入新的全角标点（如「，」U+FF0C），应在本行按需追加，而非改回 ignore。
+allowed-confusables = ["（", "）", "：", "；"]
 
 [tool.mypy]
 python_version = "3.12"
