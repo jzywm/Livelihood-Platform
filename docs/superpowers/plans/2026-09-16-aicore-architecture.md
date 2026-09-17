@@ -40,7 +40,7 @@
 ```
 services/aicore/
 ├── pyproject.toml                     依赖 + ruff/mypy/pytest/coverage 工具链配置
-├── setup.cfg                          import-linter 契约（必须 UTF-8 无 BOM 保存）
+├── .importlinter                      import-linter 分层契约（INI 形式，UTF-8 无 BOM）
 ├── .gitignore                         Python 产物忽略
 ├── .env.example                       配置模板（仅占位符，无真实密钥）
 ├── src/aicore/
@@ -266,7 +266,7 @@ AICORE_INTERNAL_TOKEN=<内部凭据>
 
 分层：core（横切）/ api（协议适配）/ service（业务编排）/ provider（外部模型通道）
      / repository（自有库访问）/ port（跨服务出向端口）。
-分层依赖规则见 setup.cfg 的 import-linter 契约与 tests/structural/。
+分层依赖规则见 `.importlinter` 的 import-linter 契约与 tests/structural/。
 """
 
 __version__ = "0.1.0"
@@ -341,7 +341,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 - [ ] **Step 1: 写 `src/aicore/core/__init__.py`**
 
 ```python
-"""横切关注点。本层 MUST NOT 依赖 service / provider / repository（见 setup.cfg 契约）。"""
+"""横切关注点。本层 MUST NOT 依赖 service / provider / repository（见 .importlinter 契约）。"""
 ```
 
 - [ ] **Step 2: 写 `src/aicore/core/config.py` 空壳（Task 2.1 填实）**
@@ -443,7 +443,14 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 ```
 
 ```python
-"""C8 权威回写前置条件：无人工复核结论则不存在回写入口。第 8 组实现。"""
+"""C8 权威回写前置条件。
+
+【合规红线 D5 / C8】无人工复核结论则 MUST NOT 存在回写入口，MUST NOT 出现绕过人工结论的
+回写分支——本文件受 tests/structural/test_source_guards.py 的 AST 扫描强制。
+确需吞掉异常时，必须在该 except 行加 `# noqa: ai-allow-swallow: <理由>` 显式豁免。
+
+第 8 组实现具体回写入口；本任务仅建文件以保证结构检查从第一天起生效。
+"""
 ```
 
 - [ ] **Step 8: 写 `service/desensitize.py`（规则 6 的受检文件，本任务必须建）**
@@ -480,7 +487,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 """外部模型通道 Protocol。
 
 service 层 MUST 只依赖本文件的 Protocol，MUST NOT 导入任何具体实现
-（mock / deepseek / cloud_vision / cloud_ocr）——由 setup.cfg 的 import-linter 契约强制。
+（mock / deepseek / cloud_vision / cloud_ocr）——由 `.importlinter` 的 import-linter 契约强制。
 """
 
 from __future__ import annotations
@@ -655,7 +662,7 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 ### Task 1.3: 分层依赖规则固化为检查
 
 **Files:**
-- Create: `services/aicore/setup.cfg`（import-linter 契约，**必须 UTF-8 无 BOM**）
+- Create: `services/aicore/.importlinter`（import-linter 分层契约，INI 形式，**必须 UTF-8 无 BOM**）
 - Modify: `services/aicore/tests/structural/test_layering.py`
 - Create: `services/aicore/tests/structural/test_source_guards.py`
 
@@ -690,7 +697,7 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG = PROJECT_ROOT / "setup.cfg"
+CONFIG = PROJECT_ROOT / ".importlinter"
 
 
 @pytest.fixture(scope="module")
@@ -726,7 +733,7 @@ def test_violation_is_detected(lint: object) -> None:
     assert lint(config_filename=str(CONFIG), no_logo=True) is True
 ```
 
-- [ ] **Step 2: 运行，确认第一步失败（`setup.cfg` 尚不存在）**
+- [ ] **Step 2: 运行，确认第一步失败（`.importlinter` 尚不存在）**
 
 ```powershell
 $root = "D:\progrom\services\aicore"
@@ -737,7 +744,7 @@ Pop-Location
 
 Expected: FAIL —— `FileNotFoundError` 或 `lint_imports` 读配置报错
 
-- [ ] **Step 3: 写 `setup.cfg`（用 Python 写以确保 UTF-8）**
+- [ ] **Step 3: 写 `.importlinter`（用 Python 写以确保 UTF-8）**
 
 ```powershell
 $root = "D:\progrom\services\aicore"
@@ -790,8 +797,8 @@ forbidden_modules =
     aicore.repository
     aicore.port
 '''
-Path(r'$root\setup.cfg').write_text(cfg, encoding='utf-8')
-print('setup.cfg 已写入（UTF-8）')
+Path(r'$root\.importlinter').write_text(cfg, encoding='utf-8')
+print('.importlinter 已写入（UTF-8）')
 "@
 ```
 
@@ -920,7 +927,7 @@ Expected: `test_no_silent_degradation_in_guarded_files[service/desensitize.py]` 
 - [ ] **Step 9: 提交**
 
 ```bash
-git add services/aicore/setup.cfg services/aicore/tests/structural
+git add services/aicore/.importlinter services/aicore/tests/structural
 git commit -m "test: 固化 AICORE 分层依赖规则与合规红线结构检查"
 ```
 
@@ -1043,7 +1050,7 @@ def get_settings(request: Request) -> Any:
 """AICORE 组合根。
 
 **唯一允许把具体 Provider / repository 实现注入 service 的位置。**
-其余各层 MUST NOT 自行构造具体实现（由 setup.cfg 的 import-linter 契约强制）。
+其余各层 MUST NOT 自行构造具体实现（由 `.importlinter` 的 import-linter 契约强制）。
 
 路由路径不含 `/api/v1` 前缀：GATEWAY 已用 RewritePath 去前缀，
 故本服务路由与 openapi.yaml 一致，为 `/aicore/**` 与 `/health`。
