@@ -42,7 +42,10 @@ Thumbs.db
 .npm-cache/
 .npm-cache-tmp/
 
-# ---- °ì¹«ÎÄ¼ş(¶ş½øÖÆ,²»Èë¿â) ----
+# ---- åŠå…¬æ–‡ä»¶(äºŒè¿›åˆ¶,ä¸å…¥åº“) ----
 ~$*
 *.doc
 *.docx
+
+# ---- git worktreeï¼ˆsuperpowers éš”ç¦»å·¥ä½œåŒºï¼Œç‰©ç†å†…å®¹ä»åœ¨ .git/worktreesï¼‰----
+.worktrees/
