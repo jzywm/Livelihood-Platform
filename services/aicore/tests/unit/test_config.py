@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import get_args
 
@@ -107,13 +108,24 @@ def _apply_base_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(name, value)
 
 
-def build_settings(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> Settings:
+def build_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    env_extra: Mapping[str, str] | None = None,
+    **overrides: object,
+) -> Settings:
     """在干净的基线环境上构造 `Settings`，可用关键字参数覆盖任意字段。
 
     `_env_file=None` 是显式构造参数（控制器裁定允许）：只让 `.env` 失效，
     不指向别的配置文件——缺失项用例因此不会因本地 `.env` 恰好有值而变绿。
+
+    `env_extra` 在铺完基线**之后**写入，顺序不能反：`_apply_base_env` 会清掉进程里
+    全部 `AICORE_*`，先设的值会被它抹掉（Task 2.2 起真实通道缺密钥即拒绝启动，
+    顺序错了「真实通道 + 密钥」的用例会以缺密钥的面目失败）。
     """
     _apply_base_env(monkeypatch)
+    for name, value in (env_extra or {}).items():
+        monkeypatch.setenv(name, value)
     return Settings(_env_file=None, **overrides)
 
 
@@ -210,12 +222,11 @@ def test_missing_required_field_is_rejected(
     assert missing in str(excinfo.value), "错误信息里必须看得到缺失的字段名（供运维排查）"
 
 
-def _set_placeholder_deepseek_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """给真实通道塞一个 test_ 占位密钥（MUST NOT 使用真实密钥）。
-
-    走环境变量而非构造参数：这样「真实通道 + 密钥」的组合同时覆盖了 env 取值路径。
-    """
-    monkeypatch.setenv("AICORE_DEEPSEEK_API_KEY", "test_deepseek_placeholder")
+# 真实通道的占位密钥（MUST NOT 使用真实密钥）。注入方式只能是 `build_settings(env_extra=...)`：
+# 先 `monkeypatch.setenv` 再调 `build_settings` 等于没设——后者会先清空全部 `AICORE_*`
+# （原实现正是这样，于是「真实通道 + 密钥」的用例其实一个密钥都没给，直到 Task 2.2
+# 的规则 2「真实通道缺密钥即拒绝启动」落地才暴露出来）。
+DEEPSEEK_KEY_ENV: dict[str, str] = {"AICORE_DEEPSEEK_API_KEY": "test_deepseek_placeholder"}
 
 
 def test_guard_source_is_inert_without_env_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -352,8 +363,7 @@ def test_boundary_values_are_accepted(
 @pytest.mark.parametrize("provider", ["mock", "deepseek", "cloud_vision", "cloud_ocr"])
 def test_provider_accepts_each_channel(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     """四个通道枚举值都必须被接受（构造参数优先级高于注入的 `AICORE_PROVIDER`）。"""
-    _set_placeholder_deepseek_key(monkeypatch)
-    settings = build_settings(monkeypatch, provider=provider)
+    settings = build_settings(monkeypatch, env_extra=DEEPSEEK_KEY_ENV, provider=provider)
 
     assert settings.provider == provider
 
@@ -379,9 +389,9 @@ def test_env_accepts_dev_test_prod(
     monkeypatch: pytest.MonkeyPatch, env: str, provider: str, real_channel: bool
 ) -> None:
     """`env` 接受 dev / test / prod 三值。"""
-    if real_channel:
-        _set_placeholder_deepseek_key(monkeypatch)
-    settings = build_settings(monkeypatch, env=env, provider=provider)
+    # 走 `env_extra` 而不是先 `setenv`：`build_settings` 会先清空全部 `AICORE_*`。
+    extra = DEEPSEEK_KEY_ENV if real_channel else None
+    settings = build_settings(monkeypatch, env_extra=extra, env=env, provider=provider)
 
     assert settings.env == env
 
