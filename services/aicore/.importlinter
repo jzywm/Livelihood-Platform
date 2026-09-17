@@ -54,7 +54,10 @@ name = core 不得依赖任何业务层
 type = forbidden
 source_modules =
     aicore.core
+# 含 aicore.api：api 同属业务层，且分层图（api → service）意味着 core → api 会成环。
+# 补入后实测：干净代码仍 4 kept；注入 core → api 被抓；service → provider.mock 防线未削弱。
 forbidden_modules =
+    aicore.api
     aicore.service
     aicore.provider
     aicore.repository
