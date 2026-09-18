@@ -20,7 +20,7 @@
 - **错误码只能取 `_common/openapi.yaml` `ErrorCode` 枚举内的值**：`0` `1001` `1002` `1003` `2001` `2002` `2003` `2004` `3001`–`3011` `4001`–`4004` `5000` `5001` `5002` `5003`。AICORE 用到：`1001`/`1002`/`1003`/`2001`/`2002`/`2004`/`3006`/`4003`/`5000`/`5002`。
 - **traceId 请求头 = `X-Request-Id`**（`PDD` §8.5.1 L1750）；**MUST NOT** 使用 `X-Trace-Id`。
 - **内部凭据请求头 = `X-Internal-Token`**；服务端间接口 **MUST NOT** 接受终端用户 JWT。
-- **日志必含 11 字段**：`time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` / `bizType` / `opCode` / `code` / `message`；**MUST NOT** 记录明文密钥、支付敏感信息、原始图像、未脱敏证件字段。
+- **日志必含 12 字段**（PDD §8.5.1 L1747 逐字）：`time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` / `bizType` / `opCode` / `code` / `message`；**MUST NOT** 记录明文密钥、支付敏感信息、原始图像、未脱敏证件字段。
 - **AI 超时 5s**（高并发 §7.6 L423）。
 - **数据库**：独立库 `aicore`，MySQL 8，InnoDB，`utf8mb4`，时间 `datetime(3)`（UTC 存储、输出 Asia/Shanghai），置信度 `decimal(3,2)`，风险分 `decimal(5,2)`，数组用 JSON 列，**MUST NOT** 存原始图像或证件明文。**枚举值与 `openapi.yaml` `components.schemas` 一一对应**。
 - **ID 策略**：`前缀 + UUID`，**总长 ≤32**（所有 ID 列均 `varchar(32)`）；前缀集 `task_` / `cor_` / `rev_` / `marker_` / `kan_` / `qa_`；**MUST NOT** 引入雪花 ID 或 workerId。
@@ -367,7 +367,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 ```
 
 ```python
-"""结构化 JSON 日志（11 必含字段）。Task 2.6 实现。"""
+"""结构化 JSON 日志（12 必含字段，PDD §8.5.1 L1747 逐字）。Task 2.6 实现。"""
 ```
 
 - [ ] **Step 4: 写 `core/idgen.py`、`core/security.py`、`core/ratelimit.py`、`core/budget.py`、`core/task_runner.py` 空壳**
@@ -1348,17 +1348,17 @@ git commit -m "feat: 实现 AICORE 组合根与存活检查"
 **Interfaces:**
 - Consumes: `core/trace.py` 的 `get_trace_id()`；`core/config.py` 的 `Settings.log_level`
 - Produces: `configure_logging(settings: Settings) -> None`；`get_logger(module: str) -> structlog.BoundLogger`；
-  `REQUIRED_LOG_FIELDS: frozenset[str]`（11 字段常量，供用例比对）
+  `REQUIRED_LOG_FIELDS: frozenset[str]`（12 字段常量，供用例比对）
 
-**硬约束**：必含 11 字段 `time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` /
+**硬约束**：必含 12 字段 `time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` /
 `bizType` / `opCode` / `code` / `message`（字段名与 PDD §8.5.1 L1747 **逐字一致**）；
 **`spanId` 输出字段但值为空**（`design.md` D9 明确不接 SkyWalking agent，不假装有埋点）；
 **MUST NOT** 记录明文密钥、未脱敏证件字段、原始图像。
 
-- [ ] Step 1~N：先写「输出为合法 JSON 且含全部 11 字段」用例，再写
+- [ ] Step 1~N：先写「输出为合法 JSON 且含全部 12 字段」用例，再写
   「`spanId` 存在且为空」用例，最后写「构造含证件号的输入，断言日志中不出现明文」用例
 
-**验收**：11 字段 schema 用例通过；`spanId` 留空；敏感信息不出现在日志
+**验收**：12 字段 schema 用例通过；`spanId` 留空；敏感信息不出现在日志
 
 ---
 
