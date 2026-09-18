@@ -154,21 +154,41 @@ def test_prod_with_mock_is_rejected(
 
 
 @pytest.mark.parametrize("provider", ["cloud_vision", "cloud_ocr"])
-def test_prod_with_keyless_real_channel_is_not_blocked_but_warns(
+def test_dev_with_keyless_real_channel_is_allowed_but_warns(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, provider: str
 ) -> None:
-    """`cloud_*` 暂无密钥字段 → **不阻断**，但必须告警说明规则 2 覆盖不到它。
+    """`cloud_*` 暂无密钥字段 → 非生产环境**不阻断**，但必须告警说明规则 2 覆盖不到它。
 
-    这是本任务的显式取舍（不凭空给这两个通道造密钥字段）：缺口不静默，靠告警与
-    结构性用例（见 test_every_real_provider_is_registered_in_a_channel_table）暴露。
+    为什么不凭空给这两个通道造密钥字段：本任务的范围是校验既有字段，新增字段等于假造接口
+    契约（字段名、是否必填、是否走另一套鉴权都还没定）。缺口不静默：靠告警与结构性用例
+    （见 test_every_real_provider_is_registered_in_a_channel_table）暴露。
+
+    生产环境则**拒绝启动**，见 test_prod_with_keyless_real_channel_is_rejected。
     """
     caplog.set_level(logging.WARNING, logger=CONFIG_LOGGER)
 
-    settings = build_settings(monkeypatch, env="prod", provider=provider)
+    settings = build_settings(monkeypatch, env="dev", provider=provider)
 
     assert settings.provider == provider
     assert "[告警：provider-key-uncovered]" in caplog.text
     assert provider in caplog.text
+
+
+@pytest.mark.parametrize("provider", ["cloud_vision", "cloud_ocr"])
+def test_prod_with_keyless_real_channel_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """`cloud_*` 缺密钥字段 → **生产拒绝启动**（凭据无从核验）。
+
+    依据 `services/aicore/docs/er.md` §7：「密钥：DeepSeek/视觉云密钥经 KMS/环境变量注入」——
+    云通道**本该有密钥**，缺字段只是当前范围裁剪；一个连凭据都无法确认的通道不该进生产。
+    待其密钥字段落地后会移入 `_REAL_PROVIDER_KEY_FIELDS`、自动改走规则 2，无需动本用例语义。
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        build_settings(monkeypatch, env="prod", provider=provider)
+
+    assert "[跨字段：provider-key]" in str(excinfo.value)
+    assert provider in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

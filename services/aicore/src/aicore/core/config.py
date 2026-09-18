@@ -46,7 +46,13 @@ stdout / stderr 打东西。
     try:
         settings = get_settings()
     except ValidationError as exc:
-        raise ConfigRejected.from_validation_error(exc) from exc
+        raise ConfigRejected.from_validation_error(exc) from None
+
+**必须写 `from None`（而不是 `from exc`）**：`from exc` 会把 `__cause__` 设成原始的
+`ValidationError`，而 uvicorn 记录 lifespan 启动失败时带 `exc_info`，`str(ValidationError)`
+会回显（截断后的）`input_value` —— 那里面**含 `mysql_password` 等原始值**。异常链因此会成为
+一条绕过「只用 loc/msg」的泄漏通道。丢弃 cause 的代价是少一层栈信息，但阻断项清单本身
+（`str(ConfigRejected)`）已经足够定位问题。
 
 `create_app()` MUST NOT 读配置（Task 1.4 的验收项：工厂是纯装配函数）。
 """
@@ -159,7 +165,11 @@ class ConfigRejected(Exception):  # noqa: N818 —— 类名由任务简报 / �
         try:
             settings = get_settings()
         except ValidationError as exc:
-            raise ConfigRejected.from_validation_error(exc) from exc
+            raise ConfigRejected.from_validation_error(exc) from None
+
+    **必须 `from None`**：`from exc` 会让 uvicorn 打印的启动失败栈带上原始 `ValidationError`，
+    其 `str()` 回显（截断后的）`input_value`，其中含口令等原始值——异常链会绕过本类「只用
+    loc/msg」的保证。详见模块 docstring。
 
     `items` 为逐条阻断项（字段级带字段名，跨字段带 `[跨字段：<代号>]`），`str(exc)` 为渲染后的
     多行摘要。本类 MUST NOT 携带原始配置值（构造它的唯一入口已经保证了这一点）。
@@ -327,6 +337,24 @@ class Settings(BaseSettings):
                 f"[跨字段：{_RULE_PROVIDER_KEY}] 真实通道缺少密钥："
                 f"provider={self.provider} 要求 {_env_var_name(key_field)} 非空"
                 f"（生产不允许以「无密钥」状态运行）"
+            )
+
+        # 规则 2 的补集：真实通道**尚未声明密钥字段**时，凭据根本无从核验。
+        # 生产环境据此拒绝启动——一个连凭据都无法确认的通道不该进生产。
+        # 依据 er.md §7「密钥：DeepSeek/视觉云密钥经 KMS/环境变量注入」：云通道本该有密钥，
+        # 缺字段只是当前范围裁剪；dev/test 仍允许（降级演练），但由 _warn_* 留痕。
+        # 待云通道密钥字段落地后，它们会移入 _REAL_PROVIDER_KEY_FIELDS 并自动改走规则 2，
+        # 无需再动本分支。
+        if (
+            self.env == "prod"
+            and self.provider != _MOCK_PROVIDER
+            and self.provider not in _REAL_PROVIDER_KEY_FIELDS
+        ):
+            blockers.append(
+                f"[跨字段：{_RULE_PROVIDER_KEY}] 生产环境不允许凭据无法核验的通道："
+                f"provider={self.provider} 尚未声明密钥字段（或未登记在通道表里），"
+                f"启动校验无法确认其凭据是否就位；"
+                f"请为其登记密钥字段（_REAL_PROVIDER_KEY_FIELDS）或在非生产环境使用"
             )
 
         # Task 2.1 遗留的跨字段边界：降级阈值低于告警阈值 = 先降级后告警，顺序颠倒。
