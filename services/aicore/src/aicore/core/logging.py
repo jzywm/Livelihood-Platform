@@ -58,17 +58,30 @@ sqlalchemy 等第三方库的级别——实测 httpx 的 INFO 会把完整请�
    只认字段名、不扫取值内容——按内容识别实体属于脱敏组件（正则 + 实体识别）的职责，
    在这里重复实现只会造出第二套会漂移的口径。
 
-## 配置与关闭
+## 配置与关闭（两段式：引导 + 正式）
 
-`configure_logging(settings)` 由组合根的 lifespan 启动钩子调用，**可重复调用**：每次先摘掉上一次
-装的处理器，故「配置两次 = 每行输出两份」不会发生。关闭钩子调 `flush_logging()` 刷盘。
+组合根的 lifespan 按固定顺序调用两个函数，**两段式**是为了让进程的**第一行**日志也合 schema：
+
+1. `bootstrap_logging()` —— 进 lifespan 先调，**早于 `get_settings()`**。读配置本身就会写日志
+   （`core/config.py` 规则 3 的降级告警在 `Settings(...)` 构造瞬间发出），那时正式配置还不存在；
+   没有引导配置，这一行会落到 `logging.lastResort` 上变成**纯文本**，采集侧按 JSON 解析会整行丢掉。
+   引导用**文档化的最小默认值**（级别 `INFO`，`app` 取 `DEFAULT_APP_NAME`）——它读不到配置，
+   故 MUST NOT 依赖配置，`log_level` / `app_name` 只能等第二步生效；
+2. `configure_logging(settings)` —— 拿到配置后调，用配置里的 `log_level` / `app_name` 覆盖引导配置。
+
+两个函数**同一份 schema**：共用 `_assemble_handler` 与 `_shared_processors`，不存在「引导一种形状、
+正式另一种形状」的第二套字段口径。
+
+**幂等**：`configure_logging` 每次先摘掉上一次装的处理器再装新的；`bootstrap_logging` 在
+`configure_logging` 之后、以及被连续调用两次，同样只留一个处理器（新处理器替换旧的）。
+故「引导 + 正式」「正式 + 正式」「引导 + 引导」都不会重复输出。关闭钩子调 `flush_logging()` 刷盘。
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any, Final
 
 import structlog
@@ -88,6 +101,20 @@ SPAN_ID_EMPTY: Final = ""
 
 #: 打码后的替代值（不保留原值长度，避免「长度」本身也成信息）。
 REDACTED: Final = "***"
+
+#: 引导配置（`bootstrap_logging()`）的日志级别。
+#:
+#: 为什么是 `INFO` 而不是 `DEBUG`：引导阶段只有启动校验的告警会说话，`INFO` 收得住它们，
+#: 又不会把一个正常启动的进程刷成噪音；真实级别在 `AICORE_LOG_LEVEL` 里，第二步生效。
+BOOTSTRAP_LOG_LEVEL: Final = "INFO"
+
+#: 引导配置写进 `app` 字段的部署名（正式配置用 `settings.app_name`）。
+#:
+#: 引导**读不到配置**，故只能取固定值；这也是 `DEFAULT_CODE` / `SERVICE_NAME` 之外的第三个
+#: 「配置到位前的兜底取值」。代价是：若部署把 `AICORE_APP_NAME` 改成别的名字，启动的第一行
+#: 仍写 `aicore`——这是有意的取舍（宁可字段值在头几行与后面不同，也不让首行缺字段或非 JSON）。
+#: 三种「引导 + 正式」的实际取值组合见 tests/unit/test_logging.py 的用例。
+DEFAULT_APP_NAME: Final = SERVICE_NAME
 
 #: 脱敏 uid 时保留的首 / 尾位数。
 _UID_HEAD: Final = 3
@@ -313,7 +340,7 @@ class _JsonStreamHandler(logging.StreamHandler[Any]):
         super().emit(record)
 
 
-def _iter_installed_handlers() -> Iterator[logging.Handler]:
+def _iter_installed_handlers() -> Iterator[_JsonStreamHandler]:
     """本模块装在 root 上的处理器（按类型识别，不依赖模块级引用）。"""
     for handler in logging.getLogger().handlers:
         if isinstance(handler, _JsonStreamHandler):
@@ -364,34 +391,16 @@ def _shared_processors(app: str) -> list[Processor]:
     ]
 
 
-def configure_logging(settings: Settings) -> None:
-    """按配置装配结构化 JSON 日志（组合根的 lifespan 启动钩子调用）。
+def _assemble_handler(shared: Sequence[Processor], level: int) -> _JsonStreamHandler:
+    """装配一个完整的 JSON 行处理器（schema、级别、格式器一次到位）。
 
-    **可重复调用**：每次先摘掉上一次装的处理器，再装新的，故不会出现「配置两次、每行输出两份」。
-    非法 `log_level` 在动任何全局状态**之前**就抛错，已生效的配置保持可用。
-
-    **级别设在服务自身的命名空间（`aicore`）上，不是 root**：root 的级别会连带改变
-    httpx / sqlalchemy 等第三方库的日志级别——实测 httpx 的 INFO 会把**完整请求 URL**
-    （含 query 里的用户输入）打进日志，那是顺手扩大泄漏面。第三方库保持各自默认级别，
-    它们的 WARNING 及以上仍会经 root 上的处理器渲染成同一 schema（处理器与级别是两件事）。
-
-    处理器同时设级别（与日志器一致）：兜住「别的代码把某个 logger 的级别调松」的情况。
+    引导配置与正式配置的**唯一**区别就是入参（`shared` 里的 `app` 与 `level`）：处理器类型、
+    字段顺序、脱敏、traceId 注入全部走同一条装配路径，故两段配置产出的 schema 逐字相同
+    ——否则「首行非 JSON」只是被换成了「首行是另一套 JSON」，问题没解决只是搬了家。
     """
-    level = _resolve_level(settings.log_level)
-    shared = _shared_processors(settings.app_name)
-
-    structlog.configure(
-        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        # 不缓存：本函数允许重复调用（测试隔离、配置重载），缓存会让已建好的日志器继续用旧配置，
-        # 表现为「重新配置后日志还是老格式」这类极难排查的问题。
-        cache_logger_on_first_use=False,
-    )
-
     formatter = structlog.stdlib.ProcessorFormatter(
         # stdlib 记录先补齐 schema 与 traceId，再进下面的渲染链。
-        foreign_pre_chain=shared,
+        foreign_pre_chain=list(shared),
         processors=[
             # 摘掉 `_record` / `_from_structlog`（LogRecord 不是 JSON 可序列化对象）。
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -402,17 +411,77 @@ def configure_logging(settings: Settings) -> None:
             structlog.processors.JSONRenderer(ensure_ascii=True),
         ],
     )
-
     handler = _JsonStreamHandler()
     handler.setFormatter(formatter)
     handler.setLevel(level)
-    # 先摘旧的、再挂新的：新处理器此刻还没进 root 的列表，不会被这一次摘除误伤。
+    return handler
+
+
+def _apply_json_logging(app: str, level: int) -> None:
+    """装配 JSON 日志的**完整**动作：structlog 全局配置 + root 处理器 + 服务命名空间级别。
+
+    `bootstrap_logging()` 与 `configure_logging()` 都只调这一个函数，区别仅在入参
+    （引导给文档化的默认值，正式给配置里的值）。故下面三步的取向对两段配置同样成立：
+
+    ① 「先摘旧的、再挂新的」是可重复配置的关键：否则每行日志会被渲染多份
+       （「引导 + 正式」「正式 + 正式」都会踩到）；
+    ② 级别设在服务命名空间上、**不动 root**（见 `configure_logging` 的 docstring）；
+    ③ 全程**不读任何配置**，因此可以在 `get_settings()` 之前调用（引导配置正是这么用的）。
+    """
+    shared = _shared_processors(app)
+
+    structlog.configure(
+        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        # 不缓存：本函数允许重复调用（测试隔离、配置重载），缓存会让已建好的日志器继续用旧配置，
+        # 表现为「重新配置后日志还是老格式」这类极难排查的问题。
+        cache_logger_on_first_use=False,
+    )
+
+    handler = _assemble_handler(shared, level)
     _remove_installed_handlers()
 
     root = logging.getLogger()
     root.addHandler(handler)
     # SERVICE_NAME 同时是包名，即本服务全部日志器的命名空间（业务代码按 `__name__` 取日志器）。
     logging.getLogger(SERVICE_NAME).setLevel(level)
+
+
+def bootstrap_logging() -> None:
+    """装一套**不依赖配置**的引导日志配置（组合根的 lifespan 启动钩子第一件事）。
+
+    为什么必须有它：`core/config.py` 规则 3 的降级告警在 `Settings(...)` **构造瞬间**发出，
+    而正式配置要等 `get_settings()` 返回之后才存在。没有引导配置，进程的第一行日志会落到
+    `logging.lastResort` 上变成**纯文本**（生产下 root 无处理器）——采集侧按 JSON 解析会整行
+    丢掉，正是「统一结构化日志」要防的那种漏。
+
+    取值是**文档化的最小默认**：级别 `BOOTSTRAP_LOG_LEVEL`（`INFO`）、`app` 取
+    `DEFAULT_APP_NAME`。MUST NOT 依赖 `Settings`（此刻读不到，读它只是把顺序问题搬个地方）；
+    `log_level` / `app_name` 由随后的 `configure_logging(settings)` 覆盖。
+
+    可重复调用（幂等）：每次都先摘掉自己上一次装的处理器，故「引导 + 正式」「引导 + 引导」
+    都不会让每行日志输出两份。schema 与正式配置逐字相同（共用 `_assemble_handler`）。
+    """
+    _apply_json_logging(DEFAULT_APP_NAME, _resolve_level(BOOTSTRAP_LOG_LEVEL))
+
+
+def configure_logging(settings: Settings) -> None:
+    """按配置装配结构化 JSON 日志（组合根的 lifespan 启动钩子调用）。
+
+    **可重复调用**：每次先摘掉上一次装的处理器，再装新的，故不会出现「配置两次、每行输出两份」。
+    这一条对「`bootstrap_logging()` 之后再 `configure_logging()`」同样成立（见模块 docstring）。
+    非法 `log_level` 在动任何全局状态**之前**就抛错，已生效的配置保持可用。
+
+    **级别设在服务自身的命名空间（`aicore`）上，不是 root**：root 的级别会连带改变
+    httpx / sqlalchemy 等第三方库的日志级别——实测 httpx 的 INFO 会把**完整请求 URL**
+    （含 query 里的用户输入）打进日志，那是顺手扩大泄漏面。第三方库保持各自默认级别，
+    它们的 WARNING 及以上仍会经 root 上的处理器渲染成同一 schema（处理器与级别是两件事）。
+
+    处理器同时设级别（与日志器一致）：兜住「别的代码把某个 logger 的级别调松」的情况。
+    """
+    level = _resolve_level(settings.log_level)
+    _apply_json_logging(settings.app_name, level)
 
 
 def get_logger(module: str) -> structlog.stdlib.BoundLogger:

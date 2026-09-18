@@ -15,7 +15,9 @@
    并有「非密钥字段不被误抹」的阴性对照；
 7. 生命周期接线：重复 `configure_logging` 不产生重复处理器 / 不重复输出；启动配置非法时抛
    `ConfigRejected`（不是裸 `ValidationError`）且异常链里没有口令；关闭时刷盘；
-   `create_app()` 在 `AICORE_*` 全清空时依然可建实例。
+   `create_app()` 在 `AICORE_*` 全清空时依然可建实例；
+8. **引导配置**（修复轮 1）：进 lifespan 先装一套不依赖配置的 JSON 日志，使「读配置阶段发出的
+   第一行日志」也是同一 schema 的 JSON——正式配置随后覆盖它，且两者叠加不重复输出。
 
 用例隔离（本任务把日志配置成**全局**状态，必须自己收拾干净）：自动夹具在每个用例结束后
 移除「本用例新挂到 root 的处理器」、还原 root 级别并清 `get_settings()` 缓存，使同一进程内
@@ -44,8 +46,11 @@ from pydantic import ValidationError
 from aicore.core import config as config_module
 from aicore.core.config import ConfigRejected, Settings, clear_settings_cache
 from aicore.core.logging import (
+    BOOTSTRAP_LOG_LEVEL,
+    DEFAULT_APP_NAME,
     REQUIRED_LOG_FIELDS,
     SERVICE_NAME,
+    bootstrap_logging,
     configure_logging,
     desensitize_uid,
     flush_logging,
@@ -62,6 +67,9 @@ from aicore.main import create_app
 
 #: `core/config.py` 的 stdlib 日志器名（取自模块本身，避免与实现漂移）。
 CONFIG_MODULE: Final = config_module.__name__
+
+#: 组合根 lifespan 的 stdlib 日志器名（拒绝启动的那条 ERROR 记录来自它）。
+LIFESPAN_MODULE: Final = "aicore.main"
 
 #: 探针模块名：本文件发出的日志都挂在它下面，便于把「第三方库的日志行」滤掉。
 PROBE_MODULE: Final = "aicore.__probe__.logging"
@@ -196,6 +204,26 @@ def _json_records(text: str) -> list[dict[str, Any]]:
 def _probe_records(text: str) -> list[dict[str, Any]]:
     """只保留探针模块发出的记录（root 处理器会连带收编 httpx 等第三方日志）。"""
     return [record for record in _json_records(text) if record.get("module") == PROBE_MODULE]
+
+
+def _assert_every_line_is_json(text: str) -> list[dict[str, Any]]:
+    """逐行断言 `text` 里**每一行**都是 JSON 对象（不是抽查某一行），返回解析结果。
+
+    `pytest` 的 `capsys` 抓不住直接写 `sys.stderr` 的字节，故不能拿「`sys.stderr` 被替换过」
+    当判据；这里改用 `json.loads` 作为判据并在失败时报出原始行——修复前的那一行
+    （`[告警：env-mock] …` 纯文本）会当场被点出来。
+    """
+    records: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"日志行不是合法 JSON（{exc.msg}）：{line!r}") from exc
+        assert isinstance(parsed, dict), f"日志行不是 JSON 对象：{line!r}"
+        records.append(parsed)
+    return records
 
 
 def _only_probe_record(text: str) -> dict[str, Any]:
@@ -587,9 +615,13 @@ def test_request_trace_id_is_carried_into_stdlib_records_too(
         client.get(PROBE_PATH, headers={TRACE_ID_HEADER: INJECTED_TRACE_ID})
 
     records = _config_module_records(capsys.readouterr().err)
-    assert len(records) == 1, f"stdlib 记录应恰好一条：{records}"
-    assert records[0]["traceId"] == INJECTED_TRACE_ID
-    assert records[0][TRACE_SOURCE_FIELD] == TRACE_SOURCE_PROPAGATED
+    # 只取本用例自己写的那条：修复轮 1 起，lifespan 的引导配置让**读配置阶段的规则 3 告警**
+    # 也以 JSON 落在同一个模块（`test + mock` 是 conftest 的默认环境），故这里按消息来源收窄，
+    # 而不是断言「整个模块只有一行」——后者会把「规则 3 告警没进 JSON」这个缺陷当成前提。
+    own = [record for record in records if "[告警：探针]" in str(record["message"])]
+    assert len(own) == 1, f"本用例的 stdlib 记录应恰好一条：{records}"
+    assert own[0]["traceId"] == INJECTED_TRACE_ID
+    assert own[0][TRACE_SOURCE_FIELD] == TRACE_SOURCE_PROPAGATED
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +788,149 @@ def test_lifespan_flushes_logging_on_shutdown(
 
 
 # ---------------------------------------------------------------------------
-# 6. lifespan 接线（本任务收口第 2 组）
+# 6. 引导配置（修复轮 1：读配置阶段的第一行日志也必须是 JSON）
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_emits_json_before_any_settings_are_read(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`bootstrap_logging()` 之后写的每一行都是完整 schema 的 JSON —— 且它**不读配置**。
+
+    判别力的要害在顺序：修复前「读配置 → 装配日志」，而规则 3 的告警在 `Settings(...)` 构造
+    瞬间发出——那一行没有 JSON 处理器，落到 `logging.lastResort` 上变成纯文本。本用例在
+    **不构造任何 `Settings`** 的前提下断言 schema 完整，正是把「配置还没读到，日志已经合 schema」
+    这条要求钉死。
+    """
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+
+    bootstrap_logging()
+    get_logger(PROBE_MODULE).info("探针：引导配置后的第一行")
+
+    record = _only_probe_record(capsys.readouterr().err)
+
+    missing = REQUIRED_LOG_FIELDS - set(record)
+    assert not missing, f"引导配置输出缺少必含字段：{sorted(missing)}"
+    assert all(record[field] is not None for field in REQUIRED_LOG_FIELDS)
+    assert record["level"] == "INFO"
+    assert record["module"] == PROBE_MODULE
+    assert len(_added_handlers(handlers_before)) == 1, "引导配置必须恰好装一个处理器"
+
+
+def test_bootstrap_writes_to_the_same_schema_as_the_full_configuration(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """引导配置与正式配置产出**逐字相同**的字段集合（不是「另一套 JSON」）。
+
+    这条是修复的实质：把首行换成 JSON 还不够，若引导用的是另一套字段形状，问题只是搬了家。
+    只允许 `app` 的**取值**不同（引导读不到配置，取 `DEFAULT_APP_NAME`），字段集合必须一致。
+    """
+    bootstrap_logging()
+    get_logger(PROBE_MODULE).info("探针：引导配置")
+    bootstrap_record = _only_probe_record(capsys.readouterr().err)
+
+    configure_logging(_test_settings(app_name="aicore-under-test"))
+    get_logger(PROBE_MODULE).info("探针：正式配置")
+    configured_record = _only_probe_record(capsys.readouterr().err)
+
+    assert set(bootstrap_record) == set(configured_record)
+    assert set(bootstrap_record) >= REQUIRED_LOG_FIELDS
+    assert "event" not in bootstrap_record, "字段名必须是 message（两段配置同一口径）"
+    assert bootstrap_record["app"] == DEFAULT_APP_NAME
+    assert configured_record["app"] == "aicore-under-test"
+    assert bootstrap_record["level"] == "INFO" == BOOTSTRAP_LOG_LEVEL
+    assert bootstrap_record["service"] == configured_record["service"] == SERVICE_NAME
+
+
+def test_bootstrap_then_configure_does_not_double_emit(
+    capsys: pytest.CaptureFixture[str], settings: Settings
+) -> None:
+    """「引导 + 正式」是幂等序列：每行日志**只输出一份**，root 上只留一个本模块的处理器。
+
+    这是简报点名的延伸保证：既有用例只覆盖「两次 `configure_logging`」；lifespan 真正跑的
+    是「先 `bootstrap_logging()`、再 `configure_logging()`」，若正式配置没有先摘掉引导装的
+    处理器，启动后的每行日志都会打印两份（噪声翻倍，采集侧还会当成两条记录）。
+    """
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+
+    bootstrap_logging()
+    configure_logging(settings)
+
+    installed = _added_handlers(handlers_before)
+    assert len(installed) == 1, f"引导 + 正式应只留一个处理器，实际 {len(installed)} 个"
+
+    get_logger(PROBE_MODULE).info("探针：引导 + 正式各配一次")
+
+    records = _probe_records(capsys.readouterr().err)
+    assert len(records) == 1, f"引导 + 正式导致重复输出：{records}"
+
+
+def test_repeated_bootstrap_installs_exactly_one_handler(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`bootstrap_logging()` 自身幂等：连调两次仍只装一个处理器、只输出一份。"""
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+
+    bootstrap_logging()
+    bootstrap_logging()
+
+    assert len(_added_handlers(handlers_before)) == 1
+
+    get_logger(PROBE_MODULE).info("探针：引导两次")
+
+    records = _probe_records(capsys.readouterr().err)
+    assert len(records) == 1, f"引导配置重复调用导致重复输出：{records}"
+
+
+def test_bootstrap_default_level_does_not_silence_json_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """引导默认级别 `INFO` 收得住告警与错误，且**不是**把级别设到 root 上。
+
+    `INFO` 的取舍：引导阶段只有启动校验的告警会说话，`INFO` 足够、又不会把正常启动刷成噪音。
+    同时核对级别只落在服务命名空间——root 被调松会把第三方库的 INFO 一起打开（泄漏面）。
+    """
+    root = logging.getLogger()
+    root_level_before = root.level
+
+    bootstrap_logging()
+
+    assert root.level == root_level_before, "引导配置改动了 root 级别：第三方库日志会被顺手打开"
+    assert logging.getLogger(SERVICE_NAME).level == logging.INFO
+
+    logging.getLogger(CONFIG_MODULE).warning("[告警：探针] 引导阶段的告警")
+    assert len(_config_module_records(capsys.readouterr().err)) == 1
+
+
+def test_bootstrap_after_configure_is_idempotent_too(
+    capsys: pytest.CaptureFixture[str], settings: Settings
+) -> None:
+    """反序也幂等：`configure_logging` 之后再调 `bootstrap_logging`，仍只留一个处理器、一份输出。
+
+    真实启动顺序是「引导 → 正式」，但幂等是被公开承诺的性质（重载、测试隔离、将来多入口），
+    故反序也钉住：两个函数都走同一套「先摘旧的再挂新的」，顺序不该改变结论。
+    """
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+
+    configure_logging(settings)
+    bootstrap_logging()
+
+    assert len(_added_handlers(handlers_before)) == 1
+
+    get_logger(PROBE_MODULE).info("探针：正式 + 引导")
+
+    records = _probe_records(capsys.readouterr().err)
+    assert len(records) == 1, f"正式 + 引导导致重复输出：{records}"
+    # 引导把 app 换回默认值（它读不到配置）——这条同时说明「后调用的那次配置说了算」。
+    assert records[0]["app"] == DEFAULT_APP_NAME
+
+
+# ---------------------------------------------------------------------------
+# 7. lifespan 接线（本任务收口第 2 组）
 # ---------------------------------------------------------------------------
 
 
@@ -770,6 +944,121 @@ def test_lifespan_configures_logging_so_records_are_json(
     record = _only_probe_record(capsys.readouterr().err)
     assert set(record) >= REQUIRED_LOG_FIELDS
     assert record["level"] == "INFO"
+
+
+def test_startup_first_emitted_line_is_json_with_every_mandated_field(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**真实启动路径**下的第一行日志就是 JSON：规则 3 的告警不再落成纯文本（修复轮 1 的验收位）。
+
+    走 `create_app()` + `TestClient`（真的进 lifespan，不是直接调处理器），环境配成
+    `dev + mock`——`Settings(...)` 构造瞬间就会发规则 3 的降级告警，**那正是修复前唯一
+    不合 schema 的那一行**。
+
+    「首行是 JSON」由三步合起来证明：① 输出里**每一行**都可 `json.loads`（逐行解析，不是抽查）；
+    ② 第一行就是规则 3 的告警，且必含字段齐全；③ 首行的 `app` 取引导默认值（此刻还没读到配置），
+    后续行由正式配置的 `app_name` 覆盖——两段配置的差别只在取值，不在 schema。
+    """
+    for name in [name for name in os.environ if name.upper().startswith("AICORE_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("AICORE_MYSQL_HOST", "127.0.0.1")
+    monkeypatch.setenv("AICORE_MYSQL_USER", "test_user")
+    monkeypatch.setenv("AICORE_MYSQL_PASSWORD", "test_password")
+    monkeypatch.setenv("AICORE_MYSQL_DATABASE", "aicore_test")
+    monkeypatch.setenv("AICORE_REDIS_HOST", "127.0.0.1")
+    monkeypatch.setenv("AICORE_PROVIDER", "mock")
+    monkeypatch.setenv("AICORE_ENV", "dev")  # 规则 3：dev + mock → 告警（不阻断）
+    monkeypatch.setenv("AICORE_INTERNAL_TOKEN", "test_internal_token")
+    monkeypatch.setenv("AICORE_DAILY_QUOTA_PER_ACCOUNT", "1000")
+    monkeypatch.setenv("AICORE_DAILY_BUDGET_TOTAL", "100000")
+    clear_settings_cache()
+
+    with TestClient(_probe_app()) as client:
+        client.get(PROBE_PATH)
+
+    text = capsys.readouterr().err
+    records = _assert_every_line_is_json(text)
+    assert records, "启动一条日志都没写（本用例会静默变绿，故显式失败）"
+
+    first = records[0]
+    assert "[告警：env-mock]" in str(first["message"]), f"规则 3 的告警不是第一行：{first}"
+    assert first["level"] == "WARNING"
+    assert set(first) >= REQUIRED_LOG_FIELDS, (
+        f"启动首行缺少必含字段：{sorted(REQUIRED_LOG_FIELDS - set(first))}"
+    )
+    assert first["app"] == DEFAULT_APP_NAME, "首行由引导配置产出，app 取引导默认值"
+    assert first["service"] == SERVICE_NAME
+    assert [record for record in records if record["module"] == CONFIG_MODULE] == [first], (
+        f"规则 3 的告警应恰好一条：{records}"
+    )
+
+
+def test_rejected_startup_still_logs_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """被**拒绝**的启动同样产出 JSON：阻断项清单以结构化 ERROR 行落进日志管线。
+
+    uvicorn 的启动失败栈是框架的 stderr 明文输出，**不进**本服务的 JSON 管线；拒绝启动恰恰
+    是最该被采集器看见的事件，故 lifespan 在抛出前把阻断项清单写成一条结构化 ERROR 记录。
+    四条断言：① 异常类型仍是 `ConfigRejected`（不是裸 `ValidationError`）；② `from None` 仍成立；
+    ③ 输出里**每一行**都可解析成 JSON（逐行解析，不是抽查）；④ 那一条记录 schema 完整、
+    逐条列出阻断项，且不带口令哨兵。
+    """
+    monkeypatch.setenv("AICORE_ENV", "prod")
+    monkeypatch.setenv("AICORE_PROVIDER", "mock")  # 规则 1：prod + mock → 拒绝启动
+    monkeypatch.setenv("AICORE_MYSQL_PASSWORD", PASSWORD_SENTINEL)
+    clear_settings_cache()
+
+    with pytest.raises(ConfigRejected) as excinfo, TestClient(_probe_app()):
+        pass  # pragma: no cover —— 启动即被拒，进不来
+
+    text = capsys.readouterr().err
+    assert excinfo.value.__cause__ is None, "from None 未生效：拒绝路径会带出原始 ValidationError"
+    rendered = "".join(traceback.format_exception(excinfo.value))
+    assert PASSWORD_SENTINEL not in rendered, "异常链泄漏了口令"
+    assert PASSWORD_SENTINEL not in text, "拒绝日志泄漏了口令"
+
+    records = _assert_every_line_is_json(text)
+    assert len(records) == 1, f"拒绝启动应恰好写一条记录：{records}"
+    record = records[0]
+    assert set(record) >= REQUIRED_LOG_FIELDS, (
+        f"拒绝记录缺少必含字段：{sorted(REQUIRED_LOG_FIELDS - set(record))}"
+    )
+    assert record["level"] == "ERROR"
+    assert record["module"] == LIFESPAN_MODULE, "记录应来自组合根的 lifespan"
+    assert "[跨字段：env-mock]" in str(record["message"])
+    assert "共 1 项阻断项" in str(record["message"])
+
+
+def test_logging_survives_a_rejected_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """拒绝启动之后，日志管线仍然可用：改成放行环境重启，第一行依旧是完整 schema 的 JSON。
+
+    这条防的是「拒绝路径把全局日志配置搞坏」（半装状态、处理器被摘掉却没补上）：若引导配置
+    装到一半就异常退出，第二次启动的首行又会退回纯文本，而 §6 的用例只跑成功路径，抓不到。
+    """
+    monkeypatch.setenv("AICORE_ENV", "prod")
+    monkeypatch.setenv("AICORE_PROVIDER", "mock")
+    clear_settings_cache()
+    with pytest.raises(ConfigRejected), TestClient(_probe_app()):
+        pass  # pragma: no cover —— 启动即被拒，进不来
+    capsys.readouterr()  # 丢弃第一次的输出，下面只断言第二次
+
+    monkeypatch.setenv("AICORE_ENV", "dev")  # 同一份配置改成放行组合
+    clear_settings_cache()
+
+    with TestClient(_probe_app()) as client:
+        client.get(PROBE_PATH)
+
+    records = _assert_every_line_is_json(capsys.readouterr().err)
+    assert records, "拒绝之后重新启动没有产生任何日志行"
+    first = records[0]
+    assert "[告警：env-mock]" in str(first["message"]), f"第二轮的规则 3 告警不是首行：{first}"
+    assert set(first) >= REQUIRED_LOG_FIELDS
 
 
 def test_startup_rejects_invalid_configuration_with_config_rejected(

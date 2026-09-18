@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -20,8 +21,12 @@ from aicore import __version__
 from aicore.api import health
 from aicore.core.config import ConfigRejected, get_settings
 from aicore.core.errors import register_exception_handlers
-from aicore.core.logging import configure_logging, flush_logging
+from aicore.core.logging import bootstrap_logging, configure_logging, flush_logging
 from aicore.core.trace import TraceIdMiddleware
+
+# stdlib 日志器（与 `core/config.py` / `core/errors.py` 同一写法）：本模块的日志少而关键，
+# 且 stdlib 记录会被 root 上的 JSON 处理器收编，schema 与业务日志逐字一致。
+_logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -30,23 +35,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     顺序是硬要求：
 
-    1. 读配置（`get_settings()`，进程内只解析一次）。失败即**拒绝启动**——抛
-       `ConfigRejected`，进程起不来本身就是「拒绝启动」；
-    2. 按配置装配结构化 JSON 日志（Task 2.6）——配置里的 `log_level` / `app_name` 在此生效；
-    3. `yield`：进程存活期；
-    4. 关闭时刷日志处理器（只刷本服务的，不做别的生命周期工作）。
+    1. **先装引导日志配置**（`bootstrap_logging()`，Task 2.6 修复轮 1）——它不读配置，故能在
+       读配置**之前**跑；没有这一步，第 2 步构造 `Settings` 时发出的规则 3 告警会缺少 JSON
+       处理器，落成纯文本（进程的第一行日志不合 schema）；
+    2. 读配置（`get_settings()`，进程内只解析一次）。失败即**拒绝启动**——先把阻断项清单写进
+       一条结构化 ERROR 日志（此刻引导配置已就位，故这一行同样是 JSON），再抛
+       `ConfigRejected`，进程起不来本身就是「拒绝启动」。为什么在抛出前还写一条日志：
+       uvicorn 的启动失败栈是**框架的** stderr 明文输出，不进本服务的 JSON 管线；拒绝启动
+       恰恰是最该被日志采集器看见的事件（否则它只在运维翻 stderr 时才存在）。记录的内容
+       `str(exc)` 只含字段名 / 环境变量名 / 阈值数字，**不含任何配置取值**（见 `core/config.py`）；
+    3. 按配置装配结构化 JSON 日志（Task 2.6）——配置里的 `log_level` / `app_name` 在此覆盖
+       引导配置的默认值（两者共用同一套 schema 与同一份处理器装卸逻辑，故不重复输出）；
+    4. `yield`：进程存活期；
+    5. 关闭时刷日志处理器（只刷本服务的，不做别的生命周期工作）。
 
     **必须 `raise ... from None`**：`from exc` 会把 `__cause__` 设成原始 `ValidationError`，
     而 uvicorn 记录 lifespan 启动失败时带 `exc_info`，`str(ValidationError)` 会回显
     （截断后的）`input_value`——那里面含 `mysql_password` 等原始值。异常链因此会成为一条绕过
     「只用 loc/msg」的泄漏通道。完整推理见 `core/config.py` 模块 docstring。
+    （引导配置不改变这一点：它只装日志处理器，不碰异常链。）
+    上面那条 ERROR 日志同样只记 `str(ConfigRejected)`——它与异常消息同源，故同一份保证覆盖它。
 
     依赖装配（Task 3.4 起）与任务执行器（第 4 组）仍将挂在这里；本任务只做配置与日志。
     """
+    bootstrap_logging()
     try:
         settings = get_settings()
     except ValidationError as exc:
-        raise ConfigRejected.from_validation_error(exc) from None
+        rejected = ConfigRejected.from_validation_error(exc)
+        # 阻断项清单已是「可直接打印、不含取值」的多行摘要；JSON 渲染会把换行转义，仍是一行。
+        _logger.error("%s", rejected)
+        raise rejected from None
     configure_logging(settings)
     yield
     flush_logging()
