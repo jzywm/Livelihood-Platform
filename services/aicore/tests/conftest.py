@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from dotenv import dotenv_values
 from fastapi import FastAPI
 
 # ---------------------------------------------------------------------------
@@ -46,6 +48,65 @@ _TEST_ENV_DEFAULTS: dict[str, str] = {
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():
     os.environ.setdefault(_key, _value)
+
+# ---------------------------------------------------------------------------
+# 真实 MySQL 的集成测试**专用的另一组环境变量**（Task 3.1 FIX-5 起必需）
+#
+# 两个问题要同时解决，故前缀既不能复用也不能"看起来像"应用配置：
+#
+# ① **不能复用 `AICORE_MYSQL_*`**：上面那块注入在 CI 与全新 checkout 里**必然生效**，
+#    于是集成测试读 `AICORE_MYSQL_USER` 只会拿到 `test_user`，连库失败 → 走 `pytest.skip`
+#    → **整条"真实库结构"门禁静默失效**。实测现场（skip 原因把它点破了）：
+#        SKIPPED ... 需要真实 MySQL ... (1045, "Access denied for user 'test_user'@'localhost'")
+#
+# ② **更不能叫 `AICORE_TEST_MYSQL_*`**：`core/config.py` 的 `_UnknownEnvVarSource` 会
+#    **拒绝任何未声明的 `AICORE_*` 变量**（Task 2.1 的防线，本身完全正确）。用它做集成测试
+#    变量名会让每次应用启动都撞上"Extra inputs are not permitted" → `ConfigRejected`。
+#    实测：全量套件 35 failed / 63 errors，阻断项正是这 5 个变量名。
+#    **那不是防线太严，是命名侵入了应用配置的命名空间。**
+#
+# 故用**完全独立的前缀** `DSH_IT_MYSQL_*`（DSH integration-test）：既绕开应用配置命名空间，
+# 又从名字上表明"这不是应用配置"。
+#
+# **口令不入库（安全红线）**：`DSH_IT_MYSQL_PASSWORD` MUST NOT 在本文件里给默认值——
+# 那等于把凭据写进版本库。改为：
+#   ① 显式设了 `DSH_IT_MYSQL_PASSWORD` 就用它；
+#   ② 否则回落到 `AICORE_MYSQL_PASSWORD`（本机开发凭据只存在于**已被 gitignore 的 `.env`**）；
+#   ③ 两者都没有 → 留空，集成用例的连通性探测会**显式 skip** 并说明缺哪个变量。
+# 只回落到"口令"一项而不整体复用 `AICORE_MYSQL_*`：host/user/database 仍取演练库的专用缺省值，
+# 否则又会退回上面①那个"假凭据导致假 skip"的坑。
+# ---------------------------------------------------------------------------
+_INTEGRATION_ENV_DEFAULTS: dict[str, str] = {
+    "DSH_IT_MYSQL_HOST": "127.0.0.1",
+    "DSH_IT_MYSQL_PORT": "3306",
+    "DSH_IT_MYSQL_USER": "aicore_dev",
+    "DSH_IT_MYSQL_DATABASE": "aicore_test",
+}
+
+for _key, _value in _INTEGRATION_ENV_DEFAULTS.items():
+    os.environ.setdefault(_key, _value)
+
+# 口令只认两个来源，**MUST NOT 有硬编码默认值**（那是把凭据写进版本库；commit-check 清单 B 红线）：
+#   ① 环境里显式设了 `DSH_IT_MYSQL_PASSWORD`；
+#   ② 否则读 **`.env` 文件本身**（本机开发凭据只存在于该文件，它已被 gitignore）。
+#
+# **为什么是"读文件"而不是 `os.environ["AICORE_MYSQL_PASSWORD"]`**（这里踩过一次，记录现场）：
+# 本文件顶层那块 `_TEST_ENV_DEFAULTS` 已经把 `AICORE_MYSQL_PASSWORD=test_password` 注入了进程环境，
+# 而 pydantic / os.environ **环境变量优先于 `.env`** —— 于是从环境读永远只能拿到 13 字符的
+# `test_password`，连库被拒 1045，用例走 skip。实测两边的长度差异：
+#     文件里那一行 = 15 字符（真实开发口令）
+#     进程环境里 AICORE_MYSQL_PASSWORD = 13 字符（test_password 占位值）
+# **本注释刻意不写口令原文**：凭据扫描器不区分"代码里的凭据"与"注释里的取证记录"，
+# 写原文会被自己的门禁拦下（实测确实被拦）。
+# 故这里用 `dotenv_values()` 直读文件（它**不合并**进程环境），绕开那个优先级陷阱。
+if not os.environ.get("DSH_IT_MYSQL_PASSWORD"):
+    _env_file = Path(__file__).resolve().parents[1] / ".env"
+    if _env_file.is_file():
+        _file_password = dotenv_values(_env_file).get("AICORE_MYSQL_PASSWORD")
+        if _file_password:
+            os.environ["DSH_IT_MYSQL_PASSWORD"] = _file_password
+
+# 都取不到时保持为空：各集成用例自己的连通性探测会 skip 并说明缺哪个变量（不静默通过）。
 
 # 必须在上面注入之后导入：pytest 导入本模块时即完成注入，测试模块随后才 import aicore。
 from aicore.main import create_app  # noqa: E402
