@@ -13,22 +13,43 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from pydantic import ValidationError
 from starlette.types import ASGIApp
 
 from aicore import __version__
 from aicore.api import health
+from aicore.core.config import ConfigRejected, get_settings
 from aicore.core.errors import register_exception_handlers
+from aicore.core.logging import configure_logging, flush_logging
 from aicore.core.trace import TraceIdMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """启动与关闭钩子。
+    """启动与关闭钩子（第 2 组的收口位置）。
 
-    启动即校验配置（Task 2.2）、装配依赖（Task 3.4 起）、
-    启动任务执行器（第 4 组）都将挂在这里。
+    顺序是硬要求：
+
+    1. 读配置（`get_settings()`，进程内只解析一次）。失败即**拒绝启动**——抛
+       `ConfigRejected`，进程起不来本身就是「拒绝启动」；
+    2. 按配置装配结构化 JSON 日志（Task 2.6）——配置里的 `log_level` / `app_name` 在此生效；
+    3. `yield`：进程存活期；
+    4. 关闭时刷日志处理器（只刷本服务的，不做别的生命周期工作）。
+
+    **必须 `raise ... from None`**：`from exc` 会把 `__cause__` 设成原始 `ValidationError`，
+    而 uvicorn 记录 lifespan 启动失败时带 `exc_info`，`str(ValidationError)` 会回显
+    （截断后的）`input_value`——那里面含 `mysql_password` 等原始值。异常链因此会成为一条绕过
+    「只用 loc/msg」的泄漏通道。完整推理见 `core/config.py` 模块 docstring。
+
+    依赖装配（Task 3.4 起）与任务执行器（第 4 组）仍将挂在这里；本任务只做配置与日志。
     """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        raise ConfigRejected.from_validation_error(exc) from None
+    configure_logging(settings)
     yield
+    flush_logging()
 
 
 class _TracedFastAPI(FastAPI):
