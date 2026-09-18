@@ -302,7 +302,7 @@ Pydantic Settings，`env: dev | test | prod` 三套。
 3. **码值全表与 `_common/openapi.yaml` 的 `ErrorCode` 枚举逐项比对用例**（越界即失败）
 4. `Envelope` 四必填字段序列化用例；**`/health` 与 `/metrics` 不被包住**的断言
 5. traceId 注入 / 未注入两条路径用例 + **跨线程池传递**用例
-6. 日志 11 字段 schema 用例
+6. 日志 schema 用例（PDD L1747 列出的 **12 项逐字比对**）
 7. 仓库内 `grep` 无硬编码密钥；`.env` 被 `.gitignore` 覆盖
 
 ---
