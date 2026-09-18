@@ -39,6 +39,10 @@ dev = [
     # tests/conftest.py 的 anyio_backend 夹具是 brief 强制项；
     # anyio 此前只是 pytest-asyncio 的传递依赖，显式声明后夹具才有直接的依赖归属（Task 1.4 继续扩展该文件）。
     "anyio>=4.15",
+    # tests/unit/test_errors.py 直接 import yaml 解析 services/_common/openapi.yaml 的码表
+    # （「错误码必须落在平台表内」的比对用例）。此前只作为 uvicorn[standard] 的传递依赖存在，
+    # 与 prod 依赖同一原则：直接 import 就必须显式声明。
+    "pyyaml>=6.0",
 ]
 
 [tool.setuptools.packages.find]
