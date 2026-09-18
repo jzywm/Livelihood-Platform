@@ -26,10 +26,20 @@ from sqlalchemy.engine import URL
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = SERVICE_ROOT / "scripts" / "apply_ddl.py"
 
-#: 本用例的演练库与演练月。月份取一个**固定值**而非当前月：
-#: 测试结果不应随运行日期漂移（且固定月让断言里的表名可读）。
+#: 本用例的演练库。
 DRILL_DATABASE = "aicore_test"
-DRILL_MONTH = "202613"  # 刻意用一个不会与"当前月"撞车的月份
+
+#: 演练月：**按进程唯一**，而不是固定的 `202613`。
+#:
+#: 为什么必须按进程变（这是实测踩出来的）：本文件会被**并发执行**——多个 subagent 同时跑测试、
+#: 或开发者一边跑测试一边跑别的任务。原先写死一个月份时，两个进程会互相 `DROP` 对手刚建的表，
+#: 于是幂等断言读到变化的 `CREATE_TIME` 而失败，现象是：
+#:     {'ocr_result_202613': 18:44:46} != {'ocr_result_202613': 18:44:48}
+#: 那条失败**不是被测代码的问题，是测试自己不够隔离**（同一月份被两个进程共用）。
+#: 用 `os.getpid() % 12 + 1` 取月份、年份固定为 2099（远超真实数据，且 6 位格式合法）：
+#: 进程号天然互斥，12 个桶对本机并发度足够；`2099xx` 保证不会与任何真实月份撞车。
+DRILL_YEAR = "2099"
+DRILL_MONTH = f"{DRILL_YEAR}{os.getpid() % 12 + 1:02d}"
 
 SHARDED = ("ai_task", "ocr_result", "ocr_correction")
 FIXED = (
@@ -127,22 +137,29 @@ def _run_apply(month: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _drop_drill_shards(engine) -> None:
+def _drop_drill_shards(engine, month: str) -> None:
     """只清理本用例建的分片表（MUST NOT 动固定名表、MUST NOT DROP DATABASE）。
 
     **必须按建表顺序的逆序删**：`ocr_correction` 有指向同月 `ocr_result` 的物理外键，
     先删 `ocr_result` 会被 MySQL 以 3730 拒绝。首次写这条清理时正是按建表顺序删的，
-    真实库立刻报错（"Cannot drop table 'ocr_result_202613' referenced by a foreign key
-    constraint"）—— 这条注释就是那次实测的产物。
+    真实库立刻报错（"Cannot drop table ... referenced by a foreign key constraint"）
+    —— 这条注释就是那次实测的产物。
+
+    `month` 由调用方传入（而非直接用模块常量）：这样本函数也能被"临时换个隔离月"的
+    场景复用，且签名上就看得出它作用在哪个分片上。
     """
     with engine.begin() as conn:
         for logical in reversed(SHARDED):
-            conn.execute(text(f"DROP TABLE IF EXISTS `{logical}_{DRILL_MONTH}`"))
+            conn.execute(text(f"DROP TABLE IF EXISTS `{logical}_{month}`"))
 
 
 @pytest.fixture
 def drill_month() -> str:
-    """每个用例用**独立的月份**，避免与并发运行/上次中断残留的表互相干扰。"""
+    """演练月 = 模块级的**按进程唯一**月份（见 `DRILL_MONTH` 处关于并发隔离的说明）。
+
+    同一进程内所有用例共用这一个月（故每个用例开头都先清一次），
+    **跨进程互不干扰**——这正是原先写死月份时缺失的性质。
+    """
     return DRILL_MONTH
 
 
@@ -150,7 +167,7 @@ def drill_month() -> str:
 def test_apply_ddl_creates_all_nine_tables(drill_month: str) -> None:
     engine = _require_mysql()
     # 先清掉可能的中断残留，保证本用例断言的是本次执行的结果
-    _drop_drill_shards(engine)
+    _drop_drill_shards(engine, drill_month)
     try:
         result = _run_apply(drill_month)
         assert result.returncode == 0, (
@@ -184,14 +201,14 @@ def test_apply_ddl_creates_all_nine_tables(drill_month: str) -> None:
         missing = sorted(expected - tables)
         assert not missing, f"apply_ddl.py 跑完仍缺表：{missing}（实际有 {sorted(tables)}）"
     finally:
-        _drop_drill_shards(engine)
+        _drop_drill_shards(engine, drill_month)
         engine.dispose()
 
 
 @pytest.mark.integration
 def test_apply_ddl_foreign_keys_carry_month_and_restrict(drill_month: str) -> None:
     engine = _require_mysql()
-    _drop_drill_shards(engine)
+    _drop_drill_shards(engine, drill_month)
     try:
         result = _run_apply(drill_month)
         assert result.returncode == 0, result.stderr
@@ -222,14 +239,14 @@ def test_apply_ddl_foreign_keys_carry_month_and_restrict(drill_month: str) -> No
                 f"{name} 的动作不是显式 RESTRICT：DELETE={delete_rule} UPDATE={update_rule}"
             )
     finally:
-        _drop_drill_shards(engine)
+        _drop_drill_shards(engine, drill_month)
         engine.dispose()
 
 
 @pytest.mark.integration
 def test_apply_ddl_indexes_match_er_md(drill_month: str) -> None:
     engine = _require_mysql()
-    _drop_drill_shards(engine)
+    _drop_drill_shards(engine, drill_month)
     try:
         assert _run_apply(drill_month).returncode == 0
         with engine.connect() as conn:
@@ -251,7 +268,7 @@ def test_apply_ddl_indexes_match_er_md(drill_month: str) -> None:
                     f"期望 {sorted(want)} 实际 {sorted(got)}"
                 )
     finally:
-        _drop_drill_shards(engine)
+        _drop_drill_shards(engine, drill_month)
         engine.dispose()
 
 
@@ -259,7 +276,7 @@ def test_apply_ddl_indexes_match_er_md(drill_month: str) -> None:
 def test_apply_ddl_is_idempotent(drill_month: str) -> None:
     """复跑零错误：全部 `CREATE TABLE IF NOT EXISTS` 的直接后果。"""
     engine = _require_mysql()
-    _drop_drill_shards(engine)
+    _drop_drill_shards(engine, drill_month)
     try:
         first = _run_apply(drill_month)
         assert first.returncode == 0, first.stderr
@@ -283,7 +300,7 @@ def test_apply_ddl_is_idempotent(drill_month: str) -> None:
             f"复跑改变了表的创建时间，说明表被重建过（不是幂等）：\n前 {before}\n后 {after}"
         )
     finally:
-        _drop_drill_shards(engine)
+        _drop_drill_shards(engine, drill_month)
         engine.dispose()
 
 
