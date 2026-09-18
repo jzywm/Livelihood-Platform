@@ -17,6 +17,7 @@ from starlette.types import ASGIApp
 
 from aicore import __version__
 from aicore.api import health
+from aicore.core.errors import register_exception_handlers
 from aicore.core.trace import TraceIdMiddleware
 
 
@@ -65,6 +66,9 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.include_router(health.router)
+    # 全局异常处理器（Task 2.3）：业务异常 / 框架 422 / 未预期异常统一映射为平台信封。
+    # 注册只改 app.exception_handlers，不读配置，create_app() 仍是纯装配函数。
+    register_exception_handlers(app)
     return app
 
 
