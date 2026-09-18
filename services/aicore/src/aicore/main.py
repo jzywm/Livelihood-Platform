@@ -66,7 +66,8 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.include_router(health.router)
-    # 全局异常处理器（Task 2.3）：业务异常 / 框架 422 / 未预期异常统一映射为平台信封。
+    # 全局异常处理器（Task 2.3）：业务异常 / 框架 HTTPException（路由 404、405 等）/
+    # 框架 422 / 未预期异常，四条路径统一映射为平台信封（无体状态按框架契约回无体响应）。
     # 注册只改 app.exception_handlers，不读配置，create_app() 仍是纯装配函数。
     register_exception_handlers(app)
     return app

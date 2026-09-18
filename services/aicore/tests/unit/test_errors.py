@@ -10,6 +10,8 @@
 4. 框架 `HTTPException`（Starlette 基类）被收编成信封：路由未匹配的 404 → `3006`（文案与业务
    `NotFoundError` 相区分）、方法不允许的 405 → `1001`、`HTTPBearer` 式的 401/403 →
    `2001`/`2002`、未列入锁定对的 5xx → `5000`；**框架的 `detail` 一律不回显**；
+   状态不允许响应体时（`1xx` / `204` / `205` / `304`）**回无体响应**（与 FastAPI 默认处理器
+   同一契约，`exc.headers` 仍透传），sub-400 状态 **MUST NOT** 落 `5000`；
 5. 未预期异常 → HTTP 500 + `code=5000`，响应体不含堆栈 / 文件路径 / 模块名 / 原始异常消息，
    而**堆栈确实进了日志**（caplog 里取到带 traceback 的 ERROR 记录）；
 6. `AICORE_ERROR_CODES` 与平台单一事实源 `services/_common/openapi.yaml` 的 `ErrorCode`
@@ -32,7 +34,7 @@ import itertools
 import logging
 import re
 import traceback
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -50,10 +52,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from aicore.core.errors import (
     AICORE_ERROR_CODES,
     DEFAULT_MESSAGES,
-    HTTP_EXCEPTION_4XX_FALLBACK_CODE,
     HTTP_EXCEPTION_5XX_FALLBACK_CODE,
+    HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE,
     HTTP_STATUS_BY_ERROR_CODE,
     HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS,
+    INTERNAL_ERROR_CODE,
     PARAM_ERROR_CODES,
     ROUTE_NOT_FOUND_MESSAGE,
     AiCoreError,
@@ -68,6 +71,7 @@ from aicore.core.errors import (
     _handle_http_exception,
     _handle_request_validation_error,
     _handle_unexpected_error,
+    _http_exception_info,
     _validation_error_code,
 )
 from aicore.core.trace import TRACE_ID_HEADER
@@ -147,23 +151,27 @@ def error_client(app: FastAPI) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def http_exception_route(app: FastAPI) -> Callable[[int, str], str]:
+def http_exception_route(app: FastAPI) -> Callable[..., str]:
     """登记一条「抛出框架 `HTTPException`」的测试专用路由，返回它的路径。
 
     模拟的是业务代码之外的框架路径：`HTTPBearer` 之类的依赖内部抛 401/403，
     调用点无法拦截（`HTTPBearer` 真实抛的是基类 `starlette.exceptions.HTTPException`，
-    且带 `WWW-Authenticate: Bearer` 头）。`detail` 刻意可定制，用来证明响应体不回显框架文案。
+    且带 `WWW-Authenticate: Bearer` 头）。`detail` 刻意可定制，用来证明响应体不回显框架文案；
+    `headers` 可选，用来证明 `exc.headers` 在**有体与无体两条路径**上都被原样透传。
     """
     counter = itertools.count()
 
-    def _register(status_code: int, detail: str) -> str:
+    def _register(status_code: int, detail: str, headers: Mapping[str, str] | None = None) -> str:
         path = f"/__test__/http-exc-{next(counter)}"
 
         async def _raise() -> None:
+            merged = dict(headers or {})
+            if status_code == 401:
+                merged.setdefault("WWW-Authenticate", "Bearer")
             raise StarletteHTTPException(
                 status_code=status_code,
                 detail=detail,
-                headers={"WWW-Authenticate": "Bearer"} if status_code == 401 else None,
+                headers=merged or None,
             )
 
         app.add_api_route(path, _raise, methods=["GET"], include_in_schema=False)
@@ -524,11 +532,82 @@ def test_http_exception_status_mapping_is_exactly_the_locked_pairs() -> None:
     assert set(HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS.values()) <= AICORE_ERROR_CODES
     assert all(400 <= status < 600 for status in HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS)
     # 兜底码必须在平台表内：405 之类没有专属码的状态只能落到这里，不许发明新码。
-    assert HTTP_EXCEPTION_4XX_FALLBACK_CODE == 1001
+    assert HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE == 1001
     assert HTTP_EXCEPTION_5XX_FALLBACK_CODE == 5000
-    assert {HTTP_EXCEPTION_4XX_FALLBACK_CODE, HTTP_EXCEPTION_5XX_FALLBACK_CODE} <= (
+    assert {HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE, HTTP_EXCEPTION_5XX_FALLBACK_CODE} <= (
         AICORE_ERROR_CODES
     )
+
+
+#: 框架契约下**不允许响应体**的状态（`fastapi.utils.is_body_allowed_for_status_code` 的判据：
+#: `< 200` 与 `204` / `205` / `304`）。表驱动，新增状态时只改这一处。
+BODILESS_HTTP_STATUSES = (204, 205, 304)
+
+#: 无体用例透传的协议头：证明 `exc.headers` 在有体与无体两条路径上都不丢。
+BODILESS_HEADERS = {"ETag": '"v1"', "Cache-Control": "no-store"}
+
+
+@pytest.mark.parametrize("status_code", BODILESS_HTTP_STATUSES)
+def test_bodiless_status_is_returned_without_a_body(
+    client: TestClient,
+    http_exception_route: Callable[..., str],
+    status_code: int,
+) -> None:
+    """无体状态 → **无体**响应，且 `exc.headers` 仍在（镜像框架默认处理器的契约）。
+
+    FastAPI 的默认 `http_exception_handler` 对这些状态回的是 `Response(status_code=…)`：
+    `204`/`205`/`304` 按 HTTP 契约 MUST NOT 带响应体。收编响应体若一律回 `JSONResponse`，
+    就会造出「204 带 `application/json` 与一个信封体」的畸形响应——比不收编更糟。
+    """
+    path = http_exception_route(status_code, FRAMEWORK_DETAIL_SENTINEL, dict(BODILESS_HEADERS))
+    response = client.get(path, follow_redirects=False)
+
+    assert response.status_code == status_code
+    # 无体：既没有 body，也没有 `application/json`（框架默认处理器连 `content-type` 都不带）。
+    assert response.content == b""
+    assert response.text == ""
+    assert "content-type" not in response.headers
+    assert FRAMEWORK_DETAIL_SENTINEL not in response.text
+    # `exc.headers` 在无体路径上同样原样透传（`WWW-Authenticate` 之外的头也不许丢）。
+    for name, value in BODILESS_HEADERS.items():
+        assert response.headers[name] == value
+
+
+def test_sub_400_status_is_enveloped_without_the_internal_error_code(
+    client: TestClient, http_exception_route: Callable[..., str]
+) -> None:
+    """sub-400 状态（这里取响应体允许的 `302`）走真实链路：**不是** `5000`。
+
+    sub-400 状态不是服务端故障，落 5xx 兜底会送出「内部错误」假信号。用 `302` 而不是
+    `204`/`304`：只有它允许响应体，`code` 才真的能被断言到（无体状态的码只进日志）。
+    """
+    path = http_exception_route(302, FRAMEWORK_DETAIL_SENTINEL, {"Location": "/health"})
+    response = client.get(path, follow_redirects=False)
+
+    body = assert_enveloped(
+        response,
+        302,
+        HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE,
+        DEFAULT_MESSAGES[HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE],
+    )
+    assert body["code"] != INTERNAL_ERROR_CODE
+    assert response.headers["Location"] == "/health"
+
+
+@pytest.mark.parametrize("status_code", [*BODILESS_HTTP_STATUSES, 100, 200, 302])
+def test_sub_400_status_never_maps_to_the_internal_error_code(status_code: int) -> None:
+    """`_http_exception_info` 对 sub-400 一律不落 `5000`，且码必须仍在平台表内。
+
+    `204`/`304` 的码进不了响应体（无体），只能在这个层级钉住；`100` 是框架理论上会抛的
+    1xx，`200`/`302` 代表响应体允许的 sub-400。三者一起把「`< 500` 走客户端侧兜底」这条
+    分段判据的正反两面钉死：只要有人把判据改回「落在 4xx 段」，本用例立刻变红。
+    """
+    info = _http_exception_info(status_code)
+    assert info.status_code == status_code
+    assert info.code != INTERNAL_ERROR_CODE, "sub-400 不是服务端故障，MUST NOT 落 5000"
+    assert info.code == HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE
+    assert info.code in AICORE_ERROR_CODES
+    assert info.message == DEFAULT_MESSAGES[info.code]
 
 
 # ---------------------------------------------------------------------------

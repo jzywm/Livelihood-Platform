@@ -70,8 +70,15 @@ HTTP 状态原样保留，只换响应体）：
 | 502 | `4003` | 锁定对（大模型 / 视觉 API 失败） |
 | 504 | `5002` | 锁定对（依赖超时 / 熔断） |
 | 500 | `5000` | 锁定对（内部错误） |
-| 其余 4xx | `1001` | 兜底：见 `HTTP_EXCEPTION_4XX_FALLBACK_CODE` 的注释 |
+| 其余 < 500（4xx 与 sub-400） | `1001` | 兜底：见 `HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE` 的注释 |
 | 其余 5xx | `5000` | 兜底：5xx 对本服务都是「内部错误」这一档 |
+
+**无体状态（与框架契约对齐）**：`1xx` / `204` / `205` / `304` 按 HTTP 契约**不允许响应体**，
+FastAPI 默认处理器对这些状态回的就是无体 `Response`（`fastapi/exception_handlers.py` 用
+`is_body_allowed_for_status_code` 判定）。收编响应体 MUST NOT 改变这一点，故本模块复用**同一个**
+判定函数（`fastapi.utils.is_body_allowed_for_status_code`，不自行重推 1xx/204/304 规则），
+无体状态返回无体 `Response` 并同样透传 `exc.headers`。当前不可达（路由层只抛 404/405，
+业务代码抛 `AiCoreError`），是刻意镜像框架契约。
 
 **文案策略**：框架的 `exc.detail` 是给开发者看的（`HTTPBearer` 抛的就是
 `"Not authenticated"` / `"Not enough permissions"`），故一律换成平台面向用户的文案，
@@ -87,7 +94,8 @@ from typing import Any, Final, NamedTuple, cast
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aicore.core.trace import get_trace_id
@@ -194,12 +202,16 @@ HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS: Final[Mapping[int, int]] = {
     504: DEPENDENCY_TIMEOUT_CODE,
 }
 
-#: 未匹配到的 4xx 的兜底业务码：**只能取平台表里真实存在的码，不为 405 之类的状态发明新码**。
+#: 未匹配到的 **< 500** 状态的兜底业务码：**只能取平台表里真实存在的码，不为 405 之类的状态
+#: 发明新码**。
 #: 取 `1001`（参数缺失）的理由：平台表的 `1xxx` 段是「参数校验」，而未匹配的路由
 #: （404）与不被允许的方法（405）**就是**「请求的这一路参数不对」——请求打错了地方；
 #: 普通业务 400 走 `AiCoreError` / `ParamError` 两档，不经过本兜底，
 #: 故此处不会遮住任何业务规则，代价只是 message 用 1001 的平台文案（不暴露路由细节）。
-HTTP_EXCEPTION_4XX_FALLBACK_CODE: Final = PARAM_MISSING_CODE
+#: 判据按 **500** 而不是 400 分段：`1xx`/`2xx`/`3xx` 这类 sub-400 状态**不是服务端故障**
+#: （框架理论上也可能经 `HTTPException` 抛出），落到 5xx 兜底会送出 `5000` 这一「内部错误」
+#: 假信号、惊动告警；它们与 4xx 同属「请求这一路不对」，故共用本兜底。
+HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE: Final = PARAM_MISSING_CODE
 
 #: 未匹配到的 5xx 的兜底业务码：对本服务而言 5xx 都是「内部错误」这一档。
 HTTP_EXCEPTION_5XX_FALLBACK_CODE: Final = INTERNAL_ERROR_CODE
@@ -215,7 +227,7 @@ ROUTE_NOT_FOUND_MESSAGE: Final = "接口不存在"
 HTTP_ERROR_MESSAGES: Final[Mapping[int, str]] = {404: ROUTE_NOT_FOUND_MESSAGE}
 
 #: HTTP 状态分段边界（`_http_exception_info` 的兜底档判据）：它们是 HTTP 状态，不是业务码。
-_CLIENT_ERROR_MIN: Final = 400
+#: 只需下界 500：「服务端故障」与「其余全部（含 sub-400）」就是这两档的分界。
 _SERVER_ERROR_MIN: Final = 500
 
 #: 每个业务码的默认提示文案：取自 `_common/openapi.yaml` 各 response 示例的 message，
@@ -379,7 +391,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     - `RequestValidationError` → HTTP 422 + `1xxx` 信封（收编框架默认的 `{"detail": [...]}`，
       否则前端会同时收到两种响应形状）；
     - `StarletteHTTPException` → 原 HTTP 状态 + 映射业务码的信封（覆盖 FastAPI 预注册的
-      `http_exception_handler`，它回的是 `{"detail": …}`）。**必须用 Starlette 的基类注册**：
+      `http_exception_handler`，它回的是 `{"detail": …}`）；状态不允许响应体时（`1xx` / `204` /
+      `205` / `304`）回无体 `Response`，与该默认处理器一致（判据复用 `fastapi.utils`）。
+      **必须用 Starlette 的基类注册**：
       FastAPI 预注册的键就是 `starlette.exceptions.HTTPException`，而路由层「未匹配路径」（404）
       与「方法不允许」（405）抛的正是这个基类实例，二者是同一个键；
       `HTTPBearer` 等依赖抛的 401/403 同理由此收编（详见模块 docstring）；
@@ -431,7 +445,7 @@ async def _handle_request_validation_error(request: Request, exc: Exception) -> 
     )
 
 
-async def _handle_http_exception(request: Request, exc: Exception) -> JSONResponse:
+async def _handle_http_exception(request: Request, exc: Exception) -> Response:
     """框架 `HTTPException` → 原 HTTP 状态 + 映射业务码的信封。
 
     收编对象（都在业务代码之外，调用点无法拦截）：
@@ -441,20 +455,40 @@ async def _handle_http_exception(request: Request, exc: Exception) -> JSONRespon
     - `HTTPBearer` 等框架依赖内部抛的 401 / 403；
     - 任何 `raise HTTPException(...)` 的历史代码（本服务的新代码 MUST NOT 这么写）。
 
-    三条口径（**MUST NOT 自行发挥**）：
+    四条口径（**MUST NOT 自行发挥**）：
 
     1. `exc.status_code` 原样作为响应的 HTTP 状态；
-    2. 业务码取 `_http_exception_info()` 的映射结果：锁定对优先，其余 4xx → 1001、5xx → 5000；
+    2. 业务码取 `_http_exception_info()` 的映射结果：锁定对优先，其余 < 500 → 1001、≥ 500 → 5000；
     3. 文案只取平台文案表（404 用 `ROUTE_NOT_FOUND_MESSAGE`），**MUST NOT 回显 `exc.detail`**
        —— 框架的 detail 是给开发者看的（`HTTPBearer` 抛的是 `"Not authenticated"`），
-       平台文案才是面向用户评审过的那一份。
+       平台文案才是面向用户评审过的那一份；
+    4. **状态不允许响应体时回无体响应**（见下）。
 
     `exc.headers` 原样透传：FastAPI 的默认处理器就是这么做，也是 HTTP 协议的要求
     （`HTTPBearer` 的 401 会带 `WWW-Authenticate: Bearer`）。收编响应体 MUST NOT 顺手丢掉它，
     否则 `WWW-Authenticate` 之类对客户端有协议意义的头会静默消失。
+
+    **无体状态**：`1xx` / `204` / `205` / `304` 不允许带响应体，故这里与 FastAPI 的默认
+    `http_exception_handler` 保持**同构**——复用框架自己的判定
+    （`fastapi.utils.is_body_allowed_for_status_code`，不重推 1xx/204/304 规则），命中即回
+    `Response(status_code=…)`（同样透传 `exc.headers`）。否则收编会造出「204 带
+    `application/json` 与一个信封体」这种违反 HTTP 契约的畸形响应，比不收编更糟。
+    本分支当前**不可达**：路由层只会抛 404/405，业务代码抛 `AiCoreError`；显式实现它是为了
+    镜像框架契约，而不是因为今天有调用方。
     """
     http_exc = cast(StarletteHTTPException, exc)
     info = _http_exception_info(http_exc.status_code)
+    if not is_body_allowed_for_status_code(info.status_code):
+        logger.info(
+            "框架 HTTP 异常 code=%s http=%s method=%s path=%s traceId=%s"
+            "（该状态不允许响应体，按框架契约回无体响应）",
+            info.code,
+            info.status_code,
+            request.method,
+            request.url.path,
+            get_trace_id(),
+        )
+        return Response(status_code=info.status_code, headers=http_exc.headers)
     body = _error_body(info.code, info.message)
     logger.info(
         "框架 HTTP 异常 code=%s http=%s method=%s path=%s traceId=%s",
@@ -494,19 +528,22 @@ async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResp
 def _http_exception_info(status_code: int) -> _HTTPExceptionInfo:
     """HTTP 状态 → `(状态, 业务码, 文案)`：锁定对优先，未列出的按段兜底。
 
-    - 4xx 兜底 `1001`、5xx 兜底 `5000`（理由见两个兜底常量的注释）；
+    - `< 500` 兜底 `1001`、`>= 500` 兜底 `5000`（理由见两个兜底常量的注释）；
     - 文案优先取 `HTTP_ERROR_MESSAGES[状态]`（目前只有 404 的专用文案），否则取该业务码的
       平台文案——两条路都**不碰** `exc.detail`；
-    - `status_code` 不在 4xx/5xx 段内时（框架理论上不会这么抛）按 5xx 兜底处理：宁可回
-      「内部错误」，也不把段外状态硬塞进某个业务段。
+    - 兜底判据是「是否 >= 500」而不是「是否落在 4xx 段」：`1xx`/`2xx`/`3xx` 这类 sub-400 状态
+      （框架理论上会抛，见模块 docstring）**不是服务端故障**，塞进 5xx 兜底会送出 `code=5000`
+      这个「内部错误」假信号；它们与 4xx 同属「请求这一路不对」，故共用客户端侧兜底 `1001`。
+      **sub-400 MUST NOT 落 `5000`**（用例
+      `test_sub_400_status_never_maps_to_the_internal_error_code` 正面钉住）。
     """
     code = HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS.get(status_code)
     if code is None:
-        # 400/500 是 HTTP 段边界字面量，不是业务码；此处刻意不引业务码常量，避免误读。
+        # 500 是 HTTP 段边界字面量，不是业务码；此处刻意不引业务码常量，避免误读。
         code = (
-            HTTP_EXCEPTION_4XX_FALLBACK_CODE
-            if _CLIENT_ERROR_MIN <= status_code < _SERVER_ERROR_MIN
-            else HTTP_EXCEPTION_5XX_FALLBACK_CODE
+            HTTP_EXCEPTION_5XX_FALLBACK_CODE
+            if status_code >= _SERVER_ERROR_MIN
+            else HTTP_EXCEPTION_SUB_5XX_FALLBACK_CODE
         )
     message = HTTP_ERROR_MESSAGES.get(status_code, DEFAULT_MESSAGES[code])
     return _HTTPExceptionInfo(status_code=status_code, code=code, message=message)
