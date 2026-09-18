@@ -100,7 +100,12 @@ def new_id(kind: str) -> str:
             f"生成的 ID 长度 {len(value)} 不等于 {MAX_ID_LENGTH}（前缀 {prefix!r}）："
             f"检查 ID_PREFIXES / MAX_ID_LENGTH 是否被改坏"
         )
-    if not validate_id(value, kind):
+    if not validate_id(value, kind):  # pragma: no cover - 不可达的防御性检查
+        # 为什么标 `no cover` 而不是造一个测试：`_UUID_HEX_LENGTHS` 由 `MAX_ID_LENGTH` 与前缀长度
+        # **现算**，故"长度对但格式不对"在结构上进不来（上面的长度检查已先拦）。
+        # 留它在这儿是为了挡住"将来有人把 `_UUID_HEX_LENGTHS` 改成手写字面量"这种改法——
+        # 那时本分支就会变成可达的真防线。造一个测试只能靠 monkeypatch 把常量改成自相矛盾的值，
+        # 那种测试测的是"猴补丁生效"，不是这条断言的价值。
         raise ValueError(f"生成的 ID 未通过自校验：{value!r}")
     return value
 
