@@ -5,6 +5,23 @@ checkout）拦住「文档改了表没跟上 / 表改了文档没跟上」这类
 「er.md 与 DDL 单边改动」）。真实 `information_schema` 侧的一致性由集成用例承担，
 本用例只做离线文本层比对，故 MUST NOT 依赖数据库、网络或任何密钥。
 
+**解析只剩一份**（Task 3.6b 重构）：DDL 与 `er.md` 的解析一律调共享层
+`aicore.repository.schema`（`parse_ddl` / `parse_ddl_directory` / `parse_er_md` /
+`normalize_type` / `strip_sql_comments` / `diff`），占位符渲染与 SQL 骨架一律调
+`aicore.repository.sharding`（`render_shard_template` / `sql_skeleton`）。
+本文件 **MUST NOT** 再出现第二份解析或渲染实现 —— Task 3.6 的价值全在「一致性检查本身
+可信」，而两份实现的漂移表现是 `test_ddl_matches_er.py` 绿、`compare_schema.py` 红
+（或反之）：两个都叫「一致性检查」的工具互相矛盾，没人知道该信谁。
+
+**本文件唯一的局部解析是 `parse_er_defaults`**（`er.md` 的「默认」列）：共享层的
+`ColumnSpec` 刻意只承载**四个来源都表达得了**的维度，而默认值只有 `er.md` 与 DDL
+表达得了。详见该函数 docstring 里的完整理由。
+
+**本文件独有的注释维度检查**：`COMMENT_*_RE` / `DDL_COLUMN_ITEM_RE` /
+`split_column_clauses` / `collect_column_clauses` 与
+`test_every_column_and_table_has_chinese_comment` —— 共享层只比结构
+（表 / 列 / 类型 / 可空 / 枚举），**不比注释**，故这几件留在本地。
+
 **期望值从哪来**（brief 硬性要求）：列名 / 类型 / 可空性 / 默认值 / 枚举值的期望值一律
 **解析自 `docs/er.md` 与 `docs/openapi.yaml`**，MUST NOT 把数据字典的内容抄进本文件当期望值
 —— 抄两遍等于把同一个笔误写两处，双双写错也发现不了。本文件里**唯一**硬编码的是
@@ -21,29 +38,41 @@ openapi 的枚举值集（`OPENAPI_ENUM_SPOT_CHECK`）与 DDL 列 -> openapi 路
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-# 注意：`Mapping` / `Sequence` **MUST NOT** 只放在 `if TYPE_CHECKING:` 里。
-# 它们在本文件里是**运行期**用到的（`isinstance(document, Mapping)` 与函数签名），
+from aicore.repository import schema, sharding
+
+# 注意：`Mapping` **MUST NOT** 只放在 `if TYPE_CHECKING:` 里。
+# 它在本文件里是**运行期**用到的（`isinstance(document, Mapping)` 与函数签名），
 # 只在类型检查期导入会让 `load_openapi()` 抛 `NameError: name 'Mapping' is not defined`
 # —— 本任务首轮就是这么挂掉 18 条用例的（报错点离真正原因很远，极难回推）。
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ER_MD = PROJECT_ROOT / "docs" / "er.md"
-OPENAPI_YAML = PROJECT_ROOT / "docs" / "openapi.yaml"
-DDL_DIR = PROJECT_ROOT / "deploy" / "sql" / "ddl"
+# ---------------------------------------------------------------------------
+# 路径口径与共享层**同源**
+#
+# `DDL_DIR` / `ER_MD` 直接取共享层常量，本文件 MUST NOT 另算一份路径：
+# 两份路径定义会在目录搬迁时漂移，而漂移的表现是"两个工具各比各的、结论互相矛盾"。
+# `openapi.yaml` 只有本文件用（共享层不管它），故它的路径写在这里。
+# ---------------------------------------------------------------------------
+SERVICE_ROOT = schema.SERVICE_ROOT
+DDL_DIR = schema.DDL_DIR
+ER_MD = schema.ER_MD
+OPENAPI_YAML = SERVICE_ROOT / "docs" / "openapi.yaml"
 
 # ---------------------------------------------------------------------------
 # 逻辑表 -> DDL 文件（brief 的 Files 表逐行落位）
 #
+# **刻意不从 `repository/sharding.py` 取这份清单**：它是本用例的**独立期望源**
+# （`test_ddl_directory_matches_brief_manifest` 拿它去卡真实目录，见该用例 docstring），
+# 从被测实现里取清单会让断言退化成"自己跟自己比"。
+#
 # 三张分片表用 `.template.sql`（含 {table} / {month} 占位符，不能直接执行）；
-# 六张非分片表用 `.sql`。本任务的建表演练月固定为 202601。
+# 六张非分片表用 `.sql`。
 # ---------------------------------------------------------------------------
 SHARDED_TABLES: dict[str, str] = {
     "ai_task": "10_ai_task.template.sql",
@@ -61,8 +90,10 @@ FIXED_TABLES: dict[str, str] = {
 ALL_TABLES: dict[str, str] = {**SHARDED_TABLES, **FIXED_TABLES}
 
 # brief：物理表名形如 `ai_task_202601`；渲染/演练统一用这个月。
+#
+# **刻意是常量而非当前月**（共享层把 `month` 设计成必填的调用方参数正是为此）：
+# 本比对与"今天是几月"无关，取当前月会让同一份代码在元旦、月末得出不同结论。
 RENDER_MONTH = "202601"
-PHYSICAL_SUFFIX_RE = re.compile(r"_\d{6}$")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 # ---------------------------------------------------------------------------
@@ -129,170 +160,67 @@ MIN_ENUM_COLUMNS = 11
 MIN_OPENAPI_ENUM_LINES = 10
 MIN_TIMESTAMP_DEFAULT_COLUMNS = 3
 
+
 # ---------------------------------------------------------------------------
-# 通用解析工具
+# 共享层调用点
+#
+# 下面两个函数**不含任何解析**，只是共享层的调用点：把"用哪个月渲染模板"这一个决策
+# 收在一处。它们 MUST NOT 长出解析逻辑 —— 那正是本次重构删掉的第二份实现。
 # ---------------------------------------------------------------------------
-# 类型 = 类型名 [+ 括号参数] [+ unsigned]，其后必须紧跟空白或行尾。
-# 用 `(?=\s|$)` 而不是忽略尾部：否则 `varchar2(32)` 这类拼错的类型名会被前缀匹配
-# 静默截成 `varchar`，与数据字典"相等"而本用例全绿——那是最危险的一类假绿。
-DDL_TYPE_RE = re.compile(
-    r"^(?P<type>[a-z]+(?:\s*\([^)]*\))?(?:\s+unsigned)?)(?=\s|$)", re.IGNORECASE
+def load_er_tables() -> dict[str, schema.TableSpec]:
+    """`er.md` §6 数据字典 -> `{逻辑表名: TableSpec}`（解析全部由共享层做）。"""
+    return schema.parse_er_md(ER_MD.read_text(encoding="utf-8"))
+
+
+def load_ddl_tables() -> dict[str, schema.TableSpec]:
+    """`deploy/sql/ddl/**` -> `{逻辑表名: TableSpec}`（共享层解析 + 共享层渲染模板）。"""
+    return schema.parse_ddl_directory(DDL_DIR, month=RENDER_MONTH)
+
+
+# ---------------------------------------------------------------------------
+# 文本级助手（共享层不做"读某个文件的第几条语句"这类事）
+# ---------------------------------------------------------------------------
+def ddl_file(table: str) -> Path:
+    return DDL_DIR / ALL_TABLES[table]
+
+
+def read_ddl(table: str) -> str:
+    return ddl_file(table).read_text(encoding="utf-8")
+
+
+def first_create_table_block(table: str) -> str:
+    """取某个 DDL 文件里第一条 CREATE TABLE 语句（含 ENGINE / COMMENT 等后缀）。"""
+    text = schema.strip_sql_comments(read_ddl(table))
+    match = re.search(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\b.*?;", text, re.IGNORECASE | re.DOTALL)
+    assert match, f"{ALL_TABLES[table]} 中找不到 CREATE TABLE 语句"
+    return match.group(0)
+
+
+def collect_index_names(block: str) -> list[str]:
+    """建表正文 -> 显式索引名序列（`idx_*` / `uk_*`；PRIMARY KEY 无名字，不计入）。
+
+    给集成用例做**非空下限**用：只断言"information_schema 里有 4 条外键"而不看索引，
+    等于让"索引整批漏建"静默通过；期望值现取自 DDL 自身，不另抄一份清单。
+    """
+    flat = re.sub(r"\s+", " ", schema.strip_sql_comments(block))
+    return re.findall(r"(?:UNIQUE\s+)?(?:KEY|INDEX)\s+`((?:idx|uk)_\w+)`", flat, re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# 本文件独有的**注释维度**检查（共享层只比结构，不比注释）
+# ---------------------------------------------------------------------------
+COMMENT_COUNT_RE = re.compile(r"\bCOMMENT\b", re.IGNORECASE)
+# 表注释：`COMMENT='...'`（table option 形态）。中文 MUST 落在**引号内**。
+TABLE_CN_COMMENT_RE = re.compile(r"COMMENT\s*=\s*'[^']*" + CJK_RE.pattern + r"[^']*'")
+# 列注释：`COMMENT '...'`（列属性形态），支持 `\'` 转义。中文同样 MUST 落在**引号内**。
+COLUMN_COMMENT_RE = re.compile(r"COMMENT\s+'(?:[^'\\]|\\.)*'")
+COLUMN_CN_COMMENT_RE = re.compile(
+    r"COMMENT\s+'(?:[^'\\]|\\.)*" + CJK_RE.pattern + r"(?:[^'\\]|\\.)*'"
 )
-ENUM_TYPE_RE = re.compile(r"enum\((?P<values>.+)\)", re.IGNORECASE)
-CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+`(?P<name>[^`]+)`\s*\((?P<body>.*?)\)\s*ENGINE\s*=",
-    re.IGNORECASE | re.DOTALL,
-)
-ER_HEADING_RE = re.compile(r"^###\s+6\.\d+")
-# 从标题里取**表名**：编号后紧跟的 ASCII 标识符（`6.1 ai_task（...）` -> `ai_task`）。
-# 取不到（形如 `6.10 辅助结构（...）`）时回退成整行标题当键 —— 键只需**稳定且唯一**；
-# 真正决定"这一节算不算数据字典"的是表头口径，不是这个键长什么样。
-ER_TABLE_NAME_RE = re.compile(r"^###\s+6\.\d+\s+([A-Za-z_]\w*)?")
-# 数据字典表格的表头（6 列口径）。「本节到底是不是数据字典」**只认这一行**，
-# 不认标题文字 —— 标题里既有 `6.1 ai_task（...）` 也有 `6.10 辅助结构（Redis / MQ / OSS）`，
-# 靠中文/ASCII 前缀区分迟早再漏一个（§6.10 就是这么把 9 张表一起带崩的）。
-MD_HEADER_CELLS = ["字段", "类型", "空", "键", "默认", "说明"]
 # 反引号列项（`` `col` 类型... ``）的开头：用来把「列」与「索引/约束项」分开。
-# 判据与 parse_ddl_columns 同源：PRIMARY/UNIQUE/KEY/INDEX/CONSTRAINT/FOREIGN/CHECK
-# 这些项**不是**反引号列名开头，故不会被误判成列。
+# 判据与共享层的 `_NON_COLUMN_PREFIX_RE` 同源：PRIMARY/UNIQUE/KEY/INDEX/CONSTRAINT/
+# FOREIGN/CHECK 这些项**不是**反引号列名开头，故不会被误判成列。
 DDL_COLUMN_ITEM_RE = re.compile(r"^`[^`]+`\s+\S")
-
-
-@dataclass(frozen=True)
-class Column:
-    """一列的比对口径：DDL 与数据字典都表达得了的维度。"""
-
-    name: str
-    type: str
-    nullable: bool
-
-
-@dataclass(frozen=True)
-class DdlTable:
-    """DDL 里的一张表：渲染后的表名 + 逐列定义 + 建表正文（列/索引/约束项）。"""
-
-    name: str
-    columns: list[Column]
-    create_body: str
-
-
-class ErFormatError(Exception):
-    """er.md 的 markdown 表格结构与预期不符。"""
-
-
-def _split_markdown_row(line: str) -> list[str]:
-    """切分 markdown 表格行：先把转义竖线 `\\|` 换成占位符再切，最后还原。"""
-    placeholder = "\x00PIPE\x00"
-    cells = line.replace(r"\|", placeholder).split("|")
-    return [cell.strip().replace(placeholder, "|") for cell in cells]
-
-
-def _strip_outer_empty(cells: list[str]) -> list[str]:
-    """去掉 markdown 行首/行尾竖线带来的空单元格。"""
-    return [
-        cell
-        for index, cell in enumerate(cells)
-        if not (index in (0, len(cells) - 1) and cell == "")
-    ]
-
-
-def _is_separator_row(cells: Sequence[str]) -> bool:
-    return bool(cells) and all(set(cell) <= set("-: ") and "-" in cell for cell in cells)
-
-
-def _iter_er_rows(path: Path) -> Iterable[tuple[str, list[str]]]:
-    """依次交出 `er.md` §6 每张表的每个数据行（表名 + 单元格）。
-
-    **章节边界与表头判定必须解耦**（本任务首轮的血债）：`§6.10 辅助结构（Redis / MQ / OSS）`
-    的表头是「结构 / 类型 / 说明」（3 列），按"标题后面是不是 ASCII 表名"来圈章节会漏掉它，
-    于是它的三行被当成上一节 `vision_qa_log` 的数据行 → 列数不足 → 抛错 → 连带 8 条用例全红。
-
-    故本函数改成：
-      1. 逐行扫描；
-      2. 遇到 `^###\\s+6\\.\\d+`（**只认编号前缀，不要求后面是 ASCII**）就看它后面的第一张表
-         是不是 6 列数据字典口径：是 -> 进入数据字典状态；不是 -> `current = None`，
-         整节直到下一个 `### 6.x` 之前都**不解析、也不抛错**；
-      3. `current is None` 时任何 `|` 行都被忽略；
-      4. 处于数据字典状态时，数据行列数不足 6 **照旧抛 `ErFormatError`**
-         —— 这是"解析塌了要报警"的防线，**不为了让 §6.10 过而删掉**。
-    """
-    lines = path.read_text(encoding="utf-8").splitlines()
-    total = len(lines)
-    index = 0
-    while index < total:
-        line = lines[index]
-        index += 1
-        if not ER_HEADING_RE.match(line):
-            continue
-        # 找到本节第一张表格的第一行
-        while index < total and not lines[index].startswith("|"):
-            index += 1
-        rows: list[list[str]] = []
-        while index < total and lines[index].startswith("|"):
-            rows.append(_strip_outer_empty(_split_markdown_row(lines[index])))
-            index += 1
-        header = rows[0] if rows else []
-        body = [cells for cells in rows[1:] if not _is_separator_row(cells)]
-        if list(header) != MD_HEADER_CELLS:
-            # 非数据字典口径（§6.10 辅助结构）-> 本节退出比对范围
-            continue
-        match = ER_TABLE_NAME_RE.match(line)
-        table = (match.group(1) if match else None) or line
-        for cells in body:
-            if len(cells) < len(MD_HEADER_CELLS):
-                raise ErFormatError(
-                    f"{path.name} 表 {table} 行列数不足"
-                    f" {len(MD_HEADER_CELLS)}：{' | '.join(cells)}"
-                )
-            yield table, cells
-
-
-def _normalize_type(raw: str) -> str:
-    """类型归一：**只小写类型名，括号内的参数保原样**。
-
-    为什么不能整体 `.lower()`（首轮的真缺陷）：`er.md` 的类型列写的是
-    `enum('VALID','EXPIRING','EXPIRED','UNKNOWN')` —— 括号里是**枚举值**，
-    它们是 SQL 字符串字面量，**大小写敏感**。整体小写会把期望值变成
-    `('valid','expiring',...)`，与 DDL 的 `('VALID',...)` 必然不等，
-    于是 11 个枚举列全报"枚举值不一致"（实测就是这 11 条）。
-
-    而括号**外**的部分（`VARCHAR` / `Int UNSIGNED` / `DATETIME`）大小写不敏感，
-    必须归一，否则 `int UNSIGNED`（`er.md`）与 `int unsigned`（DDL）会被判成不同。
-
-    实现方式：显式扫描而不是正则 `^([^(]*)[(](.*)[)]$` ——
-    枚举值里可能出现 `)`（如 `enum('A)','B')`），正则会在错的括号处断句；
-    扫描按"引号优先、深度计数"处理，天然免疫。
-    """
-    text = re.sub(r"\s+", " ", raw.strip())
-    out: list[str] = []
-    depth = 0
-    quote: str | None = None
-    for char in text:
-        if quote is not None:
-            out.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in {"'", '"'}:
-            quote = char
-            out.append(char)
-            continue
-        if char == "(":
-            depth += 1
-            out.append(char)
-            continue
-        if char == ")":
-            depth = max(depth - 1, 0)
-            out.append(char)
-            continue
-        # 括号外（depth == 0）类型名部分才小写；括号内是参数，保原样
-        out.append(char.lower() if depth == 0 else char)
-    return "".join(out)
-
-
-def _parse_enum_values(raw: str) -> tuple[str, ...]:
-    """`'A','B'` -> `("A", "B")`（去引号与空白，保持文档里的顺序）。"""
-    return tuple(value.strip().strip("'").strip('"') for value in raw.split(",") if value.strip())
 
 
 def split_column_clauses(block: str) -> list[str]:
@@ -303,14 +231,16 @@ def split_column_clauses(block: str) -> list[str]:
     截断必然把注释切掉 —— 结果是"DDL 里明明有中文注释却报缺失"的假红（本任务首轮的
     四处假红：`vision_review.biz_type` / `status` / `confidence_level` / `confidence`）。
 
-    复用 `_split_top_level(body)`：它已经正确处理括号与引号，切出来的就是**顶层列项**
-    （列 / 索引 / 约束各成一项）。每项再按"行首是不是新的反引号列名"细分成弱换行的同列续行，
-    最后只保留**以反引号列名开头**的项 —— `CREATE TABLE ... (` 前缀、索引项、约束项、
-    收尾的 `)` 全部落选（否则 `by_name` 与 `clauses` 的长度会对不上，那正是本函数的下限自检）。
+    顶层切分**复用共享层的 `schema._split_top_level`**（本文件 MUST NOT 再写一份）：
+    它已正确处理括号与引号，切出来的就是**顶层列项**（列 / 索引 / 约束各成一项）。
+    每项再按"行首是不是新的反引号列名"细分成弱换行的同列续行，最后只保留
+    **以反引号列名开头**的项 —— `CREATE TABLE ... (` 前缀、索引项、约束项、
+    收尾的 `)` 全部落选（否则 `by_name` 与 `clauses` 的长度会对不上，
+    那正是 `test_every_column_and_table_has_chinese_comment` 的下限自检）。
     """
     clauses: list[str] = []
     buffer: list[str] = []
-    for item in _split_top_level(block):
+    for item in schema._split_top_level(block):
         for raw_line in item.splitlines():
             if raw_line.lstrip().startswith("`") and buffer:
                 clauses.append("\n".join(buffer).strip())
@@ -331,197 +261,98 @@ def collect_column_clauses(block: str) -> dict[str, str]:
     return clauses
 
 
-def strip_sql_comments(source: str) -> str:
-    """去掉 `--` 行注释，避免注释里的示例 SQL 被当成真实 DDL 解析。"""
-    return "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("--"))
-
-
-def strip_sql_string_literals(source: str) -> str:
-    """把 `'...'` 字符串字面量的**内容**掏空，只留空引号。
-
-    **为什么需要它**（FIX-3 的真正根因，工单里写的 `strip_sql_comments` 并不够）：
-    模板里那些花括号示例不在 `--` 注释里，而在**列 COMMENT 的字符串字面量**里，例如
-    ``COMMENT '...：{channel, provider, modelVersion, ...}'`` 与
-    ``COMMENT '... GET /aicore/tasks/{taskId}'``。`strip_sql_comments` 只吃 `--` 行，
-    所以剥完这些花括号**还在**（实测：剥注释后仍含花括号 = True）。
-
-    结构性判据：字符串字面量在 MySQL 里是**数据**，永远不会被当 SQL 解析 —— 所以
-    "这个模板渲染后还有没有残留占位符"只应对**代码骨架**发问，问法就是先把字面量掏空。
-    **MUST NOT** 反过来把注释/示例里的花括号删掉：那是给人看的文档，
-    为迁就一条断言而改文档是本末倒置。
-    """
-    return re.sub(r"'(?:[^'\\]|\\.)*'", "''", source)
-
-
-def render_template(source: str, table: str, month: str) -> str:
-    """按 brief 的占位符协议渲染模板（{table} 本表名、{month} 同月兄弟表月份）。"""
-    return source.replace("{table}", table).replace("{month}", month)
-
-
-def parse_er_tables(path: Path = ER_MD) -> dict[str, list[Column]]:
-    """解析 `er.md` §6 的 9 张表（列：字段 / 类型 / 空 / 键 / 默认 / 说明）。"""
-    tables: dict[str, list[Column]] = {}
-    for table, cells in _iter_er_rows(path):
-        field, raw_type, nullable = cells[0], cells[1], cells[2]
-        if nullable not in {"YES", "NO"}:
-            raise ErFormatError(f"{path.name} 表 {table} 的「空」列既非 YES 也非 NO：{cells}")
-        tables.setdefault(table, []).append(
-            Column(name=field, type=_normalize_type(raw_type), nullable=nullable == "YES")
-        )
-    return tables
-
-
+# ---------------------------------------------------------------------------
+# `er.md` 的「默认」列 —— **本文件唯一的局部解析**
+# ---------------------------------------------------------------------------
 def parse_er_defaults(path: Path = ER_MD) -> dict[str, dict[str, str]]:
     """解析 `er.md` §6 的「默认」列：`表 -> {列: 默认值}`（`NULL` / `—` / `CURRENT_TIMESTAMP(3)`）。
 
-    注：`er.md` 该列取值形如 `NULL` / `—`（破折号） / `CURRENT_TIMESTAMP(3)`。
+    ## 为什么共享层没有它（MUST 保留这段理由，防后来者"顺手统一掉"）
+
+    共享层的 `ColumnSpec` 刻意只承载**四个来源都表达得了**的维度
+    （名 / 类型 / 可空 / 枚举值）。「默认值」只有 `er.md` 与 DDL 表达得了 ——
+    把它塞进 `ColumnSpec` 会让 `information_schema` 与模型侧**永远缺这一维**，
+    于是四源比对的差异清单里会常年挂着"默认值不一致"的噪音（或更糟：有人为了消噪音
+    把这条检查关掉）。故本函数留在本地，只读这一列。
+
+    ## 章节与单元格判据仍然复用共享层
+
+    `schema._ER_HEADING_RE` / `schema.ER_HEADER_CELLS` / `schema._split_markdown_row` /
+    `schema._strip_outer_empty` / `schema._is_separator_row` 全部取自共享层，
+    本函数**只多做一件事**：取第 5 个单元格。
+    **MUST NOT** 在这里另写一套表头/章节判据 —— 那正是 Task 3.1 首轮把
+    §6.10「辅助结构」（3 列表）当成 `vision_qa_log` 的数据行、连带 8 条用例全红的坑。
+
+    ## 行数交叉自检（防"局部解析悄悄分叉"）
+
+    每张表读到的数据行数 MUST 等于共享层解出的列数。不等即说明两个读者对
+    "哪些行算数据行"的理解已经分叉 —— 那样本函数给出的默认值会张冠李戴，
+    而 `test_timestamp_defaults_match_er_notes` 会**变成一条假断言**（对着错的行比）。
     """
+    text = path.read_text(encoding="utf-8")
+    # 先让共享层校验并解出结构："数据行列数不足""空列既非 YES 也非 NO"等一律由它报错，
+    # 本函数不重复这些校验（也正因如此，下面的 cells[4] 不会被短行打穿）。
+    structure = schema.parse_er_md(text)
+
+    lines = text.splitlines()
+    total = len(lines)
+    index = 0
     defaults: dict[str, dict[str, str]] = {}
-    for table, cells in _iter_er_rows(path):
-        defaults.setdefault(table, {})[cells[0]] = cells[4]
+    while index < total:
+        line = lines[index]
+        index += 1
+        if schema._ER_HEADING_RE.match(line) is None:
+            continue
+        # 本节第一张表格的第一行。
+        while index < total and not lines[index].startswith("|"):
+            index += 1
+        rows: list[list[str]] = []
+        while index < total and lines[index].startswith("|"):
+            rows.append(schema._strip_outer_empty(schema._split_markdown_row(lines[index])))
+            index += 1
+        header = rows[0] if rows else []
+        if tuple(header) != schema.ER_HEADER_CELLS:
+            continue  # 非数据字典口径（如 §6.10 辅助结构）-> 本节退出比对范围
+        name_match = schema._ER_TABLE_NAME_RE.match(line)
+        if name_match is None:
+            raise schema.SchemaParseError(f"无法从数据字典标题取表名：{line!r}")
+        table = name_match.group(1)
+        for cells in rows[1:]:
+            if schema._is_separator_row(cells):
+                continue
+            defaults.setdefault(table, {})[cells[0]] = cells[4]
+
+    if set(defaults) != set(structure):
+        raise schema.SchemaParseError(
+            f"「默认」列读到的表集合与共享层解出的不一致："
+            f"仅默认列有 {sorted(set(defaults) - set(structure))}，"
+            f"仅共享层有 {sorted(set(structure) - set(defaults))}"
+        )
+    for table, columns in defaults.items():
+        expected = len(structure[table].columns)
+        if len(columns) != expected:
+            raise schema.SchemaParseError(
+                f"表 {table} 的「默认」列读到 {len(columns)} 行，共享层解出 {expected} 列："
+                f"两个读者对「哪些行算数据行」的理解已分叉，默认值会张冠李戴"
+            )
     return defaults
 
 
-def _split_top_level(body: str) -> list[str]:
-    """按顶层逗号切分建表正文（跳过括号与引号内部），得到列/索引/约束项。"""
-    items: list[str] = []
-    buf: list[str] = []
-    depth = 0
-    quote: str | None = None
-    for char in body:
-        if quote is not None:
-            buf.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in {"'", '"', "`"}:
-            quote = char
-            buf.append(char)
-            continue
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-        if char == "," and depth == 0:
-            items.append("".join(buf).strip())
-            buf = []
-            continue
-        buf.append(char)
-    tail = "".join(buf).strip()
-    if tail:
-        items.append(tail)
-    return items
+# ---------------------------------------------------------------------------
+# 枚举取值（一律现取共享层解好的 `enum_values`，不另写 `enum(...)` 正则）
+# ---------------------------------------------------------------------------
+def collect_enums(tables: Mapping[str, schema.TableSpec]) -> dict[str, tuple[str, ...]]:
+    """`表.列 -> 枚举值序列`（从共享层解出的 `ColumnSpec.enum_values` 现取，不抄写）。
 
-
-def parse_ddl_columns(create_body: str) -> list[Column]:
-    """从 `CREATE TABLE ... ( ... )` 的正文里抽列定义（跳过索引、外键约束等项）。"""
-    columns: list[Column] = []
-    for item in _split_top_level(create_body):
-        stripped = item.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if re.match(
-            r"^(PRIMARY|UNIQUE|KEY|INDEX|CONSTRAINT|FOREIGN|CHECK)\b", stripped, re.IGNORECASE
-        ):
-            continue
-        column = re.match(r"^`(?P<name>[^`]+)`\s+(?P<rest>.+)$", stripped, re.DOTALL)
-        if not column:
-            raise AssertionError(f"无法解析的建表项（既非索引也非反引号列定义）：{stripped!r}")
-        rest = column.group("rest").strip()
-        type_match = DDL_TYPE_RE.match(rest)
-        if not type_match:
-            raise AssertionError(f"列 {column.group('name')} 的类型无法解析：{rest!r}")
-        columns.append(
-            Column(
-                name=column.group("name"),
-                type=_normalize_type(type_match.group("type")),
-                nullable=re.search(r"\bNOT\s+NULL\b", rest, re.IGNORECASE) is None,
-            )
-        )
-    return columns
-
-
-def parse_ddl_tables(source: str) -> list[DdlTable]:
-    """解析一个 DDL 文件里的全部 `CREATE TABLE`（本任务每个文件恰好一张表）。"""
-    text = strip_sql_comments(source)
-    return [
-        DdlTable(
-            name=match.group("name"),
-            columns=parse_ddl_columns(match.group("body")),
-            create_body=match.group("body"),
-        )
-        for match in CREATE_TABLE_RE.finditer(text)
-    ]
-
-
-def collect_index_names(block: str) -> list[str]:
-    """建表正文 -> 显式索引名序列（`idx_*` / `uk_*`；PRIMARY KEY 无名字，不计入）。
-
-    给集成用例做**非空下限**用：只断言"information_schema 里有 4 条外键"而不看索引，
-    等于让"索引整批漏建"静默通过；期望值现取自 DDL 自身，不另抄一份清单。
+    **为什么不再扫 `enum(...)` 文本**：DDL 与 `er.md` 两侧的枚举解析已在共享层里，
+    本文件再扫一遍就等于又开了一份实现 —— 两份实现漂移时，正是"两个一致性检查互相
+    矛盾"的那类故障（Task 3.6b 的返工对象）。
     """
-    flat = re.sub(r"\s+", " ", strip_sql_comments(block))
-    return re.findall(r"(?:UNIQUE\s+)?(?:KEY|INDEX)\s+`((?:idx|uk)_\w+)`", flat, re.IGNORECASE)
-
-
-def normalize_logical_name(physical_name: str) -> str:
-    """物理分片表名 -> 逻辑表名（`ai_task_202601` -> `ai_task`）。"""
-    return PHYSICAL_SUFFIX_RE.sub("", physical_name)
-
-
-def ddl_file(table: str) -> Path:
-    return DDL_DIR / ALL_TABLES[table]
-
-
-def read_ddl(table: str) -> str:
-    return ddl_file(table).read_text(encoding="utf-8")
-
-
-def parse_all_ddl_tables() -> dict[str, DdlTable]:
-    """逻辑表名 -> DDL 解析结果（分片模板先按逻辑名渲染再解析，与非分片表同口径）。"""
-    parsed: dict[str, DdlTable] = {}
-    for table in ALL_TABLES:
-        source = read_ddl(table)
-        if table in SHARDED_TABLES:
-            source = render_template(source, table, RENDER_MONTH)
-        tables = parse_ddl_tables(source)
-        assert len(tables) == 1, (
-            f"{ALL_TABLES[table]} 期望恰好 1 张表，实际解析到 {[item.name for item in tables]}"
-        )
-        parsed[table] = tables[0]
-    return parsed
-
-
-def first_create_table_block(table: str) -> str:
-    """取某个 DDL 文件里第一条 CREATE TABLE 语句（含 ENGINE / COMMENT 等后缀）。"""
-    text = strip_sql_comments(read_ddl(table))
-    match = re.search(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\b.*?;", text, re.IGNORECASE | re.DOTALL)
-    assert match, f"{ALL_TABLES[table]} 中找不到 CREATE TABLE 语句"
-    return match.group(0)
-
-
-def collect_ddl_enums() -> dict[str, tuple[str, ...]]:
-    """全部 DDL 枚举列：`表.列 -> 枚举值序列`（分片模板按逻辑表名渲染后解析）。"""
     collected: dict[str, tuple[str, ...]] = {}
-    for table, ddl_table in parse_all_ddl_tables().items():
-        for item in _split_top_level(ddl_table.create_body):
-            column = re.match(
-                r"^`(?P<name>[^`]+)`\s+enum\((?P<values>.*?)\)", item.strip(), re.DOTALL
-            )
-            if column:
-                key = f"{table}.{column.group('name')}"
-                collected[key] = _parse_enum_values(column.group("values"))
-    return collected
-
-
-def collect_er_enums(er_tables: Mapping[str, Sequence[Column]]) -> dict[str, tuple[str, ...]]:
-    """数据字典里的枚举列：`表.列 -> 枚举值序列`（从「类型」列现解，不抄写）。"""
-    collected: dict[str, tuple[str, ...]] = {}
-    for table, columns in er_tables.items():
-        for column in columns:
-            match = ENUM_TYPE_RE.fullmatch(column.type)
-            if match:
-                collected[f"{table}.{column.name}"] = _parse_enum_values(match.group("values"))
+    for table, spec in tables.items():
+        for column in spec.columns:
+            if column.enum_values is not None:
+                collected[f"{table}.{column.name}"] = column.enum_values
     return collected
 
 
@@ -554,35 +385,12 @@ def format_differences(title: str, differences: Iterable[str]) -> str:
     return f"{title}（{len(items)} 处差异）：\n{listed}"
 
 
-def diff_columns(table: str, expected: Sequence[Column], actual: Sequence[Column]) -> list[str]:
-    """逐列比对：列名序列、类型、可空性；差异按字段逐条给出期望与实际。"""
-    expected_names = [column.name for column in expected]
-    actual_names = [column.name for column in actual]
-    if expected_names != actual_names:
-        return [
-            f"表 {table} 列名序列不一致（期望 er.md 的顺序）\n"
-            f"      期望 {expected_names}\n      实际 {actual_names}"
-        ]
-    differences: list[str] = []
-    for want, got in zip(expected, actual, strict=True):
-        if want.type != got.type:
-            differences.append(
-                f"表 {table} 字段 {want.name} 类型不一致：期望 {want.type}，实际 {got.type}"
-            )
-        if want.nullable != got.nullable:
-            differences.append(
-                f"表 {table} 字段 {want.name} 可空性不一致："
-                f"期望 {'YES' if want.nullable else 'NO'}，实际 {'YES' if got.nullable else 'NO'}"
-            )
-    return differences
-
-
 # ---------------------------------------------------------------------------
 # 断言 1：逐列比对（表集合 / 列名序列 / 类型 / 可空性 / 默认值）
 # ---------------------------------------------------------------------------
 def test_er_md_parses_all_nine_tables() -> None:
     """非空下限 + 表集合：9 张表必须都解析出来，否则下面的比对会静默缩水。"""
-    er_tables = parse_er_tables()
+    er_tables = load_er_tables()
     assert len(er_tables) >= MIN_ER_TABLES, (
         f"er.md 只解析到 {len(er_tables)} 张表（下限 {MIN_ER_TABLES}）：{'/'.join(er_tables)}"
     )
@@ -594,7 +402,12 @@ def test_er_md_parses_all_nine_tables() -> None:
 
 
 def test_ddl_directory_matches_brief_manifest() -> None:
-    """DDL 目录的文件清单必须与 brief 的 Files 表一致（一个不多一个不少）。"""
+    """DDL 目录的文件清单必须与 brief 的 Files 表一致（一个不多一个不少）。
+
+    `ALL_TABLES` 是**本文件按 brief 手写的期望清单**，MUST NOT 改成从
+    `repository/sharding.py` 取：那样断言会退化成"实现与自己比"，
+    新建 DDL 文件却忘了登记这种事就再也抓不到了。
+    """
     expected = sorted(["00_create_database.sql", *ALL_TABLES.values()])
     actual = sorted(path.name for path in DDL_DIR.glob("*.sql"))
     assert actual == expected, (
@@ -603,23 +416,28 @@ def test_ddl_directory_matches_brief_manifest() -> None:
 
 
 def test_ddl_column_order_and_types_match_er() -> None:
-    """逐列比对：每张表的列名序列、类型、可空性都必须与 er.md §6 完全相同。"""
-    er_tables = parse_er_tables()
-    ddl_tables = parse_all_ddl_tables()
-    differences: list[str] = []
+    """逐列比对：每张表的列名序列、类型、可空性都必须与 er.md §6 完全相同。
+
+    比对走共享层的 `schema.diff`（**MUST NOT** 在本文件再写一份逐列比对）：
+    它同时覆盖表集合 / 列集合 / 列顺序 / 类型 / 可空性 / 枚举值六类差异，
+    且给出"哪张表哪个字段、左 vs 右"的人可读清单。
+    """
+    er_tables = load_er_tables()
+    ddl_tables = load_ddl_tables()
     assert set(ddl_tables) == set(er_tables), (
         f"表集合不一致：仅 DDL 有 {sorted(set(ddl_tables) - set(er_tables))}，"
         f"仅 er.md 有 {sorted(set(er_tables) - set(ddl_tables))}"
     )
-    for table in sorted(er_tables):
-        differences.extend(diff_columns(table, er_tables[table], ddl_tables[table].columns))
-    assert not differences, format_differences("DDL 与 er.md §6 数据字典逐列比对失败", differences)
+    differences = schema.diff(er_tables, ddl_tables)
+    assert not differences, format_differences(
+        "DDL 与 er.md §6 数据字典逐列比对失败（左 er.md / 右 DDL）", differences
+    )
 
 
 def test_ddl_enums_match_er_enums() -> None:
     """枚举列的值集合与顺序也必须与 er.md 一致（顺序影响默认值语义与可读性）。"""
-    er_enums = collect_er_enums(parse_er_tables())
-    ddl_enums = collect_ddl_enums()
+    er_enums = collect_enums(load_er_tables())
+    ddl_enums = collect_enums(load_ddl_tables())
     differences: list[str] = []
     for key in sorted(set(er_enums) | set(ddl_enums)):
         if key not in ddl_enums:
@@ -633,8 +451,8 @@ def test_ddl_enums_match_er_enums() -> None:
 
 def test_enum_column_count_is_not_vacuous() -> None:
     """非空下限：枚举列数量塌掉（正则失效）时必须报警，而不是静默全绿。"""
-    ddl_enums = collect_ddl_enums()
-    er_enums = collect_er_enums(parse_er_tables())
+    ddl_enums = collect_enums(load_ddl_tables())
+    er_enums = collect_enums(load_er_tables())
     assert len(ddl_enums) >= MIN_ENUM_COLUMNS, (
         f"只在 DDL 里解出 {len(ddl_enums)} 个枚举列（下限 {MIN_ENUM_COLUMNS}）：{sorted(ddl_enums)}"
     )
@@ -646,10 +464,11 @@ def test_enum_column_count_is_not_vacuous() -> None:
 def test_timestamp_defaults_match_er_notes() -> None:
     """时间列默认值口径：`CURRENT_TIMESTAMP(3)` 只能出现在 er.md「默认」列写了它的列上。
 
-    期望值现解自 er.md 的「默认」列，故「顺手给 reviewed_at 加个默认值」这类偏离
-    （会把"忘记写时间"变成静默假数据）会被本用例拦住。
+    期望值现解自 er.md 的「默认」列（本文件唯一的局部解析，见 `parse_er_defaults`），
+    故「顺手给 reviewed_at 加个默认值」这类偏离（会把"忘记写时间"变成静默假数据）
+    会被本用例拦住。
     """
-    er_tables = parse_er_tables()
+    er_tables = load_er_tables()
     er_defaults = parse_er_defaults()
     expected_with_ts = {
         f"{table}.{column}"
@@ -665,7 +484,7 @@ def test_timestamp_defaults_match_er_notes() -> None:
     for table in sorted(ALL_TABLES):
         block = first_create_table_block(table)
         by_name = collect_column_clauses(block)
-        for column in er_tables[table]:
+        for column in er_tables[table].columns:
             clause = by_name.get(column.name)
             if clause is None:
                 mismatches.append(f"{table}.{column.name} 在 CREATE TABLE 中找不到")
@@ -709,7 +528,7 @@ def test_enum_wiring_is_self_consistent() -> None:
 
 def test_every_er_enum_column_is_wired_to_openapi() -> None:
     """反向覆盖：er.md 里的每个枚举列都必须出现在接线表里，否则新枚举列会漏测 openapi。"""
-    er_enums = set(collect_er_enums(parse_er_tables()))
+    er_enums = set(collect_enums(load_er_tables()))
     wired = set(DDL_ENUM_TO_OPENAPI)
     assert er_enums == wired, (
         f"枚举接线表与 er.md 枚举列不一致：未接线的 {sorted(er_enums - wired)}，"
@@ -726,7 +545,7 @@ def test_ddl_enum_matches_openapi_enum(ddl_column: str) -> None:
         f"openapi 路径 {'/'.join(path)} 不是列表，实际 {type(raw).__name__}"
     )
     openapi_values = tuple(str(value) for value in raw)
-    ddl_values = collect_ddl_enums().get(ddl_column)
+    ddl_values = collect_enums(load_ddl_tables()).get(ddl_column)
     assert ddl_values is not None, (
         f"DDL 中找不到枚举列 {ddl_column}（接线表 DDL_ENUM_TO_OPENAPI 已过期？）"
     )
@@ -793,7 +612,7 @@ def test_ddl_constraint_names_all_carry_month() -> None:
     """
     offenders: list[str] = []
     for table in sorted(SHARDED_TABLES):
-        source = strip_sql_comments(read_ddl(table))
+        source = schema.strip_sql_comments(read_ddl(table))
         for name in re.findall(r"CONSTRAINT\s+`([^`]+)`", source, re.IGNORECASE):
             if "{month}" not in name:
                 offenders.append(f"{ALL_TABLES[table]} 的约束 {name!r}")
@@ -807,16 +626,21 @@ def test_ddl_constraint_names_all_carry_month() -> None:
 def test_rendered_template_has_no_placeholder_left(table: str) -> None:
     """渲染一次即成品：**代码骨架** MUST NOT 再含 `{`（残留占位符 = 不可执行 SQL）。
 
-    **为什么先剥注释再掏空字符串字面量**：模板里的花括号示例是**文档**，不是占位符 ——
-    例如 `model_meta` 的 ``COMMENT '...：{channel, provider, modelVersion, ...}'``、
-    `task_id` 的 ``COMMENT '... GET /aicore/tasks/{taskId}'``，以及 `fields_json` 的
+    **渲染与"骨架"口径一律走共享层**：`sharding.render_shard_template`（生产路径上
+    `scripts/apply_ddl.py` 用的就是它）与 `sharding.sql_skeleton`（剥 `--` 行注释
+    并把 `'...'` 字面量的内容掏空）。本文件 MUST NOT 再写一份渲染或骨架函数 ——
+    那样测的就不是真正会被执行的渲染了。
+
+    **为什么只看骨架**：模板里的花括号示例是**文档**，不是占位符 —— 例如 `model_meta`
+    的 ``COMMENT '...：{channel, provider, modelVersion, ...}'``、`task_id` 的
+    ``COMMENT '... GET /aicore/tasks/{taskId}'``，以及 `fields_json` 的
     ``COMMENT '... OcrField = {fieldName, value（脱敏）, confidence（0~1）}'``。
     这些串在 MySQL 里是**数据**，永远不会被当 SQL 解析，故对"可执行骨架"发问前先把它们掏空。
     **MUST NOT** 反过来把注释里的示例花括号删掉 —— 为了迁就一条断言而改文档是本末倒置。
     """
     source = read_ddl(table)
-    rendered = render_template(source, table, RENDER_MONTH)
-    skeleton = strip_sql_string_literals(strip_sql_comments(rendered))
+    rendered = sharding.render_shard_template(table, RENDER_MONTH)
+    skeleton = sharding.sql_skeleton(rendered)
     leftovers = sorted(set(re.findall(r"\{[^}]*\}", skeleton)))
     assert not leftovers, f"{ALL_TABLES[table]} 渲染后代码骨架中仍残留占位符 {leftovers}"
     assert "{" not in skeleton, f"{ALL_TABLES[table]} 渲染后代码骨架中仍含 '{{' 字符，渲染不完整"
@@ -864,7 +688,7 @@ def test_sharded_templates_are_not_executable_verbatim() -> None:
 def test_ddl_does_not_switch_database() -> None:
     """DDL 内 MUST NOT 写 USE：目标库由执行方以 `mysql -D <db>` 指定。"""
     for path in sorted(DDL_DIR.glob("*.sql")):
-        text = strip_sql_comments(path.read_text(encoding="utf-8"))
+        text = schema.strip_sql_comments(path.read_text(encoding="utf-8"))
         assert not re.search(r"^\s*USE\s+", text, re.MULTILINE | re.IGNORECASE), (
             f"{path.name} 出现 USE 语句：库必须由执行方指定"
         )
@@ -876,7 +700,7 @@ def test_ddl_does_not_switch_database() -> None:
 def test_every_create_table_is_idempotent() -> None:
     """每个 DDL 文件的每张表都是 `CREATE TABLE IF NOT EXISTS`（复跑零错误的前提）。"""
     for path in sorted(DDL_DIR.glob("*.sql")):
-        text = strip_sql_comments(path.read_text(encoding="utf-8"))
+        text = schema.strip_sql_comments(path.read_text(encoding="utf-8"))
         assert not re.findall(r"CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)", text, re.IGNORECASE), (
             f"{path.name} 存在非幂等的 CREATE TABLE（缺 IF NOT EXISTS）"
         )
@@ -889,7 +713,9 @@ def test_every_create_table_is_idempotent() -> None:
 
 def test_create_database_is_idempotent() -> None:
     """建库脚本两个库都用 `CREATE DATABASE IF NOT EXISTS`。"""
-    text = strip_sql_comments((DDL_DIR / "00_create_database.sql").read_text(encoding="utf-8"))
+    text = schema.strip_sql_comments(
+        (DDL_DIR / "00_create_database.sql").read_text(encoding="utf-8")
+    )
     assert not re.search(r"CREATE\s+DATABASE\s+(?!IF\s+NOT\s+EXISTS)", text, re.IGNORECASE), (
         "00_create_database.sql 存在非幂等的 CREATE DATABASE"
     )
@@ -903,7 +729,7 @@ def test_create_database_is_idempotent() -> None:
 
 def test_ddl_declares_all_nine_tables() -> None:
     """9 张逻辑表一张不少：3 张分片表 + 6 张非分片表。"""
-    ddl_tables = parse_all_ddl_tables()
+    ddl_tables = load_ddl_tables()
     assert len(ddl_tables) == 9, f"逻辑表应为 9 张，实际 {len(ddl_tables)}"
     assert set(ddl_tables) == set(ALL_TABLES), sorted(ddl_tables)
 
@@ -921,16 +747,6 @@ def test_common_ddl_conventions(table: str) -> None:
     assert "ON UPDATE CURRENT_TIMESTAMP" not in flat.upper(), (
         f"{table} 出现 ON UPDATE CURRENT_TIMESTAMP：er.md 没有 updated_at 列，这是凭空多出的行为"
     )
-
-
-COMMENT_COUNT_RE = re.compile(r"\bCOMMENT\b", re.IGNORECASE)
-# 表注释：`COMMENT='...'`（table option 形态）。中文 MUST 落在**引号内**。
-TABLE_CN_COMMENT_RE = re.compile(r"COMMENT\s*=\s*'[^']*" + CJK_RE.pattern + r"[^']*'")
-# 列注释：`COMMENT '...'`（列属性形态），支持 `\'` 转义。中文同样 MUST 落在**引号内**。
-COLUMN_COMMENT_RE = re.compile(r"COMMENT\s+'(?:[^'\\]|\\.)*'")
-COLUMN_CN_COMMENT_RE = re.compile(
-    r"COMMENT\s+'(?:[^'\\]|\\.)*" + CJK_RE.pattern + r"(?:[^'\\]|\\.)*'"
-)
 
 
 @pytest.mark.parametrize("table", sorted(ALL_TABLES))
@@ -951,7 +767,7 @@ def test_every_column_and_table_has_chinese_comment(table: str) -> None:
         f"{table} 的建表项切分自检失败：切出 {len(clauses)} 项但只认出 {len(by_name)} 个列名"
         f"（漏认的项会让列注释断言查错对象而静默变绿）"
     )
-    ddl_table = parse_all_ddl_tables()[table]
+    ddl_table = load_ddl_tables()[table]
     comment_count = len(COMMENT_COUNT_RE.findall(block))
     assert comment_count >= len(ddl_table.columns) + 1, (
         f"{table} 有 {len(ddl_table.columns)} 列但只有 {comment_count} 处 COMMENT："
@@ -974,6 +790,7 @@ def test_ddl_declares_physical_foreign_keys_with_restrict() -> None:
 
     期望值用**渲染后**的文本比对：`ocr_correction` 的约束名与引用目标都带 `{month}`，
     渲染成 `RENDER_MONTH` 后才是真实 MySQL 里看得到的名字（`fk_ocr_correction_task_202601`）。
+    渲染一律调共享层（`sharding.render_shard_template`），本文件 MUST NOT 另写一份。
     """
     expected = {
         "ocr_correction": [
@@ -985,9 +802,10 @@ def test_ddl_declares_physical_foreign_keys_with_restrict() -> None:
     }
     differences: list[str] = []
     for table, keys in expected.items():
-        raw = first_create_table_block(table)
         if table in SHARDED_TABLES:
-            raw = render_template(raw, table, RENDER_MONTH)
+            raw = sharding.render_shard_template(table, RENDER_MONTH)
+        else:
+            raw = first_create_table_block(table)
         block = re.sub(r"\s+", " ", raw)
         for name, target, column in keys:
             pattern = (
