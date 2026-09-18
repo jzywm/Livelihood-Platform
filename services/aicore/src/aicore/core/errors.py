@@ -89,7 +89,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
 from typing import Any, Final, NamedTuple, cast
 
 from fastapi import FastAPI, Request
@@ -98,6 +97,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from aicore.core.envelope import utc_timestamp
 from aicore.core.trace import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -579,7 +579,9 @@ def _error_body(code: int, message: str) -> dict[str, Any]:
     `Envelope.ok/fail`）由 **Task 2.4 拥有**，届时以「本处理器的输出能通过该模型校验」
     反向对齐，MUST NOT 在 core/envelope.py 之外再造一个模型类。
 
-    `timestamp` 为 UTC ISO 8601（`Z` 结尾，与 `_common` 示例 `2026-01-15T10:30:00Z` 同形）；
+    `timestamp` 为 UTC ISO 8601（`Z` 结尾，与 `_common` 示例 `2026-01-15T10:30:00Z` 同形），
+    由 `core/envelope.py` 的 `utc_timestamp()` 现取：时间戳助手全服务只有一份，方向是
+    errors → envelope（信封模型是形状的所有者，处理器只是消费者，反向 import 会成环）。
     `traceId` 一律取自 `core/trace.py` 的 `get_trace_id()`，不另造来源。
     """
     return {
@@ -587,10 +589,5 @@ def _error_body(code: int, message: str) -> dict[str, Any]:
         "message": message,
         "data": None,
         "traceId": get_trace_id(),
-        "timestamp": _utc_timestamp(),
+        "timestamp": utc_timestamp(),
     }
-
-
-def _utc_timestamp() -> str:
-    """当前时刻的 UTC ISO 8601 字符串，例：`2026-01-15T10:30:00.123456Z`。"""
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
