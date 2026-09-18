@@ -8,9 +8,15 @@
 只做两件事 —— ① 把 `{table}` / `{month}` 渲染成物理名；② 决定建表**顺序**。
 理由：纯 SQL DDL 是权威定义（spec §5.5），脚本一旦开始拼 SQL，就等于出现第二份结构定义。
 
+**渲染与月份算法都在 `repository/sharding.py`（Task 3.3 收编，MUST NOT 在本脚本再写一份）**：
+`render_shard_template` / `render_fixed_table_ddl` / `shard_month_of` 是唯一实现处。
+理由：两份渲染实现必然漂移，而漂移的表现是"脚本建的表与运行期建的表不是同一个结构"
+—— 那种不一致只会在生产写入时才暴露。本脚本因此只保留"运维 CLI"该有的东西：
+参数解析、目标库、顺序、退出码。
+
 **建表顺序（MUST）**：`ai_task` → `ocr_result` → `ocr_correction`，被引用表先建；
 `ocr_correction` 的物理外键指向**同月**的 `ocr_result_YYYYMM`（`er.md` §5.2/§7.3）。
-6 张非分片表之间无依赖，按文件名字典序即可。
+顺序取自 `sharding.SHARDED_TABLE_ORDER`。6 张非分片表之间无依赖，按文件名字典序即可。
 
 **幂等**：全部走 `CREATE TABLE IF NOT EXISTS`，复跑零错误；本脚本**不 DROP 任何东西**。
 
@@ -30,31 +36,18 @@ import argparse
 import os
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Final
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine
 
-# 服务根 = 本文件的上两级（scripts/ -> services/aicore/）
-SERVICE_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-DDL_DIR: Final[Path] = SERVICE_ROOT / "deploy" / "sql" / "ddl"
-
-#: 分片表：逻辑名 -> 模板文件名。**顺序即建表顺序**（被引用表先建）。
-SHARDED_TABLES: Final[tuple[tuple[str, str], ...]] = (
-    ("ai_task", "10_ai_task.template.sql"),
-    ("ocr_result", "11_ocr_result.template.sql"),
-    ("ocr_correction", "12_ocr_correction.template.sql"),
-)
-
-#: 非分片表：按文件名字典序执行（彼此无依赖）。
-FIXED_TABLE_FILES: Final[tuple[str, ...]] = (
-    "20_vision_review.sql",
-    "21_vision_marker.sql",
-    "22_review_verdict.sql",
-    "23_kitchen_anomaly.sql",
-    "24_risk_predict_result.sql",
-    "25_vision_qa_log.sql",
+from aicore.repository.sharding import (
+    FIXED_TABLE_FILES,
+    SHARDED_TABLE_FILES,
+    SHARDED_TABLE_ORDER,
+    render_fixed_table_ddl,
+    render_shard_template,
+    shard_month_of,
 )
 
 #: 本机开发缺省值（**仅**用户名与主机；口令 MUST NOT 有默认值 —— 见 `build_engine`）。
@@ -66,8 +59,10 @@ def current_month() -> str:
 
     `er.md` §6 绪：时间**UTC 存储**；故分片月也按 UTC 取，
     避免本地时区在月初/月末把物理表算到相邻月份。
+    **月份算法不在这里**：复用 `sharding.shard_month_of`，与运行期路由共用同一条
+    UTC 归一规则（否则"脚本按本地月建表、运行期按 UTC 月查表"就是必然的错月）。
     """
-    return datetime.now(UTC).strftime("%Y%m")
+    return shard_month_of(datetime.now(UTC))
 
 
 def build_engine(database: str) -> Engine:
@@ -108,35 +103,45 @@ def build_engine(database: str) -> Engine:
     return create_engine(url, pool_pre_ping=True)
 
 
-def render_template(source: str, table: str, month: str) -> str:
-    """渲染 `{table}` / `{month}` 占位符。
-
-    **与运行期是同一套语义**：Task 3.3 会把这份逻辑收进
-    `repository/sharding.py` 并让本脚本 import 它；在那之前这里是唯一实现处。
-    两个占位符的分工见模板顶部注释：本表名用 `{table}`，同月兄弟表用 `xxx_{month}`。
-    """
-    return source.replace("{table}", table).replace("{month}", month)
-
-
-def _statement_for(path: Path, month: str, *, logical: str | None = None) -> str:
-    source = path.read_text(encoding="utf-8")
-    if logical is None:
-        return source
-    return render_template(source, f"{logical}_{month}", month)
-
-
 def plan_statements(month: str) -> list[tuple[str, str]]:
-    """返回 `[(说明, SQL), ...]`，顺序即执行顺序（**不连数据库，可 dry-run**）。"""
+    """返回 `[(说明, SQL), ...]`，顺序即执行顺序（**不连数据库，可 dry-run**）。
+
+    分片表按 `sharding.SHARDED_TABLE_ORDER`（被引用表先建）；6 张非分片表按
+    `sharding.FIXED_TABLE_FILES` 的登记顺序（即文件名字典序，彼此无依赖）。
+    渲染一律走 `sharding` 的渲染函数：**渲染只有一份实现**，本脚本不再持有任何
+    占位符替换逻辑（Task 3.3 收编）。
+    """
     planned: list[tuple[str, str]] = []
-    for logical, filename in SHARDED_TABLES:
-        path = DDL_DIR / filename
+    for logical in SHARDED_TABLE_ORDER:
         planned.append(
-            (f"{path.name} -> {logical}_{month}", _statement_for(path, month, logical=logical))
+            (
+                f"{SHARDED_TABLE_FILES[logical]} -> {logical}_{month}",
+                render_shard_template(logical, month),
+            )
         )
-    for filename in FIXED_TABLE_FILES:
-        path = DDL_DIR / filename
-        planned.append((path.name, _statement_for(path, month)))
+    for logical, filename in FIXED_TABLE_FILES.items():
+        planned.append((filename, render_fixed_table_ddl(logical)))
     return planned
+
+
+def _reject_bad_month(month: str) -> None:
+    """CLI 的月份校验 MUST 与**运行期**同一口径（6 位数字 + 月份 01~12）。
+
+    **为什么这条要单独写并说明**（Task 3.3 的实测发现）：首版这里只查"6 位数字"，
+    而运行期的 `sharding.ensure_month_tables` / `physical_table_name(str)` 卡 `01~12`。
+    于是 `--month 202613` 能建出表、同样的月份在运行期会被拒——
+    **同一份渲染逻辑的两条路径严格度不同**，CLI 能造出运行期不认的结构。
+    那正是"两份路径不一致"的典型形态（本任务存在的意义就是消灭它），故 CLI 收紧到同口径。
+    错误消息里点明月份范围，避免运维只看到"不合法"却不知合法范围。
+    """
+    problem: str | None = None
+    if len(month) != 6 or not month.isdigit():
+        problem = "必须是 6 位数字 YYYYMM"
+    elif not 1 <= int(month[4:]) <= 12:
+        problem = f"月份部分必须在 01~12，收到 {month[4:]!r}"
+    if problem is not None:
+        print(f"[FAIL] --month 不合法（{problem}），收到 {month!r}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,9 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     month = args.month or current_month()
-    if len(month) != 6 or not month.isdigit():
-        print(f"[FAIL] --month 必须是 6 位数字 YYYYMM，收到 {month!r}", file=sys.stderr)
-        return 2
+    _reject_bad_month(month)
 
     planned = plan_statements(month)
     print(
