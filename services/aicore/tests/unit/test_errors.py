@@ -858,6 +858,7 @@ def test_aicore_error_codes_is_exactly_the_emittable_set() -> None:
         2002,
         2004,
         3006,
+        3007,  # 状态不允许该操作（Task 3.7 接入：重复复核结论）
         4003,
         5000,  # 未预期异常的兜底码
         5002,
@@ -901,6 +902,7 @@ def test_http_status_table_matches_the_locked_platform_mapping() -> None:
         2002: 403,
         2004: 429,
         3006: 404,
+        3007: 409,  # 状态不允许该操作（Task 3.7 接入）
         4003: 502,
         5000: 500,
         5002: 504,

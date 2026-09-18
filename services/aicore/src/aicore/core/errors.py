@@ -143,6 +143,9 @@ FORBIDDEN_CODE: Final = 2002
 RATE_LIMITED_CODE: Final = 2004
 #: 对象不存在。
 NOT_FOUND_CODE: Final = 3006
+#: 状态不允许该操作（Task 3.7 接入：人工复核结论**每审核记录至多一条**，
+#: 重复提交属状态冲突，不是参数错误——用 1003 会把"已存在结论"说成"参数非法"）。
+CONFLICT_CODE: Final = 3007
 #: 大模型 / 视觉 API 失败。
 CHANNEL_FAILURE_CODE: Final = 4003
 #: 内部错误（未预期异常的兜底码）。
@@ -164,6 +167,7 @@ AICORE_ERROR_CODES: Final[frozenset[int]] = frozenset(
         FORBIDDEN_CODE,
         RATE_LIMITED_CODE,
         NOT_FOUND_CODE,
+        CONFLICT_CODE,
         CHANNEL_FAILURE_CODE,
         INTERNAL_ERROR_CODE,
         DEPENDENCY_TIMEOUT_CODE,
@@ -180,6 +184,7 @@ HTTP_STATUS_BY_ERROR_CODE: Final[Mapping[int, int]] = {
     FORBIDDEN_CODE: 403,
     RATE_LIMITED_CODE: 429,
     NOT_FOUND_CODE: 404,
+    CONFLICT_CODE: 409,
     CHANNEL_FAILURE_CODE: 502,
     INTERNAL_ERROR_CODE: 500,
     DEPENDENCY_TIMEOUT_CODE: 504,
@@ -241,6 +246,7 @@ DEFAULT_MESSAGES: Final[Mapping[int, str]] = {
     FORBIDDEN_CODE: "无权限访问该资源",
     RATE_LIMITED_CODE: "请求过于频繁，请稍后重试",
     NOT_FOUND_CODE: "对象不存在",
+    CONFLICT_CODE: "当前状态不允许该操作",
     CHANNEL_FAILURE_CODE: "大模型或视觉 API 失败",
     INTERNAL_ERROR_CODE: "服务内部错误",
     DEPENDENCY_TIMEOUT_CODE: "依赖超时或熔断",
@@ -359,6 +365,22 @@ class NotFoundError(AiCoreError):
     """对象不存在（`3006`，HTTP 404）。"""
 
     code: int = NOT_FOUND_CODE
+
+
+class ConflictError(AiCoreError):
+    """状态不允许该操作（`3007`，HTTP 409）。
+
+    **为什么单独一个类而不是复用 `ParamError(code=1003)`**（Task 3.7 接入时定的）：
+    重复提交人工复核结论时，请求参数本身完全合法——冲突来自**服务端已有状态**
+    （`er.md` §7.6：每审核记录至多一条结论）。用 1003（枚举或范围非法）会把
+    "已存在结论"说成"你参数写错了"，前端据此提示用户改参数，而真正的处置是
+    "去看已有结论"。语义错位会让调用方做错事，故必须分开。
+
+    落到 `er.md` §7.6 的 1:1 约束上，这是**唯一**会走本类的场景；`ai_task.idem_key`
+    的重复提交**不走本类**（那按 §3 的幂等口径返回原任务号，不是错误）。
+    """
+
+    code: int = CONFLICT_CODE
 
 
 class ChannelFailureError(AiCoreError):
