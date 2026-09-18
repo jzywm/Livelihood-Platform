@@ -7,15 +7,23 @@
    失败时 `data=null`；`timestamp` 为 UTC ISO 8601；`traceId` 取自请求头 `X-Request-Id`
    （缺失时生成 16 位小写 hex）；
 3. FastAPI 默认 422 + `{"detail": [...]}` 被收编成信封（1xxx），响应体里不留框架结构；
-4. 未预期异常 → HTTP 500 + `code=5000`，响应体不含堆栈 / 文件路径 / 模块名 / 原始异常消息，
+4. 框架 `HTTPException`（Starlette 基类）被收编成信封：路由未匹配的 404 → `3006`（文案与业务
+   `NotFoundError` 相区分）、方法不允许的 405 → `1001`、`HTTPBearer` 式的 401/403 →
+   `2001`/`2002`、未列入锁定对的 5xx → `5000`；**框架的 `detail` 一律不回显**；
+5. 未预期异常 → HTTP 500 + `code=5000`，响应体不含堆栈 / 文件路径 / 模块名 / 原始异常消息，
    而**堆栈确实进了日志**（caplog 里取到带 traceback 的 ERROR 记录）；
-5. `AICORE_ERROR_CODES` 与平台单一事实源 `services/_common/openapi.yaml` 的 `ErrorCode`
+6. `AICORE_ERROR_CODES` 与平台单一事实源 `services/_common/openapi.yaml` 的 `ErrorCode`
    枚举逐项比对，且**阴性方向**有判别力：凭空加一个枚举外的码（含把 HTTP 429 当业务码）
    必须被判定器抓出来；
-6. 业务码与 HTTP 状态不混用：集合不含 HTTP 状态，限流是 `(HTTP 429, code 2004)`；
-7. `/health` 仍是裸响应（Task 1.4 验收项，注册处理器后 MUST NOT 回归）。
+7. 业务码与 HTTP 状态不混用：集合不含 HTTP 状态，限流是 `(HTTP 429, code 2004)`；
+8. `/health` 仍是裸响应（Task 1.4 验收项，注册处理器后 MUST NOT 回归）。
 
 探针路由由夹具挂到用例自己的 `create_app()` 实例上，生产代码不含任何调试端点。
+
+**为什么单独测框架 `HTTPException`**：FastAPI 构造时已经为 `starlette.exceptions.HTTPException`
+这个键预注册了它的 `http_exception_handler`，回的是 `{"detail": …}`（**没有 `code` 字段**的第三种
+响应形状）；而 Starlette 路由层在未匹配路径（404）与方法不允许（405）时抛的正是这个基类实例。
+这些响应在业务代码之外产生，调用点无法拦截，故只能在这里正面钉住。
 """
 
 from __future__ import annotations
@@ -26,20 +34,28 @@ import re
 import traceback
 from collections.abc import Callable, Collection, Iterable, Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+import httpx
 import pytest
 import yaml
 from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aicore.core.errors import (
     AICORE_ERROR_CODES,
     DEFAULT_MESSAGES,
+    HTTP_EXCEPTION_4XX_FALLBACK_CODE,
+    HTTP_EXCEPTION_5XX_FALLBACK_CODE,
     HTTP_STATUS_BY_ERROR_CODE,
+    HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS,
     PARAM_ERROR_CODES,
+    ROUTE_NOT_FOUND_MESSAGE,
     AiCoreError,
     ChannelFailureError,
     DependencyTimeoutError,
@@ -48,6 +64,10 @@ from aicore.core.errors import (
     ParamError,
     RateLimitedError,
     UnauthorizedError,
+    _handle_ai_core_error,
+    _handle_http_exception,
+    _handle_request_validation_error,
+    _handle_unexpected_error,
     _validation_error_code,
 )
 from aicore.core.trace import TRACE_ID_HEADER
@@ -124,6 +144,32 @@ def error_client(app: FastAPI) -> Iterator[TestClient]:
     """不把服务端异常抛回用例的客户端：未预期异常要断言的是**响应体**，不是异常本身。"""
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
+
+
+@pytest.fixture
+def http_exception_route(app: FastAPI) -> Callable[[int, str], str]:
+    """登记一条「抛出框架 `HTTPException`」的测试专用路由，返回它的路径。
+
+    模拟的是业务代码之外的框架路径：`HTTPBearer` 之类的依赖内部抛 401/403，
+    调用点无法拦截（`HTTPBearer` 真实抛的是基类 `starlette.exceptions.HTTPException`，
+    且带 `WWW-Authenticate: Bearer` 头）。`detail` 刻意可定制，用来证明响应体不回显框架文案。
+    """
+    counter = itertools.count()
+
+    def _register(status_code: int, detail: str) -> str:
+        path = f"/__test__/http-exc-{next(counter)}"
+
+        async def _raise() -> None:
+            raise StarletteHTTPException(
+                status_code=status_code,
+                detail=detail,
+                headers={"WWW-Authenticate": "Bearer"} if status_code == 401 else None,
+            )
+
+        app.add_api_route(path, _raise, methods=["GET"], include_in_schema=False)
+        return path
+
+    return _register
 
 
 @pytest.fixture
@@ -310,10 +356,179 @@ def test_health_stays_bare_after_handlers_are_registered(client: TestClient) -> 
     assert set(response.json()).isdisjoint(ENVELOPE_KEYS)
 
 
-def test_create_app_registers_the_three_handlers() -> None:
-    """组合根必须真的接线三条路径：业务异常 / 框架校验 / 未预期异常。"""
+def test_create_app_registers_the_four_handlers() -> None:
+    """组合根必须真的接线四条路径：业务异常 / 框架校验 / 框架 HTTPException / 未预期异常。
+
+    **断言处理器身份而不是键存在**：FastAPI 在构造 `FastAPI()` 时就预注册了
+    `RequestValidationError` 与 `starlette.exceptions.HTTPException` 的**默认**处理器
+    （`request_validation_exception_handler` / `http_exception_handler`），故「键存在」对这两条
+    路径恒真、没有判别力——把 `register_exception_handlers()` 的对应一行删掉，用例照样全绿。
+    比对象身份才能让「接线」这件事真的可判：删掉注册行，字典里的值退回 FastAPI 的默认函数，
+    本用例立刻变红。
+
+    另注意：FastAPI 注册 `HTTPException` 时用的键就是 `starlette.exceptions.HTTPException`
+    （实测 `fastapi.HTTPException is starlette.exceptions.HTTPException` 为 **False**，
+    但预注册的键是基类），故本模块的那一行是**覆盖**默认处理器而非并存——这正是想要的：
+    同一个键不可能既回 `{"detail": …}` 又回信封。
+    """
     handlers = create_app().exception_handlers
-    assert {AiCoreError, RequestValidationError, Exception} <= set(handlers)
+    assert handlers[AiCoreError] is _handle_ai_core_error
+    assert handlers[RequestValidationError] is _handle_request_validation_error
+    assert handlers[StarletteHTTPException] is _handle_http_exception
+    assert handlers[Exception] is _handle_unexpected_error
+
+
+# ---------------------------------------------------------------------------
+# 2.5 框架 HTTPException 被收编（Starlette 基类：路由 404/405 与 HTTPBearer 的 401/403）
+# ---------------------------------------------------------------------------
+
+#: 框架 `detail` 的哨兵值：一旦被回显进响应体，「不回显 detail」的断言立刻变红。
+FRAMEWORK_DETAIL_SENTINEL = "FRAMEWORK_DETAIL_MUST_NOT_LEAK"
+
+#: 框架默认响应体的固定片段：路由 404/405 的 `{"detail": "Not Found"}` /
+#: `{"detail": "Method Not Allowed"}` 与 `HTTPBearer` 的 `"Not authenticated"` /
+#: `"Not enough permissions"` 都在此列。
+FRAMEWORK_DEFAULT_DETAILS = (
+    "Not Found",
+    "Method Not Allowed",
+    "Not authenticated",
+    "Not enough permissions",
+)
+
+
+def assert_enveloped(
+    response: httpx.Response, expected_status: int, expected_code: int, expected_message: str
+) -> dict[str, Any]:
+    """断言一条响应已完全信封化：状态 + 业务码 + 四键齐全 + 无 `detail` + 无框架文案。
+
+    被框架 `HTTPException` 的用例共用：它们的共同点正是「响应体里不许留下框架痕迹」。
+    """
+    body: dict[str, Any] = response.json()
+    assert response.status_code == expected_status
+    assert set(body) == ENVELOPE_KEYS, f"信封键集合不符：{sorted(body)}"
+    assert body["code"] == expected_code
+    assert body["code"] != response.status_code, "业务码 MUST NOT 等于 HTTP 状态"
+    assert body["data"] is None
+    assert body["message"] == expected_message
+    assert "detail" not in body
+    # traceId / timestamp 的保证与其余路径一致。
+    assert TRACE_ID_PATTERN.fullmatch(body["traceId"])
+    assert ISO8601_UTC_PATTERN.fullmatch(body["timestamp"])
+    assert response.headers["content-type"].startswith("application/json")
+    for leaked in (*FRAMEWORK_DEFAULT_DETAILS, FRAMEWORK_DETAIL_SENTINEL):
+        assert leaked not in response.text, f"响应体回显了框架文案：{leaked}"
+    return body
+
+
+def test_unmatched_route_is_enveloped_as_route_not_found(client: TestClient) -> None:
+    """未匹配路由 → HTTP 404 + `code=3006` + 与业务「对象不存在」**不同**的文案。
+
+    `3006` 的配对是控制者锁定的；但不存在的是**接口**而不是对象，故文案必须是「接口不存在」，
+    否则排障时分不清「路径写错」与「查无此对象」。
+    """
+    body = assert_enveloped(
+        client.get("/__test__/no-such-route"), 404, 3006, ROUTE_NOT_FOUND_MESSAGE
+    )
+
+    assert body["message"] != DEFAULT_MESSAGES[3006], (
+        "路由 404 与业务 NotFoundError 的文案必须可区分"
+    )
+    # 文案不是框架的 `detail`（`{"detail": "Not Found"}` 的形状已被彻底替换）。
+    assert body["message"] != "Not Found"
+
+
+def test_disallowed_method_is_enveloped(client: TestClient, app: FastAPI) -> None:
+    """方法不允许 → HTTP 405 + `code=1001`（兜底），信封形状与其余路径一致。
+
+    405 在平台表里**没有**对应码，控制者的口径是「留在平台表内、用未匹配 4xx 的兜底 `1001`」，
+    不为它发明新码——故这里正面钉住 `1001`，防止后人「顺手加个 405 专用码」。
+    """
+
+    @app.get("/__test__/method-probe", include_in_schema=False)
+    async def _probe() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    body = assert_enveloped(
+        client.post("/__test__/method-probe"), 405, 1001, DEFAULT_MESSAGES[1001]
+    )
+    assert body["message"] != "Method Not Allowed"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_code", "reason"),
+    [
+        pytest.param(401, 2001, "锁定对：HTTPBearer 未带凭据", id="unauthorized-401"),
+        pytest.param(403, 2002, "锁定对：HTTPBearer 权限不足", id="forbidden-403"),
+        pytest.param(503, 5000, "未列入锁定对的 5xx → 兜底 5000", id="unmatched-5xx-503"),
+    ],
+)
+def test_framework_http_exception_is_enveloped_with_platform_message(
+    client: TestClient,
+    http_exception_route: Callable[[int, str], str],
+    status_code: int,
+    expected_code: int,
+    reason: str,
+) -> None:
+    """框架 `HTTPException` → 原 HTTP 状态 + 平台业务码 + **平台文案**（不是框架 `detail`）。
+
+    这三个状态都来自业务代码之外：401/403 是 `HTTPBearer` 之类的依赖内部抛的（调用点拦不住），
+    503 代表任何未列入锁定对的 5xx。响应体里只允许出现平台文案 —— `detail` 是给开发者看的，
+    平台文案才是评审过、可直接展示给用户的那一份。
+    """
+    path = http_exception_route(status_code, FRAMEWORK_DETAIL_SENTINEL)
+    body = assert_enveloped(
+        client.get(path), status_code, expected_code, DEFAULT_MESSAGES[expected_code]
+    )
+    assert FRAMEWORK_DETAIL_SENTINEL not in body["message"], reason
+
+
+def test_framework_http_exception_keeps_trace_id_from_request_header(
+    client: TestClient, http_exception_route: Callable[[int, str], str]
+) -> None:
+    """框架 `HTTPException` 的信封同样取网关注入的 traceId（不另造来源）。"""
+    path = http_exception_route(401, "Not authenticated")
+    response = client.get(path, headers={TRACE_ID_HEADER: INJECTED_TRACE_ID})
+    assert response.json()["traceId"] == INJECTED_TRACE_ID
+    assert response.headers[TRACE_ID_HEADER] == INJECTED_TRACE_ID
+
+
+def test_framework_http_exception_keeps_its_headers(
+    client: TestClient, http_exception_route: Callable[[int, str], str]
+) -> None:
+    """`exc.headers` 原样透传：收编响应体 MUST NOT 顺手丢掉协议头。
+
+    `HTTPBearer` 的 401 带 `WWW-Authenticate: Bearer`，FastAPI 的默认处理器同样透传它；
+    丢掉这个头客户端就不知道该怎么补凭据。
+    """
+    response = client.get(http_exception_route(401, "Not authenticated"))
+    assert response.headers.get("WWW-Authenticate") == "Bearer"
+    assert response.status_code == 401
+
+
+def test_http_exception_status_mapping_is_exactly_the_locked_pairs() -> None:
+    """状态 → 码的映射用**字面量**钉住（避免表与断言互相印证），并钉住两个兜底码。
+
+    只测 401/403/503 三条状态的话，锁定对里的 404/429/500/502/504 一旦被改动就没有用例会红。
+    这里把整张表与两个兜底常量一起钉住：新增/删除锁定对必须同时改本用例，评审才有落点。
+    """
+    assert dict(HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS) == {
+        401: 2001,
+        403: 2002,
+        404: 3006,
+        429: 2004,
+        500: 5000,
+        502: 4003,
+        504: 5002,
+    }
+    # 表里的值只能是业务码，键只能是 HTTP 状态（两个维度 MUST NOT 互相代入）。
+    assert set(HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS.values()) <= AICORE_ERROR_CODES
+    assert all(400 <= status < 600 for status in HTTP_STATUS_BY_HTTP_EXCEPTION_STATUS)
+    # 兜底码必须在平台表内：405 之类没有专属码的状态只能落到这里，不许发明新码。
+    assert HTTP_EXCEPTION_4XX_FALLBACK_CODE == 1001
+    assert HTTP_EXCEPTION_5XX_FALLBACK_CODE == 5000
+    assert {HTTP_EXCEPTION_4XX_FALLBACK_CODE, HTTP_EXCEPTION_5XX_FALLBACK_CODE} <= (
+        AICORE_ERROR_CODES
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +618,10 @@ def test_validation_log_keeps_types_but_not_user_input(
         pytest.param("string_too_long", 1003, id="string_too_long"),
         pytest.param("bytes_too_short", 1003, id="bytes_too_short"),
         pytest.param("bytes_too_long", 1003, id="bytes_too_long"),
+        # Decimal 位数约束（M3 评审项）：与数值/长度范围同类，归 1003 而不是落 1002 兜底。
+        pytest.param("decimal_max_digits", 1003, id="decimal_max_digits"),
+        pytest.param("decimal_max_places", 1003, id="decimal_max_places"),
+        pytest.param("decimal_whole_digits", 1003, id="decimal_whole_digits"),
         pytest.param("int_parsing", 1002, id="int_parsing"),
         pytest.param("string_type", 1002, id="string_type"),
         pytest.param("string_pattern_mismatch", 1002, id="string_pattern_mismatch"),
@@ -427,6 +646,29 @@ def test_validation_error_code_priority() -> None:
     assert _validation_error_code([{"type": "int_parsing"}, {"type": "literal_error"}]) == 1003
     assert _validation_error_code([{"type": "int_parsing"}]) == 1002
     assert _validation_error_code([]) == 1002
+
+
+def test_decimal_digit_constraints_are_real_pydantic_types() -> None:
+    """M3 评审项的**行为证据**：Decimal 位数约束真的由 pydantic 发出这些 type，且归 `1003`。
+
+    分类表（`test_validation_error_type_mapping`）用字面量钉住映射，但字面量写错名字也不会红；
+    这里补上行为证据：真造 pydantic 校验错误、取它实际发出的 `type` 再喂给分类器。
+    （实测 pydantic 2.13.5：`max_digits` → `decimal_max_digits`、`decimal_places` →
+    `decimal_max_places`；`decimal_whole_digits` 用常规 `Field` 约束触发不到，故只在上表里
+    按范围类收列，以免它一旦出现就落 1002 兜底。）
+    """
+
+    class _Amount(BaseModel):
+        value: Annotated[Decimal, Field(max_digits=4, decimal_places=2)]
+
+    cases = {"123.45": "decimal_max_digits", "1.234": "decimal_max_places"}
+    for raw, expected_type in cases.items():
+        with pytest.raises(ValidationError) as exc_info:
+            _Amount(value=raw)
+
+        types = [str(item["type"]) for item in exc_info.value.errors()]
+        assert types == [expected_type], (raw, types)
+        assert _validation_error_code([{"type": t} for t in types]) == 1003, raw
 
 
 # ---------------------------------------------------------------------------
