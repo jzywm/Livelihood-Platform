@@ -49,6 +49,10 @@ BASE_ENV: dict[str, str] = {
     "AICORE_MYSQL_USER": "test_user",
     "AICORE_MYSQL_PASSWORD": "test_password",
     "AICORE_MYSQL_DATABASE": "aicore_test",
+    # Task 3.4 起连接池两项是**必填**字段：不铺基线的话，本文件所有用例都会变成
+    # 「缺 mysql_pool_size / mysql_max_overflow」，与它们真正要验的跨字段规则无关。
+    "AICORE_MYSQL_POOL_SIZE": "5",
+    "AICORE_MYSQL_MAX_OVERFLOW": "10",
     "AICORE_REDIS_HOST": "127.0.0.1",
     "AICORE_PROVIDER": "mock",
     "AICORE_INTERNAL_TOKEN": "test_internal_token",

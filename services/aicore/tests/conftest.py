@@ -39,6 +39,16 @@ _TEST_ENV_DEFAULTS: dict[str, str] = {
     "AICORE_MYSQL_USER": "test_user",
     "AICORE_MYSQL_PASSWORD": "test_password",
     "AICORE_MYSQL_DATABASE": "aicore_test",
+    # 连接池两项是 Task 3.4 起的**必填**字段（容量是部署决策，刻意不给默认值）：
+    # 不注入的话，任何「清空 AICORE_* 再构造 Settings」的用例都会变成缺必填项而报错。
+    "AICORE_MYSQL_POOL_SIZE": "5",
+    "AICORE_MYSQL_MAX_OVERFLOW": "10",
+    # 只读地址可空，但这里**注入一个具体地址**：让「有独立从库」这条分支成为默认环境，
+    # 用例只在需要时显式传 `mysql_readonly_host=None` 去覆盖「回落主库」那条分支。
+    # 注入值与主库同址（本机只有一个实例），但配置上是分开的两个地址——这正是
+    # read_target_is_primary 要表达的区别：它看的是「配没配」，不是「地址是否相同」。
+    "AICORE_MYSQL_READONLY_HOST": "127.0.0.1",
+    "AICORE_MYSQL_READONLY_PORT": "3306",
     "AICORE_REDIS_HOST": "127.0.0.1",
     "AICORE_PROVIDER": "mock",
     "AICORE_INTERNAL_TOKEN": "test_internal_token",

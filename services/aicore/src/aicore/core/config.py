@@ -9,6 +9,13 @@
 跨字段规则在 `Settings._reject_invalid_startup_combination`（`model_validator(mode="after")`）——
 两类错误的报告因此始终分得清（见下表）。
 
+**Task 3.4 的两组新字段**（`mysql_pool_size` / `mysql_max_overflow` 必填，
+`mysql_readonly_host` / `mysql_readonly_port` 可空）刻意分档，理由写在各字段的注释里：
+容量是部署决策（不给默认值），只读地址是**可选能力**（`None` = 没有独立从库）。
+只读地址的回落**只认 `None`**：空串 / 纯空白是「配了但配错了」，由字段级校验器
+`_reject_blank_readonly_host` 在构造期拒绝（错误 `loc` 仍指向该字段），
+派生属性 `mysql_read_host` 里再判一次——`model_copy` 之类绕过校验的路径同样不许静默回落。
+
 ## 启动四条校验（`design.md` L245~250）
 
 | 规则 | 判定 | 承担者 |
@@ -65,7 +72,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -82,6 +89,8 @@ _NON_PROD_ENVS: frozenset[str] = frozenset({"dev", "test"})
 _RULE_ENV_MOCK = "env-mock"
 _RULE_PROVIDER_KEY = "provider-key"
 _RULE_BUDGET_ORDER = "budget-order"
+#: Task 3.4 新增（控制者裁定）：只读地址的配对约束。
+_RULE_READONLY_PAIR = "readonly-pair"
 _WARNING_PROVIDER_KEY_UNCOVERED = "provider-key-uncovered"
 
 # ---------------------------------------------------------------------------
@@ -276,6 +285,43 @@ class Settings(BaseSettings):
     mysql_password: str
     mysql_database: str
 
+    # ---- MySQL 连接池（**必填**：容量是部署决策，给默认值等于替运维做决定）----
+    #
+    # 与只读地址的分档（刻意）：池大小是**部署容量决策**——给默认值既替运维做了决定，
+    # 又让「以为配了其实没配」变成连接耗尽（表现为请求排队/超时，而不是一条配置错误）。
+    # 故两字段都没有默认值，`test_required_fields_have_no_default` 会逐字段验 `is_required()`。
+    mysql_pool_size: int = Field(ge=1)
+    mysql_max_overflow: int = Field(ge=0)
+
+    # ---- 只读（从库）地址（**可空**：None = 没有独立从库，只读会话回落主库）----
+    #
+    # 为什么可空：这是**可选能力**而非必需项。本机只有一个 MySQL 实例，若定为必填，
+    # 任何单实例环境都必须把主库地址再写一遍——那是形式主义而非安全。`None` 明确表达
+    # 「没有独立从库」，此时只读会话回落主库，并由 `read_target_is_primary` 显式暴露
+    # （日志 / 自检里看得见），MUST NOT 把「回落」伪装成「已分离」。
+    # 空串**不等于** `None`：空串是「配了但配错了」，由下面的字段校验器直接拒绝——
+    # 静默回落会让「配错」重新表现为「看起来正常」。
+    mysql_readonly_host: str | None = None
+    mysql_readonly_port: int | None = Field(default=None, ge=1, le=65535)
+
+    @field_validator("mysql_readonly_host")
+    @classmethod
+    def _reject_blank_readonly_host(cls, value: str | None) -> str | None:
+        """只读地址：空串 / 纯空白一律拒绝；回落**只认 `None`**。
+
+        为什么构造期就要拦（而不是只在派生属性里判）：字段级失败会点名
+        `AICORE_MYSQL_READONLY_HOST` 并进入启动期阻断项清单，运维一眼知道改哪一行；
+        落到派生属性才报错时进程可能已经在跑。两处都要有，属性侧的兜底见
+        `mysql_read_host`（`model_copy` 之类绕过校验的路径同样不许静默回落）。
+        """
+        if value is not None and not value.strip():
+            raise ValueError(
+                "mysql_readonly_host 不能是空串或纯空白：空串是「配了但配错了」，"
+                "与「没有独立从库」（不配置该项 = None，只读回落主库）是两回事；"
+                "本环境没有独立从库时请删掉该环境变量，而不是写一个空值"
+            )
+        return value
+
     # ---- Redis ----
     redis_host: str
     redis_port: int = Field(default=6379, ge=1, le=65535)
@@ -295,6 +341,7 @@ class Settings(BaseSettings):
     lease_ms: int = Field(default=30000, ge=1)
     max_retries: int = Field(default=3, ge=0)
 
+    # ---- MySQL 派生属性（读写分离的地址口径；本组成组放置，见各属性 docstring）----
     @property
     def mysql_dsn(self) -> str:
         """可安全写日志的 MySQL 目标串（**不含口令**）。
@@ -304,6 +351,50 @@ class Settings(BaseSettings):
         """
         return (
             f"mysql+pymysql://{self.mysql_user}@{self.mysql_host}:{self.mysql_port}"
+            f"/{self.mysql_database}?charset=utf8mb4"
+        )
+
+    @property
+    def mysql_read_host(self) -> str:
+        """只读会话实际连接的 host：`None` 回落主库，**只认 `None`**。
+
+        空串 / 纯空白不走回落，而是抛 `ValueError`：字段校验器已让构造路径拒绝它们，
+        此处再判一次是为了兜住绕过校验的路径（`model_copy` / 直接改属性）——那里若
+        静默回落，「配错」就会重新表现为「看起来正常」，恰是硬取向 2 要防的事。
+        """
+        readonly_host = self.mysql_readonly_host
+        if readonly_host is None:
+            return self.mysql_host
+        if not readonly_host.strip():
+            raise ValueError(
+                "mysql_readonly_host 是空串：只读地址的回落只认 None，"
+                "空串属于「配了但配错了」，MUST NOT 被当成「没有独立从库」"
+            )
+        return readonly_host
+
+    @property
+    def mysql_read_port(self) -> int:
+        """只读会话实际连接的 port：与 host **各自独立**回落（同样只认 `None`）。
+
+        「只配了只读端口、没配只读地址」时，该端口会作用在主库 host 上——刻意**不忽略**
+        它：忽略等于「以为配了其实没配」（硬取向 2）。这种组合本身就是配错了，
+        但宁可让它以「主库 host + 指定端口」的形式可见，也不要静默丢弃。
+        """
+        return self.mysql_port if self.mysql_readonly_port is None else self.mysql_readonly_port
+
+    @property
+    def read_target_is_primary(self) -> bool:
+        """只读目标是否落在主库上（`True` = 配置里**没有**独立从库，只读是回落的）。
+
+        它把「回落」变成程序可断言、日志可核对的**事实**，避免把回落说成已分离。
+        """
+        return self.mysql_readonly_host is None
+
+    @property
+    def mysql_read_dsn(self) -> str:
+        """只读目标的可安全写日志串（**不含口令**），形状与 `mysql_dsn` 完全一致。"""
+        return (
+            f"mysql+pymysql://{self.mysql_user}@{self.mysql_read_host}:{self.mysql_read_port}"
             f"/{self.mysql_database}?charset=utf8mb4"
         )
 
@@ -365,6 +456,25 @@ class Settings(BaseSettings):
                 f"budget_degrade_ratio={self.budget_degrade_ratio} 低于 "
                 f"budget_alert_ratio={self.budget_alert_ratio}；"
                 f"降级阈值必须不小于告警阈值，否则会先降级、后告警"
+            )
+
+        # 只读地址的**配对约束**（Task 3.4 的控制者裁定）：
+        # `mysql_readonly_port` 配了、`mysql_readonly_host` 没配 → 拒绝启动。
+        #
+        # 为什么不接受"host 回落主库 + 端口生效"（那是本规则的另一种可能实现）：
+        # 那个组合会去连「主库地址 + 非默认端口」，而**没有任何部署会要这个连接**——
+        # 最可能的原因是"想配从库却漏了 host"。静默接受的结果是生产上连一个谁都没要求的
+        # 地址、表现为连不上，而根因（漏配 host）在日志里看不出来。
+        # 反过来拒绝的代价极小（多写一行配置），却把"漏配"变成启动期一句话。
+        # 注意与 `mysql_readonly_host` 单配的关系：单配 host（port 用主库端口）是**合法**的
+        # ——同端口不同主机的从库是常见拓扑。
+        if self.mysql_readonly_host is None and self.mysql_readonly_port is not None:
+            blockers.append(
+                f"[跨字段：{_RULE_READONLY_PAIR}] 只读地址只配了端口、没配主机："
+                f"mysql_readonly_port={self.mysql_readonly_port} 但 "
+                f"{_env_var_name('mysql_readonly_host')} 未配置；"
+                f"这会去连「主库地址 + 非默认端口」，而没有任何部署需要该组合——"
+                f"请补上只读主机，或把只读端口也留空（两处都留空 = 没有独立从库）"
             )
 
         if blockers:

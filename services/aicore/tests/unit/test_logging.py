@@ -966,6 +966,10 @@ def test_startup_first_emitted_line_is_json_with_every_mandated_field(
     monkeypatch.setenv("AICORE_MYSQL_USER", "test_user")
     monkeypatch.setenv("AICORE_MYSQL_PASSWORD", "test_password")
     monkeypatch.setenv("AICORE_MYSQL_DATABASE", "aicore_test")
+    # Task 3.4 起连接池两项必填：本用例清空了全部 AICORE_* 再自己铺一套，
+    # 少这两行会让启动直接以「缺必填项」被拒，验不到本用例真正的目标（首行 JSON）。
+    monkeypatch.setenv("AICORE_MYSQL_POOL_SIZE", "5")
+    monkeypatch.setenv("AICORE_MYSQL_MAX_OVERFLOW", "10")
     monkeypatch.setenv("AICORE_REDIS_HOST", "127.0.0.1")
     monkeypatch.setenv("AICORE_PROVIDER", "mock")
     monkeypatch.setenv("AICORE_ENV", "dev")  # 规则 3：dev + mock → 告警（不阻断）
