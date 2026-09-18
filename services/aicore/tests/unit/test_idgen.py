@@ -18,7 +18,13 @@ import re
 
 import pytest
 
-from aicore.core.idgen import ID_PREFIXES, MAX_ID_LENGTH, new_id, validate_id
+from aicore.core.idgen import (
+    ID_PREFIX_LENGTHS,
+    ID_PREFIXES,
+    MAX_ID_LENGTH,
+    new_id,
+    validate_id,
+)
 
 
 def idgen_module() -> object:
@@ -29,6 +35,59 @@ def idgen_module() -> object:
 
 #: 6 种 kind，逐字对齐 `er.md` §5.4 的 ID 前缀表。
 EXPECTED_KINDS = {"task", "cor", "rev", "marker", "kan", "qa"}
+
+#: **外部契约（字面量，MUST NOT 由被测常量现算）**：`er.md` §5.4 的所有 ID 列都是
+#: `varchar(32)`，故"总长恰为 32"是一条**来自文档的硬约束**。
+#:
+#: 为什么必须单列一个字面量（独立评审抓到的假绿，重要）：
+#: 本文件原先 21 处期望值**全部**由 `MAX_ID_LENGTH` 现算（"前缀 + 剩余位数"这类算术），
+#: 于是当常量被改成**自洽但错误**的值（如 35——各前缀 hex 位数仍落在 `uuid4().hex`
+#: 的 32 位之内，内部自校验不会响）时，**整套用例与验收脚本一起变绿**，
+#: 而 33~35 字符的 ID 写进 `varchar(32)` 会让**每一行都插不进去**
+#: ——正是 spec §5.8 点名的"最容易写错"的后果。
+#:
+#: 分工要分清：**"各前缀该有多少位 hex"是被测对象内部的算术**，现算是合理的
+#: （改前缀时不会留下第二份会漂移的账）；**"这个算术的上限必须是 32"是外部契约**，
+#: 只能写死。缺了后者，整条验证链就没有独立预言机。
+CONTRACT_ID_MAX_LENGTH = 32
+
+
+def test_max_id_length_matches_the_documented_column_width() -> None:
+    """**独立预言机**：`MAX_ID_LENGTH` 必须等于 `er.md` 的列宽 32（字面量，不取自被测对象）。
+
+    这条用例是整个 ID 验证链的**锚**：其余 20 余处期望值都由 `MAX_ID_LENGTH` 现算，
+    没有它，常量被改成自洽的错误值时全套会一起变绿（独立评审的实测：
+    改成 35 → 验收脚本仍 PASS 10/FAIL 0、全量只红 1 条附带红）。
+    `er.md` §5.4 的每一行 ID 列都是 `varchar(32)` —— 这是**文档契约**，不是实现细节。
+    """
+    assert MAX_ID_LENGTH == CONTRACT_ID_MAX_LENGTH, (
+        f"MAX_ID_LENGTH={MAX_ID_LENGTH} 与 er.md §5.4 的列宽 "
+        f"{CONTRACT_ID_MAX_LENGTH} 不符：33+ 字符的 ID 写不进 varchar(32)，每一行都会插不进去"
+    )
+
+
+def test_every_prefix_actually_produces_exactly_32_characters() -> None:
+    """六种前缀各自生成的 ID，长度**恰好** 32（不是"不超过"）。
+
+    与 `test_each_prefix_generates_a_valid_id_of_exact_length` 的区别：那条用的
+    `expected_length(kind)` 由 `MAX_ID_LENGTH` 现算，属"内部自洽"；
+    本条把 32 写成字面量，属"对文档契约的独立核对"。两条都要有。
+    """
+    for kind in sorted(EXPECTED_KINDS):
+        value = new_id(kind)
+        assert len(value) == CONTRACT_ID_MAX_LENGTH, (
+            f"{kind} 生成的 ID 长度 {len(value)}，契约要求恰好 {CONTRACT_ID_MAX_LENGTH}：{value!r}"
+        )
+
+
+def test_prefix_and_hex_lengths_sum_to_the_documented_width() -> None:
+    """前缀长度 + hex 位数 == 32，且**逐前缀**核对（防"一长一短互相掩盖"）。"""
+    for kind in sorted(EXPECTED_KINDS):
+        prefix = ID_PREFIXES[kind]
+        hex_len = ID_PREFIX_LENGTHS[kind]
+        assert len(prefix) + hex_len == CONTRACT_ID_MAX_LENGTH, (
+            f"{kind}: 前缀 {len(prefix)} 位 + hex {hex_len} 位 != {CONTRACT_ID_MAX_LENGTH}"
+        )
 
 
 def expected_length(kind: str) -> int:

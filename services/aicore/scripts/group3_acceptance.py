@@ -300,21 +300,60 @@ def check_migration_files() -> None:
 # 9. 一万个 ID 全过正则且无重复
 # ---------------------------------------------------------------------------
 def check_idgen() -> None:
+    """第 9 项：一万个 ID 过正则且无重复，**总长恰为 32**。
+
+    **判据 MUST 用字面量 32，MUST NOT 用 `MAX_ID_LENGTH`**（独立评审抓到的假绿，重要）：
+    首版写成 `max(len(v)) <= MAX_ID_LENGTH` —— 那是拿**被测对象自己的常量**当判据，
+    于是把常量改成自洽但错误的值（如 35，各前缀 hex 位数仍在 uuid4 的 32 位内，
+    内部自校验不响）时，本脚本**依然输出 PASS 10 / FAIL 0**（打印"最大长度 35 ≤ 35 True"）。
+    而 `er.md` §5.4 的所有 ID 列都是 `varchar(32)` —— 33~35 字符会让**每一行都插不进去**，
+    正是 spec §5.8 点名"最容易写错"的后果。
+    这与 `tests/unit/test_idgen.py` 里那条"期望值一律现算"的取向**不矛盾**：
+    那里现算的是"各前缀该有多少位 hex"（被测对象内部的算术），
+    而"这个算术的**上限**必须是 32"是**外部契约**（来自 `er.md` 的列宽），只能写死。
+    """
     import concurrent.futures
 
-    from aicore.core.idgen import ID_PREFIXES, MAX_ID_LENGTH, new_id, validate_id
+    from aicore.core.idgen import (
+        ID_PREFIX_LENGTHS,
+        ID_PREFIXES,
+        MAX_ID_LENGTH,
+        new_id,
+        validate_id,
+    )
 
+    # 外部契约（字面量，不取自被测对象）：er.md §5.4 所有 ID 列均为 varchar(32)。
+    contract_max = 32
+    constant_is_contract = contract_max == MAX_ID_LENGTH
     kinds = sorted(ID_PREFIXES)
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
         ids = list(pool.map(lambda i: new_id(kinds[i % len(kinds)]), range(10_000)))
     unique = len(set(ids)) == len(ids)
-    within = max(len(value) for value in ids) <= MAX_ID_LENGTH
+    longest = max(len(value) for value in ids)
+    exactly_32 = longest == contract_max
     all_valid = all(validate_id(value) for value in ids)
+    # 逐前缀也钉一次：单一"最长值恰好 32"可能被"某个前缀短了、另一个长了"掩盖。
+    per_prefix_ok = all(
+        len(new_id(kind)) == contract_max for kind in kinds
+    )
+    # 前缀长度的算术自证：5+27 / 4+28 / 4+28 / 7+25 / 4+28 / 3+29 恒等于 32。
+    arithmetic_ok = all(
+        len(ID_PREFIXES[kind]) + ID_PREFIX_LENGTHS[kind] == contract_max for kind in kinds
+    )
+    ok = (
+        constant_is_contract
+        and unique
+        and exactly_32
+        and per_prefix_ok
+        and arithmetic_ok
+        and all_valid
+    )
     record(
         "9. 一万个 ID 过正则且无重复",
-        PASS if (unique and within and all_valid) else FAIL,
-        f"唯一 {unique}；最大长度 {max(len(v) for v in ids)} ≤ {MAX_ID_LENGTH} {within}；"
-        f"全量校验 {all_valid}",
+        PASS if ok else FAIL,
+        f"常量==契约32 {constant_is_contract}；唯一 {unique}；"
+        f"最长恰好 32 {exactly_32}（实测 {longest}）；逐前缀各 32 {per_prefix_ok}；"
+        f"前缀+hex 位数==32 {arithmetic_ok}；全量校验 {all_valid}",
     )
 
 

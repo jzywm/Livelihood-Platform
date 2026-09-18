@@ -12,3 +12,12 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# pytest 的 basetemp 目录：pytest 在 basetemp 不可用时会在**当前目录**下建
+# `pytest-cache-files-*`，本仓库因此攒了 30+ 个（Task 3.8 评审发现）。
+# 它们此前**没有任何 gitignore 规则**——只是因为沙箱 ACL 拒绝读取才没出现在
+# `git status` 里（`git check-ignore` 实测 exit 1）。权限一变就会变成 30 多个未跟踪目录。
+# 同理收容一次性探针目录（`_probe_*` 文件另有 `_*` 约定，此处覆盖目录形态）。
+pytest-cache-files-*/
+probe-*/
+.probe-venv/

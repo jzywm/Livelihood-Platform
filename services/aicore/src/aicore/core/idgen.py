@@ -56,7 +56,12 @@ ID_PREFIXES: Final[dict[str, str]] = {
 
 #: 每个前缀下 UUID hex 取多少位 = `MAX_ID_LENGTH - len(prefix)`。
 #: 由常量现算而非写字面量：改 `MAX_ID_LENGTH` 或改前缀长度时不会留下第二份会漂移的账。
-_UUID_HEX_LENGTHS: Final[dict[str, int]] = {
+#:
+#: **公开导出（Task 3.8 独立评审后改名）**：验收脚本与用例要断言
+#: "前缀长度 + hex 位数 == 32"这条**算术本身**，而它是本模块对外可见的契约
+#: （各前缀的位数分布影响可读性与排障），不是内部实现细节。
+#: 名字与 `ID_PREFIXES` 成对，读起来就是"每个前缀配多少位"。
+ID_PREFIX_LENGTHS: Final[dict[str, int]] = {
     kind: MAX_ID_LENGTH - len(prefix) for kind, prefix in ID_PREFIXES.items()
 }
 
@@ -69,7 +74,7 @@ _UUID_HEX_LENGTHS: Final[dict[str, int]] = {
 #: 而 ID 会被直接写进 `varchar(32)` 主键。
 _ID_PATTERN: Final[re.Pattern[str]] = re.compile(
     "|".join(
-        f"{re.escape(ID_PREFIXES[_kind])}[0-9a-f]{{{_UUID_HEX_LENGTHS[_kind]}}}"
+        f"{re.escape(ID_PREFIXES[_kind])}[0-9a-f]{{{ID_PREFIX_LENGTHS[_kind]}}}"
         for _kind in ID_PREFIXES
     )
 )
@@ -89,11 +94,11 @@ def _require_known_kind(kind: str) -> str:
 def new_id(kind: str) -> str:
     """生成一个 `kind` 类型的 ID，**总长恒等于 `MAX_ID_LENGTH`**。
 
-    先取 `uuid4().hex` 再截到该前缀允许的位数。截断位置由 `_UUID_HEX_LENGTHS` 决定，
+    先取 `uuid4().hex` 再截到该前缀允许的位数。截断位置由 `ID_PREFIX_LENGTHS` 决定，
     **MUST NOT** 在函数体里写 `[:27]` 这类字面量——长度账只允许有一处。
     """
     prefix = _require_known_kind(kind)
-    value = prefix + uuid.uuid4().hex[: _UUID_HEX_LENGTHS[kind]]
+    value = prefix + uuid.uuid4().hex[: ID_PREFIX_LENGTHS[kind]]
     # 自校验：常量被改错时立刻炸，而不是把一个超长串送去数据库。
     if len(value) != MAX_ID_LENGTH:
         raise ValueError(
@@ -101,9 +106,9 @@ def new_id(kind: str) -> str:
             f"检查 ID_PREFIXES / MAX_ID_LENGTH 是否被改坏"
         )
     if not validate_id(value, kind):  # pragma: no cover - 不可达的防御性检查
-        # 为什么标 `no cover` 而不是造一个测试：`_UUID_HEX_LENGTHS` 由 `MAX_ID_LENGTH` 与前缀长度
+        # 为什么标 `no cover` 而不是造一个测试：`ID_PREFIX_LENGTHS` 由 `MAX_ID_LENGTH` 与前缀长度
         # **现算**，故"长度对但格式不对"在结构上进不来（上面的长度检查已先拦）。
-        # 留它在这儿是为了挡住"将来有人把 `_UUID_HEX_LENGTHS` 改成手写字面量"这种改法——
+        # 留它在这儿是为了挡住"将来有人把 `ID_PREFIX_LENGTHS` 改成手写字面量"这种改法——
         # 那时本分支就会变成可达的真防线。造一个测试只能靠 monkeypatch 把常量改成自相矛盾的值，
         # 那种测试测的是"猴补丁生效"，不是这条断言的价值。
         raise ValueError(f"生成的 ID 未通过自校验：{value!r}")
@@ -132,7 +137,7 @@ def validate_id(value: str, kind: str | None = None) -> bool:
         if not value.startswith(prefix):
             return False
         remainder = value[len(prefix) :]
-        return len(remainder) == _UUID_HEX_LENGTHS[kind] and bool(
+        return len(remainder) == ID_PREFIX_LENGTHS[kind] and bool(
             re.fullmatch(r"[0-9a-f]+", remainder)
         )
     return _ID_PATTERN.fullmatch(value) is not None
