@@ -43,11 +43,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from aicore.core.errors import ForbiddenError, NotFoundError
+from aicore.core.errors import (
+    PARAM_VALUE_CODE,
+    ForbiddenError,
+    NotFoundError,
+    ParamError,
+)
+from aicore.core.idgen import ID_PREFIX_LENGTHS, MAX_ID_LENGTH, task_month_of
 from aicore.repository.base import ShardKey
 from aicore.repository.models import AiTask
 from aicore.repository.task_repo import TaskRepo
@@ -118,11 +124,22 @@ def load_owned_task(
     `er.md:252` 点名的「任务提交后立即轮询」正是这条路径）；本层 MUST NOT 自开引擎或会话
     （`repository/base.py` R3）。
     """
-    # 分片键的 `created_at` 用当前时刻：`ShardKey` 只用它算月，故查询窗口是 `now` 所在月。
+    try:
+        month = task_month_of(task_id)
+    except ValueError:
+        raise ParamError(
+            f"任务号形态非法：期望 `task_` + 6 位创建月（YYYYMM）+ "
+            f"{ID_PREFIX_LENGTHS['task']} 位小写 hex，总长 {MAX_ID_LENGTH}"
+            f"（er.md §5.4）",
+            code=PARAM_VALUE_CODE,
+        ) from None
+    # 分片键的 `created_at` 只需**落在目标月内**即可定位到同一张物理表（`ShardKey` 只用它算月）。
+    # 用该月 1 日 00:00 UTC 构造：月份来自 task_id，不是"当前时间"，故跨月轮询成立。
+    at = datetime(int(month[:4]), int(month[4:]), 1, tzinfo=UTC)
     task = TaskRepo().get_by_id(
         session,
         task_id,
-        shard=ShardKey(account_id=account_id, created_at=now),
+        shard=ShardKey(account_id=account_id, created_at=at),
     )
     if task is None:
         raise NotFoundError()

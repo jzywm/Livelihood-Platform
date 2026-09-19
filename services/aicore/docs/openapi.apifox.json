@@ -184,7 +184,7 @@
                             "taskId": {
                               "type": "string",
                               "description": "任务号，轮询 GET /aicore/tasks/{taskId}",
-                              "example": "task_9f2e7c1a3b4d5e6f"
+                              "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                             },
                             "status": {
                               "type": "string",
@@ -609,7 +609,7 @@
             "description": "任务号（提交接口返回）",
             "schema": {
               "type": "string",
-              "example": "task_9f2e7c1a3b4d5e6f"
+              "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
             }
           }
         ],
@@ -699,7 +699,7 @@
                           "properties": {
                             "taskId": {
                               "type": "string",
-                              "example": "task_9f2e7c1a3b4d5e6f"
+                              "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                             },
                             "type": {
                               "type": "string",
@@ -1360,7 +1360,7 @@
                             "taskId": {
                               "type": "string",
                               "description": "任务号，轮询 GET /aicore/tasks/{taskId}",
-                              "example": "task_9f2e7c1a3b4d5e6f"
+                              "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                             },
                             "status": {
                               "type": "string",
@@ -1948,7 +1948,7 @@
                                       "taskId": {
                                         "type": "string",
                                         "description": "关联任务号",
-                                        "example": "task_9f2e7c1a3b4d5e6f"
+                                        "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                                       },
                                       "bizType": {
                                         "type": "string",
@@ -2315,7 +2315,7 @@
                                 "taskId": {
                                   "type": "string",
                                   "description": "关联任务号",
-                                  "example": "task_9f2e7c1a3b4d5e6f"
+                                  "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                                 },
                                 "bizType": {
                                   "type": "string",
@@ -5394,7 +5394,7 @@
           "taskId": {
             "type": "string",
             "description": "任务号，轮询 GET /aicore/tasks/{taskId}",
-            "example": "task_9f2e7c1a3b4d5e6f"
+            "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
           },
           "status": {
             "type": "string",
@@ -5417,7 +5417,7 @@
         "properties": {
           "taskId": {
             "type": "string",
-            "example": "task_9f2e7c1a3b4d5e6f"
+            "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
           },
           "type": {
             "type": "string",
@@ -5823,7 +5823,7 @@
           "taskId": {
             "type": "string",
             "description": "关联任务号",
-            "example": "task_9f2e7c1a3b4d5e6f"
+            "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
           },
           "bizType": {
             "type": "string",
@@ -5963,7 +5963,7 @@
                     "taskId": {
                       "type": "string",
                       "description": "关联任务号",
-                      "example": "task_9f2e7c1a3b4d5e6f"
+                      "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                     },
                     "bizType": {
                       "type": "string",
@@ -6139,7 +6139,7 @@
               "taskId": {
                 "type": "string",
                 "description": "关联任务号",
-                "example": "task_9f2e7c1a3b4d5e6f"
+                "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
               },
               "bizType": {
                 "type": "string",
@@ -7098,7 +7098,7 @@
                             "taskId": {
                               "type": "string",
                               "description": "任务号，轮询 GET /aicore/tasks/{taskId}",
-                              "example": "task_9f2e7c1a3b4d5e6f"
+                              "example": "task_2026019f2e7c1a3b4d5e6f7a8b9"
                             },
                             "status": {
                               "type": "string",

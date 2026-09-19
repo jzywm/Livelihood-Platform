@@ -117,10 +117,16 @@ paths:
         - name: taskId
           in: path
           required: true
-          description: 任务号（提交接口返回）
+          description: |
+            任务号（提交接口返回），形态 `task_` + 创建月 `YYYYMM` + UUID hex，**总长恒 32**
+            （例 `task_2026019f2e7c1a3b4d5e6f7a8b9`）。
+            **月份内嵌在任务号里**：本服务据此直接定位该月的分片表，
+            故跨月轮询成立（上月提交的任务下月仍可查），且**只查一张表**、不跨分片。
           schema:
             type: string
-            example: task_9f2e7c1a3b4d5e6f
+            pattern: '^task_[0-9]{6}[0-9a-f]{21}$'
+            maxLength: 32
+            example: task_2026019f2e7c1a3b4d5e6f7a8b9
       responses:
         '200':
           description: 成功，返回任务状态与结果
@@ -777,8 +783,13 @@ components:
       properties:
         taskId:
           type: string
-          description: 任务号，轮询 GET /aicore/tasks/{taskId}
-          example: task_9f2e7c1a3b4d5e6f
+          description: |
+            任务号，轮询 GET /aicore/tasks/{taskId}。
+            形态 `task_` + 创建月 `YYYYMM` + UUID hex，总长恒 32；
+            月份内嵌其中，故跨月轮询成立（见 GET /aicore/tasks/{taskId} 的参数说明）。
+          pattern: '^task_[0-9]{6}[0-9a-f]{21}$'
+          maxLength: 32
+          example: task_2026019f2e7c1a3b4d5e6f7a8b9
         status:
           type: string
           description: 受理状态（固定 PROCESSING）
@@ -790,7 +801,10 @@ components:
       properties:
         taskId:
           type: string
-          example: task_9f2e7c1a3b4d5e6f
+          description: 任务号（`task_` + 创建月 `YYYYMM` + UUID hex，总长恒 32）
+          pattern: '^task_[0-9]{6}[0-9a-f]{21}$'
+          maxLength: 32
+          example: task_2026019f2e7c1a3b4d5e6f7a8b9
         type:
           $ref: '#/components/schemas/TaskType'
         status:
@@ -891,8 +905,10 @@ components:
           example: rev_c1d2e3f4a5b6
         taskId:
           type: string
-          description: 关联任务号
-          example: task_9f2e7c1a3b4d5e6f
+          description: 关联任务号（`task_` + 创建月 `YYYYMM` + UUID hex，总长恒 32）
+          pattern: '^task_[0-9]{6}[0-9a-f]{21}$'
+          maxLength: 32
+          example: task_2026019f2e7c1a3b4d5e6f7a8b9
         bizType:
           $ref: '#/components/schemas/VisionBizType'
         merchantId:

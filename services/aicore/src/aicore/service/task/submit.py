@@ -157,7 +157,7 @@ def new_task(*, account_id: str, task_type: str, idem_key: str | None, now: date
 
     | 列 | 取值 | 依据 |
     |---|---|---|
-    | `task_id` | `new_id("task", at=now)`（32 位业务号，非雪花） | `er.md` §5.4 L239 |
+    | `task_id` | `new_id("task", at=now)`（32 位业务号，非雪花） | `er.md` §5.4 v1.3 |
     | ↑ 其中**内嵌创建月 `YYYYMM`**，故轮询能自行定位月表（见 `query.py`） | 同上 |
     | `type` | 传入的 `task_type`（受理处从注册表策略里带来） | §6.1 L291 + `design.md:194` |
     | `status` | 固定 `PROCESSING`——**不得由调用方指定** | §6.1 L292 列默认值 |
@@ -173,7 +173,7 @@ def new_task(*, account_id: str, task_type: str, idem_key: str | None, now: date
     因为「猜错时区」的表现是**静默跨月错片**，比抛错危险得多。
     """
     return AiTask(
-        task_id=new_id("task"),
+        task_id=new_id("task", at=now),
         account_id=account_id,
         idem_key=idem_key,
         type=task_type,
