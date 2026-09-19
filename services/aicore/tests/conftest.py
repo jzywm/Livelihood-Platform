@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import inspect
 import os
+import socket
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -145,3 +147,114 @@ def client(app: FastAPI) -> Iterator[TestClient]:
     # 用 with 语句进入上下文，才会真正触发 lifespan（启动钩子）；直接构造不会触发。
     with TestClient(app) as c:
         yield c
+
+
+# ---------------------------------------------------------------------------
+# 会话级「零 socket 建连」守卫（控制者新增，P 阶段评审 B3 的修复）
+#
+# ## 它补的是哪个洞
+#
+# 原守卫装在 `tests/unit/test_provider_mock.py` 里（autouse，文件级）。评审用变异测试
+# 证明：往 `src/aicore/provider/mock.py` 注入一次真实的 `socket.connect(("192.0.2.1", 9))` 后，
+# **mock / real / selector 三个套件 48+51+35 全绿**——因为守卫只在 mock 那个文件里生效，
+# 而 `mock.py` 在别的套件运行时**没有任何守卫在听**。
+# 「某实现无网络依赖」是**实现的性质**，不是「某一个测试文件的性质」，
+# 故守卫的必要作用域是**整个测试会话**，不是单个文件。
+#
+# ## 为什么必须按调用栈归因，而不是「一律拦下 connect」
+#
+# Windows 上 `asyncio.new_event_loop()` 会真的发起**一次回环 connect**
+# （ProactorEventLoop 的 self-pipe：`_make_self_pipe` → `socketpair` →
+# `_fallback_socketpair` → `csock.connect(("127.0.0.1", <随机端口>))`）。
+# 控制者实测：`new_event_loop` 期间恰好 1 次 connect。
+# pytest-asyncio 在**夹具阶段**就建循环，早于测试体，故「一律拦下」会让全部 async 用例 ERROR。
+#
+# ## 判据：目标地址 + 调用栈，**两者都要看**（控制者实测后定稿）
+#
+# 只看调用栈会误判：Windows 上 `asyncio.new_event_loop()` 会真的发起一次回环 connect
+# （ProactorEventLoop 的 self-pipe：`_make_self_pipe` → `socketpair` →
+# `_fallback_socketpair` → `csock.connect(("127.0.0.1", <随机端口>))`）。
+# 控制者实测：`new_event_loop` 期间恰好 1 次 connect，目标是回环。
+# 而**归因到帧**时，这次 connect 的最内层「本项目帧」可能落在测试自己的守卫上
+# （`test_provider_real.py` 的 `_SocketGuard.connect` 就是一个项目帧）——
+# 于是纯栈判据会把它误判成违规。实测证据：会话级守卫上线的第一次全量跑，
+# 在 `test_health_stays_bare_and_still_echoes_trace_id` 的 teardown 报出
+# **32 次违规，栈全部指向 `test_provider_real.py:269:connect`**（即守卫自己的转发帧）。
+#
+# 故判据取**合取**：
+#   ① 目标**不是**环回 → 才可能是问题（回环流量既出不了本机，也产生不了计费调用）；
+#   ② 栈里**出现过**本项目帧 → 才归咎于我们（纯 stdlib 发起的对外连接不是本层的责任）。
+# 这条与 `test_provider_real.py` 的 `_SocketGuard` 口径一致（它按目标地址放行环回），
+# 但更严一档：它放行一切环回，本守卫在「非环回 + 项目帧」时才判违规。
+#
+# ## 能力边界（如实登记，MUST NOT 被当作"已验证清白"）
+#
+# - 环回地址一律放行，故**抓不到**「本机另一个服务被误连」（如误连本机 Redis）——
+#   那属于集成测试的正确性问题，不是本守卫的目标；
+# - 抓不到「栈内既无本项目帧、也无 stdlib socket 帧」的连接（例如某个 C 扩展直接发起）。
+# 后一条缺口在本项目被 `tests/structural/test_source_guards.py` 的规则 5 补上：
+# 非 `provider/` 的文件**不得 import** `httpx`/`requests`/`aiohttp`。
+# 两条守卫方向互补：项目代码要么在 `provider/` 内（栈内必有项目帧 → 被抓），
+# 要么根本不 import 网络库（源码级拦住）。
+# ---------------------------------------------------------------------------
+
+_GUARD_SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+_GUARD_PROJECT_TOKENS = (str(_GUARD_SRC_DIR), str(Path(__file__).resolve().parent))
+
+
+def _guard_is_loopback(address: object) -> bool:
+    """目标是否落在环回地址上（self-pipe 与本地测试服务都走这里）。"""
+    if not isinstance(address, tuple) or not address:
+        return False
+    host = str(address[0])
+    return host.startswith("127.") or host in {"::1", "localhost", "0.0.0.0", "::"}
+
+
+def _guard_has_project_frame() -> tuple[bool, tuple[str, ...]]:
+    """栈里是否出现过本项目自己的帧（`tests/` 或 `src/aicore/`）。"""
+    for frame in inspect.stack()[2:]:
+        if any(token in frame.filename for token in _GUARD_PROJECT_TOKENS):
+            return True, (f"{Path(frame.filename).name}:{frame.lineno}:{frame.function}",)
+    return False, ()
+
+
+#: 会话级违规账本。**跨文件累积**，故某实现被某个套件触发的问题会被记下来，
+#: 而不是随该文件结束一起消失。
+_SOCKET_VIOLATIONS: list[tuple[str, tuple[str, ...]]] = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_socket_guard() -> Iterator[None]:
+    """整个测试会话内，**本项目代码 MUST NOT 向环回之外发起 socket 建连**。
+
+    建连一律**透传给真实实现**（不做「拦截即抛错」）：被记录的是事实，
+    而不是被截断的行为——于是「有没有发生」与「谁发起的」成为两件可分别复核的事。
+    """
+    global _SOCKET_VIOLATIONS
+    _SOCKET_VIOLATIONS = []
+    real_connect = socket.socket.connect
+
+    def _guard_spy(self: socket.socket, address: object) -> object:
+        if not _guard_is_loopback(address):
+            has_project_frame, frames = _guard_has_project_frame()
+            if has_project_frame:
+                _SOCKET_VIOLATIONS.append((str(address), frames))
+        return real_connect(self, address)
+
+    socket.socket.connect = _guard_spy  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect  # type: ignore[method-assign]
+
+    assert _SOCKET_VIOLATIONS == [], (
+        f"本项目代码在测试期间向环回之外发起了 {len(_SOCKET_VIOLATIONS)} 次 socket 建连"
+        f"（provider 层要求全程无网络依赖）：\n"
+        + "\n".join(f"  目标={target} 栈={frames}" for target, frames in _SOCKET_VIOLATIONS)
+    )
+
+
+@pytest.fixture(scope="session")
+def socket_violations() -> list[tuple[str, tuple[str, ...]]]:
+    """交出会话级违规账本，供「判别力自证」用例自己控制推进节奏。"""
+    return _SOCKET_VIOLATIONS
