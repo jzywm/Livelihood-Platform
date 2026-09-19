@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,13 +22,39 @@ from aicore import __version__
 from aicore.api import health, ocr, tasks
 from aicore.core.config import ConfigRejected, get_settings
 from aicore.core.errors import register_exception_handlers
+from aicore.core.lease import RedisLockStore
 from aicore.core.logging import bootstrap_logging, configure_logging, flush_logging
+from aicore.core.task_runner import RunnerConfig, TaskRunner
 from aicore.core.trace import TraceIdMiddleware
 from aicore.repository.session import EngineFactory
+from aicore.repository.task_lease_store import SqlTaskLeaseStore
+from aicore.service.task.registry import REGISTRY
 
 # stdlib 日志器（与 `core/config.py` / `core/errors.py` 同一写法）：本模块的日志少而关键，
 # 且 stdlib 记录会被 root 上的 JSON 处理器收编，schema 与业务日志逐字一致。
 _logger = logging.getLogger(__name__)
+
+
+def _log_runner_death(task: asyncio.Task[None]) -> None:
+    """执行器协程结束时的回调：**异常死亡当场记 ERROR**（A2）。
+
+    为什么需要它：`asyncio.create_task` 的异常在没人 retrieve 之前是"沉默"的，
+    而 `runner_task` 正常情况下要到关停才被 `await` —— 于是"执行器已死、进程还活着"
+    这件事在整个进程存续期间**没有任何日志**（`/health` 也不查依赖）。
+    这是最坏的形态：**看起来一切正常，实际一个任务都不会被领**。
+
+    取消（关停）不算死亡，故 `cancelled()` 与无异常两种都直接返回。
+    """
+    if task.cancelled():
+        return
+    failure = task.exception()
+    if failure is not None:
+        _logger.error(
+            "任务执行器协程异常退出：进程仍然存活，但**不会再领取任何任务**"
+            "（需要重启；请按上方堆栈定位根因）：%s",
+            type(failure).__name__,
+            exc_info=failure,
+        )
 
 
 @asynccontextmanager
@@ -88,7 +115,93 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 故这一步不会把「配置错」变成启动期的一次网络等待。
     engine_factory = EngineFactory(settings)
     app.state.engine_factory = engine_factory
+    # ------------------------------------------------------------------
+    # Task 4.7：任务执行器的装配（领取 → 执行 → 终态 / 退避）
+    #
+    # **`env == "test" 时 MUST NOT 启动执行器**（工单 §2.7 逐字）：本钩子被每个用
+    # `TestClient` 的用例触发，启动执行器等于让每个用例都去连一次 Redis；而默认段
+    # （离线）MUST NOT 连 Redis（`design.md:282` 的离线保证）。真实 Redis 只在
+    # `@pytest.mark.integration` 段用。
+    #
+    # 判据用 `settings.env != "test"`（而不是「有没有配 redis_host」那类推断）：
+    # `env` 是**显式的部署形态声明**，推断出来的判据会在「本机恰好有个 Redis」时静默失效。
+    # ------------------------------------------------------------------
+    runner: TaskRunner | None = None
+    runner_stop: asyncio.Event | None = None
+    runner_task: asyncio.Task[None] | None = None
+    locks: RedisLockStore | None = None
+    if settings.env != "test":
+        locks = RedisLockStore(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+        )
+        runner = TaskRunner(
+            store=SqlTaskLeaseStore(engine_factory),
+            locks=locks,
+            # **空 mapping 是 M1 的事实，MUST NOT 用假处理器填满它**（工单 §2.8）：
+            # `service/ocr_service.py` 此刻仍是空壳，注册表的 `handler_ref` 只是**字符串位置**。
+            # 执行器遇到「没有对应处理器」的任务会**显式失败**（ERROR + `5000`），
+            # 而不是静默跳过——故空映射是**可观测的现状**，不是被藏起来的缺口。
+            handlers={},
+            # 策略映射由**组合根**注入（这是唯一允许跨层装配的位置）：
+            # `core/task_runner.py` MUST NOT import `aicore.service`（契约 4），
+            # 故它把 `TaskPolicy` 声明成只含 `retryable` / `task_type` 的结构化 Protocol，
+            # 注册表的 dataclass 实例**结构上**就满足它，无需适配器。
+            # `dict(REGISTRY)`：`REGISTRY` 是 `MappingProxyType`（运行期只读），
+            # 注入一份普通 dict 副本即可——只读性由注册表侧保证，组合根无需再包一层。
+            policies=dict(REGISTRY),
+            config=RunnerConfig(
+                lease_ms=settings.lease_ms,
+                max_retries=settings.max_retries,
+                concurrency_limit=settings.concurrency_limit,
+            ),
+        )
+        # 执行器协程与停止事件都挂在 `app.state` 上：关停时要能 set 并 await 它。
+        runner_stop = asyncio.Event()
+        runner_task = asyncio.create_task(runner.run_forever(stop=runner_stop))
+        # **执行器异常死亡必须有日志（A2）**：`create_task` 的异常只在有人 retrieve 它时才出现，
+        # 而 `run_forever` 正常情况下要到关停才被 await——于是"执行器死了"这件事在进程存活期间
+        # **一行日志都没有**（`/health` 也不查依赖）。加一个 done-callback，把死亡
+        # **当场**记成 ERROR。与 `TaskRunner._track._settle` 同一取向。
+        runner_task.add_done_callback(_log_runner_death)
+        app.state.task_runner = runner
+        # 如实记一条：M1 的处理器数量是 0。这不是"启动成功"的装饰性日志——
+        # 运维看到它就知道「此刻领到的任务都会因装配缺失而 FAILED（5000）」。
+        _logger.info(
+            "任务执行器已启动，已注册处理器 %d 个（并发上限 %d、租约 %dms、任务级重试上限 %d）",
+            len(runner.registered_handlers),
+            settings.concurrency_limit,
+            settings.lease_ms,
+            settings.max_retries,
+        )
     yield
+    # ------------------------------------------------------------------
+    # 关闭（**顺序是硬要求**：工单 §2.7）——先 set stop、await 执行器退出，**再**关 Redis。
+    # 反过来的话，在跑任务的续期会失败——那会被执行器判成「租约已失去」而**主动放弃**
+    # （`design.md:208` 的语义），表现为一串"无故放弃"的告警，而真正的原因是我们先拔了 Redis。
+    #
+    # **每一步都必须执行到（A2）**：第一版是裸 `await runner_task`，一旦执行器已经异常死亡，
+    # 那句会把死亡原因抛出去，于是 `runner.stop()` / `locks.close()` / `dispose()` /
+    # `flush_logging()` **全部被跳过**（实测：关停块里执行到的清理步骤 = []）。
+    # 故这里把 `await` 包起来：死亡原因记 ERROR 后**继续**关停流程。
+    # 资源清理不该因为"另一个组件死过"而整体不做。
+    # ------------------------------------------------------------------
+    if runner_task is not None and runner_stop is not None:
+        runner_stop.set()
+        try:
+            await runner_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 死亡本身已由 done-callback 记过一条；这里是"关停时又看到一次"，
+            # 仍然记下来（两条日志的上下文不同：一条是死亡当场、一条是关停收尾）。
+            _logger.error("任务执行器在关停前已异常退出：继续执行关停清理", exc_info=True)
+    if runner is not None:
+        # 释放自建的 CPU 池（外部注入的池不归执行器管，见 TaskRunner.stop 的 docstring）。
+        await runner.stop()
+    if locks is not None:
+        await locks.close()
     # 关闭时释放连接池。**释放的是本钩子自己装配的那个对象（局部引用）**，而不是重新从
     # `app.state` 取：`app.state.engine_factory` 是**可被替换**的装配点（测试夹具就按约定
     # 把 sqlite 沙盒替身注入到同一位置，见 tests/conftest.py::api_client），
