@@ -731,11 +731,16 @@ def test_repository_layer_never_manages_the_transaction() -> None:
 
 
 def test_status_update_statement_only_sets_three_columns() -> None:
-    """SET 列集合恰为 `{status, progress, finished_at}`，且 SQL 里没有整行覆盖列。
+    """**不传 `error_code` 时** SET 列集合恰为 `{status, progress, finished_at}`，
+    且 SQL 里没有整行覆盖列。
 
     这是"不用 `session.merge(entity)` 整行覆盖"的**机械证据**：语句对象在手，
     `_values` 的键就是 SET 列（`Update._values` 是 SQLAlchemy 的内部结构，
     这里刻意直接断言它——工单的用例 5 点名了这个判据）。
+
+    **"不传时恰好三列"这半边 MUST NOT 被削弱**（Task 4.7 修复轮的授权范围逐字要求保留）：
+    `begin_attempt` / `mark_succeeded` / `requeue` 三个调用方走的都是不传 `error_code`
+    的路径，它们的 SQL 必须逐字保持不变。
     """
     statement = status_update_statement(
         MONTH,
@@ -749,6 +754,42 @@ def test_status_update_statement_only_sets_three_columns() -> None:
         "progress",
         "finished_at",
     }
+    compiled = str(statement.compile(dialect=mysql.dialect()))
+    assert f"UPDATE {TASK_LOGICAL_TABLE}_{MONTH} SET" in compiled, (
+        f"UPDATE MUST 打到物理表，实际：{compiled}"
+    )
+    for column in ("created_at", "model_meta", "is_eval_sample", "account_id", "idem_key"):
+        assert column not in compiled, f"UPDATE 语句里出现了非目标列 {column}：{compiled}"
+
+
+def test_status_update_statement_sets_error_code_when_given() -> None:
+    """**传了 `error_code` 时** SET 列集合恰为四列，且该值真的进了语句。
+
+    Task 4.7 修复轮（B3）新增：`mark_failed` 要把 `FAILED` 业务码落库，
+    否则 Task 4.11 的「`4003` / `5002` 分别计数」没有依据（`er.md` §6.1 L294）。
+    与上一条用例**成对**：一条钉"不传时恰好三列"（既有调用方不受影响），
+    一条钉"传了时恰好四列"（新路径真的写进去了）。
+
+    只断言"`error_code` 在 `_values` 里"不够：那漏掉「列进去了但值是 `None`」
+    （例如实现里写成 `.values(error_code=...)` 却传了个空）这类形态——
+    故同时断言**值**等于传进去的那个码。
+    """
+    statement = status_update_statement(
+        MONTH,
+        "task_1",
+        status="FAILED",
+        progress=10,
+        finished_at=_at(hour=9),
+        error_code="5002",
+    )
+    values = {getattr(key, "key", key): value for key, value in statement._values.items()}
+    assert set(values) == {"status", "progress", "finished_at", "error_code"}
+    # `_values` 里的东西是 `BindParameter`（SQLAlchemy 2.x 的绑定参数对象），
+    # 故取值要经 `.value`；直接比它会拿到对象本身。
+    # 断言**值**而不是"键在不在"：只断言键会漏掉「列进去了但值是 None」这类实现。
+    assert getattr(values["error_code"], "value", values["error_code"]) == "5002", (
+        f"error_code 的值没有进语句：{values!r}"
+    )
     compiled = str(statement.compile(dialect=mysql.dialect()))
     assert f"UPDATE {TASK_LOGICAL_TABLE}_{MONTH} SET" in compiled, (
         f"UPDATE MUST 打到物理表，实际：{compiled}"

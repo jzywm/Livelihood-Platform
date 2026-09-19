@@ -38,24 +38,42 @@ def status_update_statement(
     status: str,
     progress: int,
     finished_at: datetime | None,
+    error_code: str | None = None,
 ) -> Update:
-    """构造"**只**更新 status / progress / finished_at"的 UPDATE 语句（`ai_task_<month>`）。
+    """构造"只更新 status / progress / finished_at（+ 可选 error_code）"的语句
+    （`ai_task_<month>`）。
 
     **为什么要单独有这个构造器**（而不是把语句写在 `update_status` 里）："只更新允许的列"
-    是一条**可以被机械检查**的约束——语句一旦成对象，用例就能断言它的 SET 列集合恰好是那三列，
-    而不是靠人去读方法体。故这里刻意留出一个纯函数接缝：输入是月份与三个目标值、输出是语句，
-    没有会话、没有副作用。
+    是一条**可以被机械检查**的约束——语句一旦成对象，用例就能断言它的 SET 列集合恰好是那三列
+    （或四列），而不是靠人去读方法体。故这里刻意留出一个纯函数接缝：输入是月份与目标值、
+    输出是语句，没有会话、没有副作用。
 
     三个列名 MUST 逐个写出来，MUST NOT 用 `session.merge(entity)` 这类整行覆盖写法：
     `merge` 会把内存里那份实体的 `created_at` / `model_meta` / `is_eval_sample` 一起写回，
     等于拿调用方手里的旧快照覆盖库里的现状（`model_meta` 是血缘快照，覆盖掉再也回不来）。
+
+    ## `error_code`：**仅当非 `None` 时才进列清单**（Task 4.7 修复轮授权的最小改动）
+
+    `er.md` §6.1 L294 把该列定义为「FAILED 业务码」（`4003` 通道失败 / `5002` 依赖超时），
+    而 Task 4.11 要求「`4003` 与 `5002` 分别计数」——那正是靠这一列。
+    在此之前本构造器的列集合是**写死的三列**，于是 `FAILED` 行上的 `error_code` 永远是 NULL，
+    4.11 拿不到计数依据。
+
+    两条硬要求：
+
+    - **不传时不出现该列**：既有的三个调用方（`begin_attempt` / `mark_succeeded` /
+      `requeue`）的 SQL **逐字不变**（列集合仍是三列），故它们的既有用例与行为都不受影响；
+    - **传了时恰好四列**：只有 `FAILED` 终态写回那一处带它。
     """
     table = physical_table(TASK_LOGICAL_TABLE, month)
-    return (
-        update(table)
-        .where(table.c.task_id == task_id)
-        .values(status=status, progress=progress, finished_at=finished_at)
-    )
+    values: dict[str, object] = {
+        "status": status,
+        "progress": progress,
+        "finished_at": finished_at,
+    }
+    if error_code is not None:
+        values["error_code"] = error_code
+    return update(table).where(table.c.task_id == task_id).values(**values)
 
 
 class TaskRepo(BaseRepo[AiTask]):
@@ -119,11 +137,15 @@ class TaskRepo(BaseRepo[AiTask]):
         status: str,
         progress: int,
         finished_at: datetime | None,
+        error_code: str | None = None,
     ) -> int:
-        """只更新 `status` / `progress` / `finished_at`，返回**受影响行数**。
+        """只更新 `status` / `progress` / `finished_at`（+ 可选 `error_code`），
+        返回**受影响行数**。
 
         语句由 `status_update_statement` 构造（"只更新允许的列"因此可被用例机械检查），
         见该函数的 docstring：MUST NOT 用 `merge` 整行覆盖。
+        `error_code` **不传时列集合仍是三列**（既有调用方的 SQL 逐字不变），
+        传了才是四列——用途与口径见 `status_update_statement` 的 docstring。
 
         **返回值的口径（本栈实测，与"裸 MySQL 默认"不同）**：`CursorResult.rowcount` 在
         SQLAlchemy 的 MySQL 方言下是**匹配行数**（不是变更行数）——方言在连接时硬编码加上了
@@ -134,6 +156,9 @@ class TaskRepo(BaseRepo[AiTask]):
         故调用方拿它判断"是否存在"是可靠的（0 即没有这一行）；但**MUST NOT** 反过来把 1
         当成"值一定发生了改变"（同值重放也是 1）。这条口径差异值得写下来：按裸 MySQL 的
         默认语义写代码的人会以为同值更新返回 0。
+
+        **调用方 MUST 检查这个返回值**（Task 4.7 修复轮 A5(c)）：`0` 意味着**那一行不存在**
+        （分片打错月、任务号拼错），此时"写成功"的判断是错的——行会留在原状态等重放。
         """
         require_shard_key(task_id, field="task_id")
         statement = status_update_statement(
@@ -142,6 +167,7 @@ class TaskRepo(BaseRepo[AiTask]):
             status=status,
             progress=progress,
             finished_at=finished_at,
+            error_code=error_code,
         )
         return self._update(session, statement)
 

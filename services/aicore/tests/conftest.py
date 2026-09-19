@@ -8,14 +8,16 @@ from __future__ import annotations
 import inspect
 import os
 import socket
-from collections.abc import Iterator
+import uuid
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from dotenv import dotenv_values
 from fastapi import FastAPI
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -125,6 +127,29 @@ if not os.environ.get("DSH_IT_MYSQL_PASSWORD"):
 
 # 都取不到时保持为空：各集成用例自己的连通性探测会 skip 并说明缺哪个变量（不静默通过）。
 
+# ---------------------------------------------------------------------------
+# 真实 Redis 的集成测试**专用变量**（Task 4.7）
+#
+# 与上面 `DSH_IT_MYSQL_*` **完全同形、同一理由**（那段注释里的两个坑对 Redis 一字不差）：
+# ① 不能复用 `AICORE_REDIS_*`——本文件顶部已把 `AICORE_REDIS_HOST` 注入成 `127.0.0.1`
+#    占位值，集成用例读它只会拿到那个占位值，连不上就 `pytest.skip`，
+#    于是「真实 Redis 上的租约语义」这道门禁**静默失效**；
+# ② 不能叫 `AICORE_TEST_REDIS_*`——`core/config.py` 的 `_UnknownEnvVarSource` 会拒绝任何
+#    未声明的 `AICORE_*` 变量（Task 2.1 的防线），用它会让每次应用启动都撞
+#    "Extra inputs are not permitted" → `ConfigRejected`。
+#
+# **Redis 没有口令**（本机演练实例），故这里不需要 MySQL 那套 `.env` 回填逻辑；
+# 若将来 CI 上的 Redis 要密码，届时按同一形状加 `DSH_IT_REDIS_PASSWORD`（**不给默认值**）。
+# ---------------------------------------------------------------------------
+_INTEGRATION_REDIS_DEFAULTS: dict[str, str] = {
+    "DSH_IT_REDIS_HOST": "127.0.0.1",
+    "DSH_IT_REDIS_PORT": "6379",
+    "DSH_IT_REDIS_DB": "0",
+}
+
+for _key, _value in _INTEGRATION_REDIS_DEFAULTS.items():
+    os.environ.setdefault(_key, _value)
+
 # 必须在上面注入之后导入：pytest 导入本模块时即完成注入，测试模块随后才 import aicore。
 from aicore.main import create_app  # noqa: E402
 
@@ -201,6 +226,30 @@ def client(app: FastAPI) -> Iterator[TestClient]:
 # 非 `provider/` 的文件**不得 import** `httpx`/`requests`/`aiohttp`。
 # 两条守卫方向互补：项目代码要么在 `provider/` 内（栈内必有项目帧 → 被抓），
 # 要么根本不 import 网络库（源码级拦住）。
+#
+# ### ⚠ 第三条边界：**asyncio 的非环回建连对本守卫不可见**（A6，独立评审实测）
+#
+# 本守卫 patch 的是 `socket.socket.connect`，而 Windows 上 `ProactorEventLoop` 的
+# `create_connection` / `open_connection` 走的是 **C 层 `ConnectEx`**——**根本不经过**
+# 被 patch 的那个方法。评审在真机上实测：
+#
+# ```
+# event loop policy: _WindowsProactorEventLoopPolicy
+# [A] 异步非环回建连 asyncio.open_connection('192.0.2.1', 9) -> TimeoutError
+#     违规记录数 = 0        ← 看不见
+# [B] 同步非环回建连 socket.connect('192.0.2.1', 9)          -> TimeoutError
+#     违规记录数 = 1        ← 看得见（对照组）
+# ```
+#
+# **这条比上面登记的两条更容易被误信**：项目代码里所有出向调用都是 `async` 的
+# （`provider/` 的通道实现、将来任何 `httpx.AsyncClient` 调用），它们**恰好全在这条盲区里**。
+# 故本守卫今天能给的保证**比它的名字弱**：它实际覆盖的是**同步**建连路径，
+# 异步路径的"无外部模型调用"目前**只**由源码级规则 5（非 `provider/` 不得 import
+# `httpx`/`requests`/`aiohttp`）兜住——那条是静态的，看不见"动态拼出来的 URL"之类。
+#
+# **控制者裁定（Task 4.7 修复轮 A6）**：本轮只**如实登记**这条边界，不要求真修
+# （真修要 patch `loop.create_connection` 或挂审计钩子，且必须可判定）。
+# 登记它的价值在于：后来者不会因为"守卫是绿的"就以为异步路径已经被证明清白。
 # ---------------------------------------------------------------------------
 
 _GUARD_SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -343,3 +392,221 @@ def api_client(sandbox_engine: Engine) -> Iterator[TestClient]:
     with TestClient(app) as client:
         app.state.engine_factory = _SandboxSessionFactory(sandbox_engine)
         yield client
+
+
+# ---------------------------------------------------------------------------
+# 真实 Redis 的集成夹具（Task 4.7）
+#
+# ## 三条纪律（工单 §3.6）
+#
+# ① **每个用例换一个 key 前缀**（`aicore:test:<uuid>:`）：聚合门禁里同一台 Redis 上
+#    可能同时跑着别的用例/别人手工起的键，固定前缀会让"A 的用例清掉了 B 的键"，
+#    表现为随机的偶发失败；
+# ② **用例结束清理自己的键**，且 **MUST NOT `FLUSHDB`**——那会清掉同机其它测试的状态
+#    （与 MySQL 侧"只 DROP 自己建的演练月分片表，MUST NOT DROP DATABASE"逐字同款）；
+# ③ **连不上时显式 skip 并说明**（缺哪个变量、连哪个地址），MUST NOT 静默通过
+#    ——静默通过等于让"真实 Redis 上的租约语义"这道门禁在 CI 里永远不生效。
+#
+# ## 为什么 v1 兼容（`decode_responses` 与二进制前缀的取舍）
+#
+# 夹具只用 `decode_responses=False` 的裸客户端做三件事：`PING` 探测、`SET`/`PTTL` 这类
+# 原始断言、以及按前缀 `SCAN` 清理。**不使用 `FLUSHDB`、不使用 `KEYS`**：
+# `SCAN` 是指针式遍历，不会像 `KEYS` 那样在大 keyspace 上阻塞整个 Redis。
+# ---------------------------------------------------------------------------
+
+#: 集成用例的 key 前缀根。用例自造的键 MUST 以它开头，夹具的清理也**只**扫它。
+REDIS_TEST_PREFIX_ROOT = "aicore:test:"
+
+
+def redis_integration_target() -> tuple[str, int, int]:
+    """`DSH_IT_REDIS_*` → `(host, port, db)`；默认值已由本文件顶部注入。"""
+    return (
+        os.environ.get("DSH_IT_REDIS_HOST", "127.0.0.1"),
+        int(os.environ.get("DSH_IT_REDIS_PORT", "6379")),
+        int(os.environ.get("DSH_IT_REDIS_DB", "0")),
+    )
+
+
+def redis_is_available() -> str | None:
+    """探测本机 Redis 是否可用：可用返回 `None`，不可用返回**说明原因**的字符串。
+
+    返回"原因"而不是布尔值：调用方（夹具）要把它直接交给 `pytest.skip`，
+    让跳过原因在报告里能读出"连的是哪个地址、报的是什么错"。
+
+    用**同步** `redis.Redis` 做探测（而夹具里的客户端是 `redis.asyncio`）：
+    探测函数是普通函数、会被夹具与用例在任意位置调用；若它内部要 `await`，
+    每个调用点都得改写成协程，而"探活"这件事本身不值得那个复杂度。
+    """
+    host, port, db = redis_integration_target()
+    try:
+        import redis as redis_sync
+
+        client = redis_sync.Redis(host=host, port=port, db=db, socket_connect_timeout=1.0)
+        try:
+            client.ping()
+        finally:
+            client.close()
+    except Exception as exc:
+        return (
+            f"需要真实 Redis（{host}:{port}/{db}）才能验证租约的原子性与过期语义："
+            f"{type(exc).__name__}: {exc}"
+        )
+    return None
+
+
+async def _drop_prefixed_keys(client: Any, prefix: str) -> None:
+    """按前缀清掉本用例造的全部键（**只 SCAN 自己的前缀**，MUST NOT `KEYS` / `FLUSHDB`）。
+
+    `SCAN` 是指针式遍历：不像 `KEYS` 那样在大 keyspace 上阻塞整个 Redis；
+    `FLUSHDB` 会清掉同机其它测试的状态，故被工单 §3.6 明确禁止。
+    """
+    cursor = 0
+    doomed: list[str] = []
+    while True:
+        cursor, keys = await client.scan(cursor=cursor, match=f"{prefix}*", count=100)
+        doomed.extend(keys)
+        if cursor == 0:
+            break
+    if doomed:
+        await client.delete(*doomed)
+
+
+@pytest.fixture
+def redis_prefix() -> str:
+    """本用例专属的 key 前缀（`aicore:test:<uuid>:`，**每个用例都不同**）。"""
+    return f"{REDIS_TEST_PREFIX_ROOT}{uuid.uuid4().hex}:"
+
+
+@pytest.fixture
+async def redis_client(redis_prefix: str) -> AsyncIterator[Any]:
+    """真实 Redis 的**原始**客户端（供 `PTTL` / `EXISTS` 这类原始事实断言）。
+
+    连不上时显式 skip（理由见本段开头的纪律 ③）。用例结束按前缀清掉自己造的键。
+
+    写成 `async` 夹具（`pytest-asyncio` 的 `asyncio_mode = "auto"`，见 pyproject）：
+    `redis.asyncio` 的 `scan` / `delete` / `aclose` 都必须 `await`，
+    而"清理"正是本夹具存在的主要理由——它不是可选的收尾，而是纪律 ② 的落点。
+    """
+    reason = redis_is_available()
+    if reason is not None:
+        pytest.skip(reason)
+    from redis.asyncio import Redis as AsyncRedis
+
+    host, port, db = redis_integration_target()
+    # `decode_responses=True`：集成用例要断言键名/键值这类**文本**事实，
+    # 拿到 bytes 会让每条断言都多一次 `.decode()`（漏一次就是"看起来不相等"的假红）。
+    client = AsyncRedis(host=host, port=port, db=db, decode_responses=True)
+    try:
+        yield client
+    finally:
+        await _drop_prefixed_keys(client, redis_prefix)
+        await client.aclose()
+
+
+@pytest.fixture
+async def redis_store(redis_prefix: str) -> AsyncIterator[Any]:
+    """`RedisLockStore` 的实例（**用本用例专属的 key 前缀**，用例间零共享）。
+
+    ## 清理写在本夹具里，**不依赖** `redis_client`
+
+    实测踩过一次：清理逻辑原先只在 `redis_client` 的终结器里，而**只有同时请求
+    `redis_client` 的用例**才会实例化那个夹具——只请求 `redis_store` 的用例跑完后，
+    键**全部留在 Redis 上**（实测：`tests/integration/test_lease_redis.py` 跑完留下
+    `:lease` / `:attempts` 残留键）。靠"记得也要请求 `redis_client`"来保证清理迟早会漏，
+    故本夹具自带清理。`redis_client` 仍保留自己的清理（用它的用例同样需要兜底），
+    两者都只扫**同一个前缀**，重复清理是幂等的。
+
+    `RedisLockStore` 构造**不连接**（`redis.asyncio.Redis` 是惰性的），
+    故这里额外做一次 `redis_is_available()` 探测：不探测的话，"Redis 没起"
+    会以「用例运行到一半抛 ConnectionError」的形态出现，而不是一条清晰的 skip。
+    """
+    reason = redis_is_available()
+    if reason is not None:
+        pytest.skip(reason)
+    from aicore.core.lease import RedisLockStore
+
+    host, port, db = redis_integration_target()
+    store = RedisLockStore(host=host, port=port, db=db, prefix=redis_prefix)
+    try:
+        yield store
+    finally:
+        # 关连接**之前**先把键清掉（关掉就没法发了）；清理只扫自己的前缀。
+        await _drop_prefixed_keys(store.client, redis_prefix)
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# 真实 MySQL 的集成夹具（Task 4.7，供 `tests/integration/test_runner_redis.py` 用）
+#
+# 与 `tests/repository/test_repos.py::_require_mysql` 同一口径（`DSH_IT_MYSQL_*` + 显式 skip），
+# 但抽到共享层：Task 4.7 的集成用例需要的是 `EngineFactory`（生产形状），
+# 而不是那三个文件各自复制的裸 `Engine` 构造器。
+# ---------------------------------------------------------------------------
+
+
+def integration_settings(*, env: str = "test") -> Any:
+    """集成用例的 `Settings`：MySQL 取 `DSH_IT_MYSQL_*`，Redis 取 `DSH_IT_REDIS_*`。
+
+    `env` 默认 `"test"` 是**刻意的**：多数集成用例**自己要显式构造并驱动 `TaskRunner`**，
+    不走 lifespan，故不需要让 `env` 变成别的值。
+
+    **`env="dev"` 的用途**（本轮新增的形参）：`tests/integration/test_main_assembly.py`
+    要覆盖**组合根的装配线**——而 `main.py` 的判据是 `settings.env != "test"` 才装配执行器。
+    故那条用例必须能拿到一份**非 test**的 `Settings`。用 `"dev"` 而不是 `"prod"`：
+    `core/config.py:86` 的 `_NON_PROD_ENVS = {"dev", "test"}` 允许 dev 配 mock 通道
+    （`:23` 只有 `prod` + mock 才被拒），故 dev 是"能触发装配、又不触发布局校验"的那一档。
+
+    **默认值不变** ⇒ 既有调用方的行为逐字不变。
+    """
+    from aicore.core.config import Settings
+
+    host, port, db = redis_integration_target()
+    mysql_host = os.environ.get("DSH_IT_MYSQL_HOST", "127.0.0.1")
+    mysql_port = int(os.environ.get("DSH_IT_MYSQL_PORT", "3306"))
+    return Settings(
+        env=env,
+        mysql_host=mysql_host,
+        mysql_port=mysql_port,
+        mysql_user=os.environ.get("DSH_IT_MYSQL_USER", "aicore_dev"),
+        mysql_password=os.environ["DSH_IT_MYSQL_PASSWORD"],
+        mysql_database=os.environ.get("DSH_IT_MYSQL_DATABASE", "aicore_test"),
+        mysql_pool_size=5,
+        mysql_max_overflow=10,
+        mysql_readonly_host=mysql_host,
+        mysql_readonly_port=mysql_port,
+        redis_host=host,
+        redis_port=port,
+        redis_db=db,
+        provider="mock",
+        internal_token="test_internal_token",
+        daily_quota_per_account=1000,
+        daily_budget_total=100000,
+    )
+
+
+@pytest.fixture
+def integration_engine_factory() -> Iterator[Any]:
+    """真实 MySQL 的 `EngineFactory`（**生产形状**：写 / 只读 / 主库只读三个会话入口）。
+
+    连不上时显式 skip 并说明缺哪个凭据 / 哪个地址（纪律 ③ 的 MySQL 版）。
+    """
+    if not os.environ.get("DSH_IT_MYSQL_PASSWORD"):
+        pytest.skip(
+            "未配置 DSH_IT_MYSQL_PASSWORD（或 .env 里的 AICORE_MYSQL_PASSWORD）："
+            "集成用例需要真实演练库凭据；凭据 MUST NOT 硬编码进仓库"
+        )
+    from aicore.repository.session import EngineFactory
+
+    try:
+        factory = EngineFactory(integration_settings())
+        with factory.write_session() as session:
+            session.execute(text("SELECT 1"))
+    except Exception as exc:
+        pytest.skip(
+            f"需要真实 MySQL（{os.environ.get('DSH_IT_MYSQL_DATABASE', 'aicore_test')}）"
+            f"才能验证执行器的 SQL 落地：{type(exc).__name__}: {exc}"
+        )
+    try:
+        yield factory
+    finally:
+        factory.dispose()
