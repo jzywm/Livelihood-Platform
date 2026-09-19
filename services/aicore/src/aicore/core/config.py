@@ -120,13 +120,26 @@ _REAL_PROVIDERS_WITHOUT_KEY_FIELD: frozenset[str] = frozenset({"cloud_vision", "
 _PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
 
 
-def _is_blank(value: object) -> bool:
+def is_blank(value: object) -> bool:
     """密钥是否等于「没配」：`None`、空串、纯空白都算没配。
 
     不给任何形式的空凭据放行（`AICORE_DEEPSEEK_API_KEY=` 这种「以为配了」最容易被漏掉）。
     只看「空不空」，MUST NOT 回显取值。
+
+    **为什么是公开名**（Task 4.4 的控制者裁定）：本函数有两个跨模块调用方——
+    本模块的启动校验规则 2，以及 `provider/selector.py` 在装配期对「被选中通道的凭据是否为空」
+    的同一判定。后者的调用方是另一个包，`from ... import _is_blank` 是**跨模块 import 私有名**，
+    mypy 不拦、ruff 不拦、用例也不拦，但它是「口径只有一处」这句话的**唯一**支撑。
+    两个选择：复制一份（= 造出第二份会漂移的口径），或公开（= 一份实现两个入口）。
+    取后者，并保留 `_is_blank` 作为**别名**——既有调用方与既有用例不必改动，
+    且不存在两个函数体（改一处即两边同时变）。
     """
     return not (isinstance(value, str) and value.strip())
+
+
+#: 兼容别名。**MUST NOT 再写第二份实现**：这个名字只指向上面的函数对象。
+#: 新增调用方请用公开名 `is_blank`；本别名只为不改动既有调用点而存在。
+_is_blank = is_blank
 
 
 def _env_var_name(field_name: str) -> str:
@@ -330,6 +343,56 @@ class Settings(BaseSettings):
     # ---- 模型通道 ----
     provider: Literal["mock", "deepseek", "cloud_vision", "cloud_ocr"]
     deepseek_api_key: str | None = None
+
+    # ---- 通道护栏（Task 4.3 的四项参数）----
+    #
+    # **为什么是可选项、而不是像连接池那样的必填项**：这两类字段的性质不同。
+    # `mysql_pool_size` 是**部署容量决策**（给默认值等于替运维做决定，且配错的后果
+    # 是连接耗尽这种「表现为性能问题」的故障），故必填；而下面四项是**平台已定档的
+    # 护栏初值**（出处见各字段注释），给默认值的收益是「不配也有一份有依据的口径」，
+    # 且它们的取值域有天然上界（超时/冷却受 SLO 约束），配错会立刻在用例与指标上暴露。
+    # 故与 `lease_ms` / `max_retries` 同档：有默认值、可覆盖。
+    #
+    # **为什么必须有这四个字段而不是写模块常量**：Task 4.6 要求任务处理器「声明自身
+    # 超时」，Task 4.11 要求「降级状态可观测」——两者都要从配置侧能调，否则
+    # 「超时可配」只是一句话。常量写死会让压测标定（《高并发》把这几项都标了 ★）
+    # 必须改代码。
+    ai_call_timeout_s: float = Field(default=5.0, gt=0)
+    """单次模型调用超时（秒）。
+
+    出处：`docs/design/高并发架构演进设计.md:317`「超时分级 | 第三方支付 3s / **AI 5s** /
+    短信 2s / 内部服务 1s ★」与 :423「统一超时分级：… AI 5s（§4.4 初值）」。
+    与 GATEWAY 路由级 `metadata.timeout: 5000`（tasks.md:123）同值——两侧不一致时，
+    网关会在本服务之前先超时，domain 侧的超时护栏就永远不触发（护栏形同虚设）。
+    ★ = 压测/试运行标定项，故可配。
+    """
+
+    provider_max_retries: int = Field(default=5, ge=0)
+    """通道调用失败后的最大重试次数（不含首次）。
+
+    出处：`docs/design/高并发架构演进设计.md:260`「仅**幂等接口**可重试；指数退避
+    （1s→2s→4s… 上限 5 次）」与 :318「幂等接口 ≤5 次指数退避」。取平台上限 5。
+
+    **与 `max_retries` 的区别**（两个字段名字像、语义不同，MUST NOT 混用）：
+    `max_retries` 是**任务级**重试（Task 4.7 执行器：任务失败后重新排队，转人工的判据）；
+    本字段是**单次调用内**的通道重试（瞬时抖动，不改变任务状态）。任务级重试一次
+    会重放整个任务，通道级重试只重发同一请求。
+    """
+
+    circuit_error_ratio: float = Field(default=0.5, gt=0, le=1)
+    """熔断阈值：窗口内错误率超过本值即打开熔断。
+
+    出处：`docs/design/高并发架构演进设计.md:316`「熔断阈值 | 错误率 >50% 或慢调用
+    >阈值 连续触发 → 熔断；半开探测间隔 10s ★」。
+
+    **注意本平台的分工**：网关侧用的是 Resilience4j（`services/gateway/pom.xml` 有
+    `spring-cloud-starter-circuitbreaker-reactor-resilience4j`），负责**路由级**熔断；
+    本字段是 **domain 侧**的通道级熔断——两层都要有：网关熔断保护的是网关自身与下游
+    总入口，domain 熔断保护的是「本服务发出的计费调用」。
+    """
+
+    circuit_cooldown_s: float = Field(default=10.0, gt=0)
+    """熔断打开后的半开探测间隔（秒）。出处同上一字段（:316「半开探测间隔 10s ★」）。"""
 
     # ---- 内部凭据与配额 / 预算护栏（阈值类必填）----
     internal_token: str = Field(min_length=1)

@@ -64,6 +64,11 @@ EXPECTED_FIELDS = frozenset(
         "concurrency_limit",
         "lease_ms",
         "max_retries",
+        # Task 4.3 的通道护栏四项（可选、有平台定档初值，故不进 REQUIRED_FIELDS）。
+        "ai_call_timeout_s",
+        "provider_max_retries",
+        "circuit_error_ratio",
+        "circuit_cooldown_s",
     }
 )
 
