@@ -241,7 +241,8 @@ def _hanging_responder(seconds: float = 10.0) -> Any:
     """
 
     async def _respond(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(seconds)
+        # 钝器：挂满 `seconds` 让任何 deadline 先到期；`wait_for` 超时会取消本协程，故不真等。
+        await asyncio.sleep(seconds)  # ai-allow-sleep: 故意挂起做钝器，靠 deadline 取消
         raise AssertionError(f"deadline 未生效：请求挂满 {seconds}s 都没被取消（{request.url}）")
 
     return _respond

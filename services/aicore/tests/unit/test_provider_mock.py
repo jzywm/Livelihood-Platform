@@ -874,7 +874,8 @@ def test_socket_violations_does_not_flag_the_event_loop_self_pipe(
     若它被判成违规，所有 async 用例都会因为**与业务无关**的原因变红。
     """
     with asyncio.Runner() as runner:
-        runner.run(asyncio.sleep(0))
+        # 只为**触发事件循环建 self-pipe**（0 秒、不等待）；本用例的断言对象是那次 connect。
+        runner.run(asyncio.sleep(0))  # ai-allow-sleep: 0 秒，用于触发 Proactor self-pipe
 
     assert socket_violations == [], (
         f"事件循环自建 self-pipe 被误判成违规：{socket_violations}"

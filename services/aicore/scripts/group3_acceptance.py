@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,11 @@ sys.path.insert(0, str(SERVICE_ROOT / "src"))
 PASS = "PASS"
 FAIL = "FAIL"
 INFO = "INFO"
+
+#: 生成 `task` 类 ID 用的固定创建时刻（`er.md` §5.4 v1.3：`task_id` 内嵌创建月 `YYYYMM`）。
+#: 用一个常量而不是"当前时间"：本脚本对 1 万个 ID 的判据里含"长度恰为 32"，
+#: 而月份段的位数与具体是哪个月无关——用固定值使结论可复现、且不随运行日期漂移。
+_ACCEPTANCE_AT = datetime(2026, 7, 15, 10, 30, tzinfo=UTC)
 
 results: list[tuple[str, str, str]] = []
 
@@ -180,18 +186,62 @@ def check_three_sources_negative() -> None:
 # 4. 跨月路由用例无 sleep
 # ---------------------------------------------------------------------------
 def check_no_sleep_in_tests() -> None:
+    """第 4 项：测试内不得出现「用 sleep 等结果」。
+
+    ## 判据的边界（2026-09-19 修正，如实登记）
+
+    初版判据是**朴素 AST 扫描**：凡出现名为 `sleep` 的调用即判违规。
+    它分不清三件本应区分的事，实测产生 4 处**良性误报**：
+
+    - `asyncio.sleep(0)` —— **0 秒**，不等待，只让出一次调度
+      （触发 `self-pipe`、给事件循环一次机会）；
+    - `FakeClock.sleep(0)` —— **在测真实系统时钟自身**（`system_clock` 的单调性），不是等待；
+    - 一个"永不返回"的协程里的 `await asyncio.sleep(30)` —— 它是**被 `wait_for`
+      掐掉的对象**，用例断言的是"被取消"，从不真等 30 秒。
+
+    ## 处置：行级显式豁免（同仓库既有范式）
+
+    判据**不放宽**（仍扫全量 AST），改为支持**行级豁免**：
+    在 `sleep` 调用所在行写 `# ai-allow-sleep: <理由>`（理由**必填**）。
+    这与 `tests/structural/test_source_guards.py` 规则 6 的
+    `# ai-allow-swallow: <理由>` 完全同构——同一取向：**偏严 + 显式豁免**，
+    而不是"因为有几处良性形态就把规则关掉"。
+
+    豁免的代价与收益：每条豁免都留下**可审的理由**，
+    于是"这里为什么允许 sleep"变成代码里的一句话，而不是判据里的一个例外分支。
+    """
+    exemption = re.compile(r"#\s*(?:noqa:\s*)?ai-allow-sleep:\s*\S+")
     offenders: list[str] = []
+    exempted: list[str] = []
     for path in sorted(TESTS.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr == "sleep":
-                offenders.append(f"{path.name}:{node.lineno}")
-            if isinstance(node, ast.Name) and node.id == "sleep":
-                offenders.append(f"{path.name}:{node.lineno}")
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for node in ast.walk(ast.parse(text)):
+            is_sleep_call = (isinstance(node, ast.Attribute) and node.attr == "sleep") or (
+                isinstance(node, ast.Name) and node.id == "sleep"
+            )
+            if not is_sleep_call:
+                continue
+            line = lines[node.lineno - 1]
+            target = f"{path.name}:{node.lineno}"
+            if exemption.search(line):
+                exempted.append(target)
+            else:
+                offenders.append(target)
     if offenders:
-        record("4. 测试内无 sleep", FAIL, f"命中 {offenders}")
+        record(
+            "4. 测试内无 sleep",
+            FAIL,
+            f"命中 {offenders}（确需保留时在该行写 `# ai-allow-sleep: <理由>`；"
+            f"已豁免 {exempted}）",
+        )
     else:
-        record("4. 测试内无 sleep", PASS, "AST 扫描全 tests/ 无 sleep 调用（注释里的说明不算）")
+        record(
+            "4. 测试内无 sleep",
+            PASS,
+            f"AST 扫描全 tests/ 无未豁免的 sleep 调用；"
+            f"显式豁免 {len(exempted)} 处（各带理由）：{exempted}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -318,30 +368,45 @@ def check_idgen() -> None:
         ID_PREFIX_LENGTHS,
         ID_PREFIXES,
         MAX_ID_LENGTH,
+        MONTH_AWARE_KINDS,
+        MONTH_DIGITS,
         new_id,
         validate_id,
     )
 
-    # 外部契约（字面量，不取自被测对象）：er.md §5.4 所有 ID 列均为 varchar(32)。
+    def make(kind: str) -> str:
+        """`task` 类需 `at`（ID 内嵌创建月，`er.md` §5.4 v1.3）；其余类不需要。"""
+        return new_id(kind, at=_ACCEPTANCE_AT) if kind in MONTH_AWARE_KINDS else new_id(kind)
+
+    # 外部契约（字面量，不取自被测对象）：
+    #   er.md §5.4 所有 ID 列均为 varchar(32)；
+    #   er.md §5.4 v1.3 定档 `task_id` 内嵌 6 位 `YYYYMM`。
     contract_max = 32
+    contract_month_digits = 6
     constant_is_contract = contract_max == MAX_ID_LENGTH
+    month_digits_are_contract = contract_month_digits == MONTH_DIGITS
     kinds = sorted(ID_PREFIXES)
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-        ids = list(pool.map(lambda i: new_id(kinds[i % len(kinds)]), range(10_000)))
+        ids = list(pool.map(lambda i: make(kinds[i % len(kinds)]), range(10_000)))
     unique = len(set(ids)) == len(ids)
     longest = max(len(value) for value in ids)
     exactly_32 = longest == contract_max
     all_valid = all(validate_id(value) for value in ids)
     # 逐前缀也钉一次：单一"最长值恰好 32"可能被"某个前缀短了、另一个长了"掩盖。
-    per_prefix_ok = all(
-        len(new_id(kind)) == contract_max for kind in kinds
-    )
-    # 前缀长度的算术自证：5+27 / 4+28 / 4+28 / 7+25 / 4+28 / 3+29 恒等于 32。
+    per_prefix_ok = all(len(make(kind)) == contract_max for kind in kinds)
+    # 前缀长度 + 月份位数（仅 task）+ hex 位数的算术自证，恒等于 32：
+    #   task: 5+6+21 / cor: 4+28 / rev: 4+28 / marker: 7+25 / kan: 4+28 / qa: 3+29
+    # （分隔符用半角 `|`：全角竖线会触发 ruff RUF003「易混字符」。）
     arithmetic_ok = all(
-        len(ID_PREFIXES[kind]) + ID_PREFIX_LENGTHS[kind] == contract_max for kind in kinds
+        len(ID_PREFIXES[kind])
+        + (MONTH_DIGITS if kind in MONTH_AWARE_KINDS else 0)
+        + ID_PREFIX_LENGTHS[kind]
+        == contract_max
+        for kind in kinds
     )
     ok = (
         constant_is_contract
+        and month_digits_are_contract
         and unique
         and exactly_32
         and per_prefix_ok
@@ -351,9 +416,9 @@ def check_idgen() -> None:
     record(
         "9. 一万个 ID 过正则且无重复",
         PASS if ok else FAIL,
-        f"常量==契约32 {constant_is_contract}；唯一 {unique}；"
-        f"最长恰好 32 {exactly_32}（实测 {longest}）；逐前缀各 32 {per_prefix_ok}；"
-        f"前缀+hex 位数==32 {arithmetic_ok}；全量校验 {all_valid}",
+        f"常量==契约32 {constant_is_contract}；月份==契约6位 {month_digits_are_contract}；"
+        f"唯一 {unique}；最长恰好 32 {exactly_32}（实测 {longest}）；逐前缀各 32 {per_prefix_ok}；"
+        f"前缀+月份+hex 位数==32 {arithmetic_ok}；全量校验 {all_valid}",
     )
 
 

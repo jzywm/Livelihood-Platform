@@ -300,7 +300,8 @@ async def test_wait_for_timeout_is_enforced_by_the_real_loop() -> None:
     breaker = CircuitBreaker(config, clock=clock)
 
     async def never_returns() -> Any:
-        await asyncio.sleep(30)
+        # 本协程是**被 wait_for 掐掉的对象**：用例断言的是「超时被取消」，从不真等 30 秒。
+        await asyncio.sleep(30)  # ai-allow-sleep: 故意永不返回，等 wait_for 取消它
         return "unreachable"
 
     started = time.monotonic()
@@ -614,7 +615,7 @@ async def test_system_clock_is_monotonic_and_sleeps_through_asyncio() -> None:
     first = clock.monotonic()
     second = clock.monotonic()
     assert second >= first, "熔断冷却计时 MUST 走单调时钟（墙钟回拨会让熔断提前半开）"
-    await clock.sleep(0)
+    await clock.sleep(0)  # ai-allow-sleep: 0 秒（不等待），本用例在测真实 system_clock 自身
     assert clock.monotonic() >= first
 
 
