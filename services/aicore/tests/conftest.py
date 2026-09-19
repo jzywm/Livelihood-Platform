@@ -9,12 +9,17 @@ import inspect
 import os
 import socket
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from dotenv import dotenv_values
 from fastapi import FastAPI
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from tests.support.db_sandbox import build_sqlite_engine
 
 # ---------------------------------------------------------------------------
 # 测试环境变量注入（Task 2.1 起必需）
@@ -258,3 +263,83 @@ def _session_socket_guard() -> Iterator[None]:
 def socket_violations() -> list[tuple[str, tuple[str, ...]]]:
     """交出会话级违规账本，供「判别力自证」用例自己控制推进节奏。"""
     return _SOCKET_VIOLATIONS
+
+
+# ---------------------------------------------------------------------------
+# 经真组合根 + sqlite 沙盒的 API 夹具（Task 4.5 T1，控制者提供）
+#
+# ## 它解决什么
+#
+# `POST /aicore/ocr` 与 `GET /aicore/tasks/{taskId}` 是本服务**第一批需要数据库的真实路由**。
+# 测它们要三件事同时成立：
+#   ① 经**真组合根**（`create_app()` + 真 lifespan），否则又会绕开装配环节
+#      —— L2（`app.state.settings` 未装配）正是靠"桩请求"躲过了一整轮；
+#   ② 有**可写的库**，且要能验「写后立即读」；
+#   ③ 不依赖外部 MySQL（默认段必须离线可跑，见 `design.md:282` 的离线保证）。
+#
+# ## 为什么用 sqlite 沙盒 + 替身，而不是真 MySQL
+#
+# 真 MySQL 路径由 `@pytest.mark.integration` 段覆盖（第 3 组的两段式约定）。
+# 默认段用 `tests/support/db_sandbox.py` 的 sqlite 内存库——它按**物理表名**建表，
+# 故分片路由这条路是真的在跑；三处"缩水"逐条记在该模块的 docstring 里。
+#
+# ## 替身的注入点
+#
+# 注入 `app.state.engine_factory`（**组合根约定的装配点**），而不是 patch 某个函数：
+# 装配点是公开契约的一部分，替换它等价于替换部署形态；而 patch 函数会掩盖
+# "路由到底从哪里取会话"这件事。
+#
+# **MUST NOT** 为测试给 `repository.session.EngineFactory` 加"可替换引擎"的入口
+# ——那会把测试关切泄进生产类，且让"组合根注入"这条契约失去意义。
+# ---------------------------------------------------------------------------
+
+
+class _SandboxSessionFactory:
+    """满足 `api/deps.py` 的 `SessionFactory` 形状的沙盒替身（**只实现被用到的方法**）。
+
+    `write_session` 与 `primary_read_session` 都映射到**同一个** sqlite 引擎：
+    沙盒只有一个库，"主/从"之分在这里没有对应物。这一点**不影响**被测行为——
+    路由要的语义是"写后立即读能读到刚写的行"，用同一个引擎恰好给出该语义；
+    而"轮询 MUST NOT 走从库"这条约束由 `.importlinter`/源码断言与真 MySQL 集成用例覆盖，
+    不由本替身覆盖（**如实登记这个边界**，MUST NOT 把它当成"读写分离已验证"）。
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    @contextmanager
+    def write_session(self) -> Iterator[Session]:
+        with Session(self._engine) as session:
+            yield session
+            session.commit()
+
+    @contextmanager
+    def primary_read_session(self) -> Iterator[Session]:
+        with Session(self._engine) as session:
+            yield session
+
+
+@pytest.fixture
+def sandbox_engine() -> Iterator[Engine]:
+    """沙盒引擎（每用例一个内存库，用例间零共享）。"""
+    engine = build_sqlite_engine()
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def api_client(sandbox_engine: Engine) -> Iterator[TestClient]:
+    """**经真组合根** + sqlite 沙盒的 API 客户端。
+
+    顺序是硬要求：先 `with TestClient(app)` 触发 lifespan（装配 `app.state.settings`），
+    **再**覆盖 `app.state.engine_factory` 为沙盒替身。
+    反过来（先注入）会在 lifespan 里被真装配覆盖掉，而真装配指向 MySQL。
+    """
+    from fastapi.testclient import TestClient
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.engine_factory = _SandboxSessionFactory(sandbox_engine)
+        yield client
