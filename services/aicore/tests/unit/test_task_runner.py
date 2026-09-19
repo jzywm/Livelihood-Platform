@@ -7,8 +7,22 @@
 
 - **心跳的间隔是生产代码的 `asyncio.sleep`**，不是用例在等：用例把 `lease_ms` 取成 30ms
   （→ 心跳 10ms），于是「心跳确实跑过一轮」是**可观测**的，而整个用例的墙钟成本只有几十毫秒；
-- **用例自己 MUST NOT 真等**：本文件**没有** `await asyncio.sleep(...)`，
-  也没有任何轮询等待——所有时序断言都建立在「替身记录了调用顺序」之上，而不是「等一会儿再看」。
+- **用例自己的等待分三类**（`# ai-allow-sleep:` 逐处豁免，理由写在行末）：
+
+  | 类别 | 处数 | 说明 |
+  |---|---|---|
+  | `sleep(0)`：只让出一次调度（收尾用） | 3 | 不等待，把控制权交给执行器/心跳协程 |
+  | 条件等待里的轮询（**都有界 deadline**） | 5 | 等"某件事发生了"（落账、跑够轮数、进入退避） |
+  | 真实时间窗口（**判据本身就是时间**） | 4 | 心跳是否仍在续期、模拟处理器耗时、变异体心跳 |
+
+  第 3 类里"观察泄漏"那一处**必须**真等而不能只 `sleep(0)`：泄漏的心跳是**生产代码**
+  在按 10ms 的间隔自我调度，事件循环让出多少次都不能保证它跑过一轮——
+  只有跨过它的间隔才是"它还在续期"的证据。
+  **本文档此前逐字写着"本文件没有 `await asyncio.sleep(...)`、也没有任何轮询等待"——
+  那是错的**（当时已有 13 处豁免，其中 3 处就是轮询等待）。数字由
+  `tests/structural/test_sleep_exemption_counts.py` 机械核对，MUST NOT 手写后再也不改。
+
+睡眠豁免：12 处（机械判据逐文件比对，见 `tests/structural/test_sleep_exemption_counts.py`）。
 
 ## 「第几次尝试」怎么被用例控制
 
@@ -27,13 +41,32 @@
 | 4 任务级超时用 handler 声明的值 | `test_handler_timeout_goes_through_the_failure_path_with_5002` |
 | 5 失败分流两条 | `test_backoff_delays_grow_exponentially` 等三条（见下） |
 | 6 先写库后释放租约 | `test_mark_succeeded_precedes_lease_release` |
-| 7 背压（先拿信号量再领取） | `test_concurrency_limit_blocks_the_second_claim` |
+| 7 背压（先拿许可再领取） | `test_leases_held_never_exceed_the_concurrency_limit` |
 | 8 `stop` 可打断 | `test_run_forever_stops_promptly_when_the_event_is_already_set` |
 | §2.8 处理器缺失必须显式失败 | `test_missing_handler_is_not_silently_skipped` |
+
+> 更正（本轮）：本表第 7 行此前指向 `test_concurrency_limit_blocks_the_second_claim`
+> ——**该用例全仓不存在**（用例在 B2 修复时改名为上面这条）。索引表指错名字比没有表更糟：
+> 它让人以为"这一条有覆盖"，而实际去搜是空的。
 
 硬约束 5 的三条：`test_backoff_delays_grow_exponentially`（退避逐项相等）、
 `test_over_limit_turns_to_manual_review`（超限转人工）、
 `test_non_retryable_policy_skips_backoff_entirely`（`retryable=False` 不退避）。
+
+## 修复轮新增的判据（每条都带判别力自证）
+
+| 判据 | 自证（同一份判据必须能判红） |
+|---|---|
+| B1 租约丢失 ⇒ 取消处理器且不写终态 | `test_m1_abandon_guard_discriminates`（内存变异） |
+| F1/F2/F3 心跳 MUST NOT 泄漏 | `test_f1_f3_guard_discriminates` / `test_f2_guard_discriminates` |
+| F4 不可用的 `timeout_s` 声明 → 兜底 | 参数化本身即"修复前必红"（`nan`/`inf` 会挂） |
+| F5 取消后的等待有界 | `test_f5_bound_guard_discriminates` |
+| A2 领取失败不杀循环 | `test_a2_guard_discriminates` |
+| B2 许可先于领取 | `test_b2_guard_discriminates` |
+
+判据本体集中在少数几个助手里（`_assert_lease_lost_abandons` /
+`_assert_no_heartbeat_leak` / `_assert_abandoned`），自证喂的就是它们——
+"自证"与"真判据"因此不会各自漂移。
 """
 
 from __future__ import annotations
@@ -41,9 +74,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+import types
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -262,6 +297,12 @@ class RecordingLockStore:
         self.renew_calls: list[TaskClaim] = []
         self.release_calls: list[TaskClaim] = []
         self._claims: dict[str, TaskClaim] = {}
+        #: **第一次续期成功**时置位。
+        #:
+        #: 给"需要心跳真的跑过一轮"的用例当**条件**用（N3）：此前那条用例靠
+        #: "处理器 50ms vs 心跳 10ms"的 5× 余量去赌心跳跑了一轮——余量不是判据，
+        #: 机器一慢就变成"心跳根本没跑"的空断言（而且它还是绿的）。
+        self.first_renew = asyncio.Event()
 
     @property
     def clock(self) -> FakeClock:
@@ -271,6 +312,26 @@ class RecordingLockStore:
     def claim_of(self, task_id: str) -> TaskClaim:
         """`acquire` 为该任务生成的那个 claim（用例把它显式交给 `execute`）。"""
         return self._claims[task_id]
+
+    async def acquire_from_another_instance(
+        self, task_id: str, *, lease_ms: int
+    ) -> TaskClaim | None:
+        """**另一个实例**能否领到这个任务（F1/F2/F3 判据 ④）。
+
+        它与 `acquire` 的两点差别都是刻意的：
+
+        - **不记进调用序列**（`acquire_calls` / `events`）：这是"别的实例"的动作，
+          记进来会污染判据 ② 的 `renew` 计数口径；
+        - **先把内部时钟推过租约**：真实世界里"另一个实例来领"总是发生在
+          "上一个持有者的租约已到期"之后——`SET NX` 只对**过期**的键成功。
+          不推时钟的话，本判据退化成一个平凡的假（谁在自己持有期间都领不到）。
+
+        底层键空间（`InMemoryState`）与主实例**共用一份**（同一个 Redis），
+        但客户端是**另一个对象**——这正是"另一个实例"在内存锁店上的唯一表达。
+        """
+        self._clock.advance(lease_ms / 1000.0 * 2.0)
+        other = InMemoryLockStore(state=self._inner.state)
+        return await other.acquire(task_id, lease_ms=lease_ms)
 
     async def acquire(self, task_id: str, *, lease_ms: int) -> TaskClaim | None:
         self.acquire_calls.append(task_id)
@@ -287,6 +348,8 @@ class RecordingLockStore:
         self.events.append(f"locks.renew:{claim.task_id}")
         if self._renew_error is not None:
             raise self._renew_error
+        if self._renew_result:
+            self.first_renew.set()
         return self._renew_result
 
     async def release(self, claim: TaskClaim) -> bool:
@@ -470,16 +533,45 @@ async def test_claim_once_returns_none_when_every_lease_is_taken() -> None:
 # ---------------------------------------------------------------------------
 # 10. begin_attempt 先于心跳
 # ---------------------------------------------------------------------------
+class _WaitForFirstRenewHandler:
+    """处理器**挂到"心跳至少续过一次"为止**（N3：把时间余量换成条件）。
+
+    此前这条用例是 `FakeHandler(delay_s=0.05)`：靠"处理器 50ms vs 心跳 10ms"的
+    **5 倍余量**去赌心跳跑过一轮。余量不是判据——机器慢/全量套件并发时它可能不成立，
+    而那时用例**照样是绿的**（断言 `renew_calls` 非空会红，但"5×"这句话本身没人验）。
+
+    这里改成**事件驱动**：处理器等 `RecordingLockStore.first_renew`（第一次续期成功时置位），
+    带**有界**上界防止"心跳根本没跑"把用例挂死；超时则显式记下 `timed_out`，
+    由用例断言——于是"心跳真的跑过一轮"从**赌**变成了**被检查的前提**。
+    """
+
+    def __init__(self, first_renew: asyncio.Event, *, budget_s: float = 2.0) -> None:
+        self._first_renew = first_renew
+        self._budget_s = budget_s
+        self.entered = False
+        self.timed_out = False
+
+    def timeout_s(self) -> float:
+        # 远大于等待上界：本用例要证的是"心跳跑过一轮"，不是"任务级超时"。
+        return 30.0
+
+    async def handle(self, task: ClaimedTask) -> None:
+        self.entered = True
+        try:
+            await asyncio.wait_for(self._first_renew.wait(), timeout=self._budget_s)
+        except TimeoutError:
+            self.timed_out = True
+
+
 async def test_begin_attempt_is_written_before_the_heartbeat_starts() -> None:
     """10. 领取成功后**先** `begin_attempt` 再起心跳（调用顺序断言）。
 
-    短租约（30ms → 心跳 10ms）+ 处理器耗 50ms，故心跳**必然**跑过至少一轮——
-    否则「先 begin 再心跳」这条断言会因为「心跳根本没跑」而变成空断言。
+    判据的前提是"心跳**确实**跑过至少一轮"——否则「先 begin 再心跳」会因为
+    「心跳根本没跑」而变成**空断言**。前提由处理器**等**第一次续期成功来保证
+    （事件驱动 + 有界上界，见 `_WaitForFirstRenewHandler`），不再靠时间余量去赌。
     """
-    handler = FakeHandler(delay_s=0.05)
-    harness = Harness(
-        tasks=[_claimed("task-a")], handlers={TASK_TYPE: handler}, handler=handler
-    )
+    harness = Harness(tasks=[_claimed("task-a")])
+    handler = _WaitForFirstRenewHandler(harness.locks.first_renew)
     harness.runner = TaskRunner(
         store=harness.store,
         locks=harness.locks,
@@ -490,8 +582,12 @@ async def test_begin_attempt_is_written_before_the_heartbeat_starts() -> None:
 
     await harness.runner.run_once()
 
+    assert handler.entered, "处理器没被启动：本用例的前提不成立"
+    assert not handler.timed_out, (
+        "2s 内心跳一次都没续期：本用例的判据前提不成立（先查心跳，别把空断言当绿）"
+    )
     assert harness.store.count("begin_attempt") == 1
-    assert harness.locks.renew_calls, "心跳一轮都没跑：30ms 租约 → 10ms 间隔，处理器耗 50ms"
+    assert harness.locks.renew_calls, "心跳一轮都没跑：30ms 租约 → 10ms 间隔"
     first_begin = harness.events.index("store.begin_attempt:task-a")
     first_renew = next(
         i for i, item in enumerate(harness.events) if item.startswith("locks.renew:")
@@ -532,15 +628,110 @@ class _BadTurnHandler:
         self.completed = False
         #: 「付费调用」次数：外部副作用，**只有跑完才会 +1**。
         self.paid_calls = 0
+        #: **处理器真的不再运行**（跑完 / 被取消）时置位。
+        #:
+        #: 为什么必须有这个事件（M1）：`execute` 返回的那一刻，"
+        #: `completed is False` / `paid_calls == 0`" 在**修复前后同时为真**——
+        #: 不取消时处理器只是一个**脱离的 task 还在 sleep**，此刻它当然还没跑完。
+        #: 判据要能判红，就必须**越过它本来会跑完的那一刻**再复查；
+        #: 而"那一刻"只能由处理器自己报出来（`finally`），不能靠固定轮数让出去猜。
+        self.stopped = asyncio.Event()
 
     def timeout_s(self) -> float:
         return self._timeout_s
 
     async def handle(self, task: ClaimedTask) -> None:
         self.entered = True
-        await asyncio.sleep(self._delay_s)  # ai-allow-sleep: 模拟处理器耗时（1.0s），由取消结束
+        try:
+            await asyncio.sleep(self._delay_s)  # ai-allow-sleep: 模拟处理器耗时，由取消/跑完结束
+        finally:
+            # 两条路径都会到这里：跑完（正常结束）与被取消（`CancelledError`）。
+            self.stopped.set()
         self.paid_calls += 1
         self.completed = True
+
+
+async def _assert_lease_lost_abandons(
+    harness: Harness, handler: Any, *, elapsed: float, budget_s: float = 2.0
+) -> None:
+    """**「租约丢失 ⇒ 真的放弃执行」的判据本体**（B1 的 ① + ②③ + 四类写回零调用）。
+
+    抽成一个函数是为了让**判别力自证把同一份判据喂给变异体**（M1）——
+    若断言散在用例体里，自证只能复制一份判据，于是"自证"与"真判据"会各自漂移，
+    而漂移过的自证恰恰证明不了真判据能判红。
+
+    ## 为什么要先等 `stopped`（M1 的修复点）
+
+    `execute` 返回的那一刻，② `completed is False` 与 ③ `paid_calls == 0`
+    **在修复前后同时为真**：不取消处理器时它只是一个脱离的 task 还在 `sleep`，
+    此刻它当然还没跑完。实测（控制者复核）：把取消路径整个撤掉，
+    `-m "not integration"` 全量 **1268 passed / 0 failed**，一条都没红。
+
+    故这里先等处理器的 `stopped` 事件（`handle` 的 `finally` 置位：跑完与被取消**都会**置位），
+    **越过它本来会跑完的那一刻**再读 ②③。于是：
+
+    - **修复后**：取消在 `_dissolve_task` 里完成，`stopped` 在 `execute` 返回前就已置位 → 判据为真；
+    - **修复前（取消被撤掉）**：`stopped` 要等处理器自己睡醒才置位 →
+      此刻 `completed is True` / `paid_calls == 1` → **判据变红**。
+
+    `budget_s` 只是防"处理器永不停止"把用例挂死（N7 的纪律：挂死比变红贵一个数量级）。
+    """
+    assert handler.entered, "处理器一次都没被启动：①③ 会退化成平凡真（假绿）"
+    assert elapsed < 0.5, (
+        f"execute 花了 {elapsed:.3f}s 才返回：它等的是处理器或任务级超时，"
+        f"而不是租约丢失（10ms 后心跳就该发现）——这正是 B1：没有放弃执行"
+    )
+    stopped = await _wait_handler_stopped(handler, budget_s=budget_s)
+    assert stopped, (
+        f"处理器 {budget_s}s 内既没跑完也没被取消：本判据的 ②③ 无法判定（先修这个）"
+    )
+    assert handler.completed is False, (
+        "处理器**跑完了**：租约丢失后没有取消它，`design.md:208` 的「放弃执行」没落地"
+    )
+    assert handler.paid_calls == 0, (
+        f"外部副作用发生了 {handler.paid_calls} 次：重复外部调用（会产生真实费用）"
+    )
+    assert harness.store.count("mark_succeeded") == 0, "续期失败后写了成功终态"
+    assert harness.store.count("mark_failed") == 0, "续期失败后写了失败终态"
+    assert harness.store.count("requeue") == 0, "续期失败后把任务重新排队了"
+    assert harness.store.count("begin_attempt") == 1, (
+        "begin_attempt 仍应写一次（放弃发生在它之后：事实源上留一行 PROCESSING 是对的，"
+        "它会被租约过期后的回收者接走）"
+    )
+
+
+async def _wait_handler_stopped(handler: Any, *, budget_s: float) -> bool:
+    """等处理器**真的不再运行**（跑完或被取消），返回是否在预算内停下来。
+
+    有界（`budget_s`）是刻意的：无界的 `await` 会把"处理器永不停止"这种回归
+    显示成**挂死**，而挂死在 CI 上比变红贵一个数量级（N7 的纪律）。
+    """
+    try:
+        await asyncio.wait_for(handler.stopped.wait(), timeout=budget_s)
+    except TimeoutError:
+        return False
+    return True
+
+
+def _assert_abandoned(harness: Harness, handler: Any) -> None:
+    """**B1 的判据本体**：处理器没跑完、没有副作用、三类终态零调用。
+
+    `_assert_lease_lost_abandons` 在等处理器停下来之后调用它；单独立一个函数是给
+    **第二条判别力自证**（`_DetachedOnCancelHandler`，纯替身变异、不碰产品源码）用的。
+    """
+    assert handler.completed is False, (
+        "处理器**跑完了**：租约丢失后没有取消它，`design.md:208` 的「放弃执行」没落地"
+    )
+    assert handler.paid_calls == 0, (
+        f"外部副作用发生了 {handler.paid_calls} 次：重复外部调用（会产生真实费用）"
+    )
+    assert harness.store.count("mark_succeeded") == 0, "续期失败后写了成功终态"
+    assert harness.store.count("mark_failed") == 0, "续期失败后写了失败终态"
+    assert harness.store.count("requeue") == 0, "续期失败后把任务重新排队了"
+    assert harness.store.count("begin_attempt") == 1, (
+        "begin_attempt 仍应写一次（放弃发生在它之后：事实源上留一行 PROCESSING 是对的，"
+        "它会被租约过期后的回收者接走）"
+    )
 
 
 @pytest.mark.parametrize(
@@ -560,14 +751,28 @@ async def test_renew_failure_abandons_without_any_terminal_write(
     ② 处理器**没有跑完**（`completed is False`）；
     ③ 外部副作用计数为 **0**（`paid_calls == 0`）。
 
-    ②③ 是 B1 的判别力所在：修复前这两条**必红**
-    （实测：`execute` 1.032s 才返回、处理器跑完、付费调用 1 次），
-    而 ①④ 在修复前后都可能为真——故只断言 ①④ 会得到一条**没有判别力**的用例（M1 就是这么来的）。
+    ## ②③ 的读法：必须**越过处理器本来的完成时刻**（M1 的修复）
+
+    第一版在这里**紧接着 `execute` 返回就读** ②③ —— 那是**零杀伤**的写法：
+    不取消处理器时它只是一个脱离的 task 还在 `sleep`，此刻 `completed` 当然是 `False`、
+    `paid_calls` 当然是 `0`，**两种实现下同时为真**。实测（控制者复核）：
+    把 `if lease_lost or timed_out:` 变异成只判 `timed_out:`（= 撤销 B1 的修复），
+    `-m "not integration"` 全量 **1268 passed / 0 failed**，一条都没红。
+    ① 也拦不住：心跳 10ms 就发现租约丢失，`execute` 两种实现下都早返回。
+
+    故现在先 `await` 处理器的 `stopped` 事件（它在 `handle` 的 `finally` 里置位——
+    跑完与被取消都会置位），**再**断言 ②③。于是：
+
+    - **修复后**：取消在 `_dissolve_task` 里完成，`stopped` 在 `execute` 返回前已置位 → 判据为真；
+    - **修复前（B1 被撤掉）**：`stopped` 要等处理器自己睡醒（`delay_s`）才置位 →
+      此刻 `completed is True` / `paid_calls == 1` → **判据变红**。
+
+    判别力自证见 `test_m1_abandon_guard_discriminates`（内存变异，锚点 = 那一行 `if`）。
 
     各数值一起保证"结束来自租约丢失"：租约 `lease_ms=30` → 心跳间隔 10ms；
-    处理器 1.0s；`timeout_s=5.0`（远大于用例预算）。整个用例应当是**几十毫秒级**。
+    处理器 0.3s；`timeout_s=5.0`（远大于用例预算）。整个用例应当是**几十毫秒级**。
     """
-    handler = _BadTurnHandler(delay_s=1.0)
+    handler = _BadTurnHandler(delay_s=0.3)
     harness = Harness(
         tasks=[_claimed("task-a")],
         handlers={TASK_TYPE: handler},
@@ -591,24 +796,7 @@ async def test_renew_failure_abandons_without_any_terminal_write(
     )
 
     elapsed = time.monotonic() - started
-    assert handler.entered, "处理器一次都没被启动：①③ 会退化成平凡真（假绿）"
-    assert elapsed < 0.5, (
-        f"execute 花了 {elapsed:.3f}s 才返回：它等的是处理器（1.0s）或超时（5.0s），"
-        f"而不是租约丢失（10ms 后心跳就该发现）——这正是 B1：没有放弃执行"
-    )
-    assert handler.completed is False, (
-        "处理器**跑完了**：租约丢失后没有取消它，`design.md:208` 的「放弃执行」没落地"
-    )
-    assert handler.paid_calls == 0, (
-        f"外部副作用发生了 {handler.paid_calls} 次：重复外部调用（会产生真实费用）"
-    )
-    assert harness.store.count("mark_succeeded") == 0, "续期失败后写了成功终态"
-    assert harness.store.count("mark_failed") == 0, "续期失败后写了失败终态"
-    assert harness.store.count("requeue") == 0, "续期失败后把任务重新排队了"
-    assert harness.store.count("begin_attempt") == 1, (
-        "begin_attempt 仍应写一次（放弃发生在它之后：事实源上留一行 PROCESSING 是对的，"
-        "它会被租约过期后的回收者接走）"
-    )
+    await _assert_lease_lost_abandons(harness, handler, elapsed=elapsed)
 
 
 # ---------------------------------------------------------------------------
@@ -1001,6 +1189,44 @@ async def test_leases_held_never_exceed_the_concurrency_limit() -> None:
     )
 
 
+class _CountingStop:
+    """`stop` 的结构替身：既是"该停了吗"，也**数执行器问了几次**（= 循环跑了几轮）。
+
+    ## 为什么需要它（N3）
+
+    `test_b2_guard_discriminates` 要在"循环已经跑过足够轮次"这个前提下量峰值租约数，
+    而"足够"此前是靠 `for _ in range(50): await asyncio.sleep(0)` **凑**出来的
+    ——同文件自己就记过"实测固定 50 轮偶发不够"（那会让自证假红）。
+
+    轮数**不是时间**，而是**循环自己的动作**，因此它可以被观测而不是被猜测：
+    两条实现（生产的与 `_PreFixB2Runner`）的每一轮都以 `while not stop.is_set()` 开头、
+    以 `if stop.is_set(): break` 收尾 —— 故"问过几次 `stop`"与"跑了几轮"成正比
+    （实测两种形态都是每轮 **2 次** `is_set()`）。判据因此是**条件等待 + 有界 deadline**，
+    与机器快慢无关；就算将来某条实现多问一次，最坏也只是等到 deadline（不会假绿，
+    因为峰值是在循环**结束之后**才读的）。
+
+    接口只有 `is_set()` / `wait()` / `set()`——正是 `run_forever` 用到的那三个。
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+        self.is_set_calls = 0
+
+    def is_set(self) -> bool:
+        self.is_set_calls += 1
+        return self._event.is_set()
+
+    def set(self) -> None:
+        self._event.set()
+
+    async def wait(self) -> bool:
+        return await self._event.wait()
+
+
+#: 量峰值前要求循环至少跑过的轮数（每轮 2 次 `is_set()`，见 `_CountingStop`）。
+_B2_REQUIRED_LOOP_ITERATIONS = 3
+
+
 class _PreFixB2Runner(TaskRunner):
     """**B2 的变异体**：修复前的 `run_forever`（**先领取、再把协程挂到信号量上排队**）。
 
@@ -1082,8 +1308,8 @@ async def test_b2_guard_discriminates() -> None:
                 lease_ms=LEASE_MS, max_retries=3, concurrency_limit=1, poll_interval_s=0.0
             ),
         )
-        stop = asyncio.Event()
-        loop_task = asyncio.create_task(runner.run_forever(stop=stop))
+        stop = _CountingStop()
+        loop_task = asyncio.create_task(runner.run_forever(stop=stop))  # type: ignore[arg-type]
         # **事件驱动**等到第一个处理器进入（它一定已经领过租约了）。
         await asyncio.wait_for(handler.started.wait(), timeout=5)
         # 再等到「第一行确实已 `begin_attempt`」落地——**那之后**窗口里才会出现第二个候选
@@ -1092,21 +1318,30 @@ async def test_b2_guard_discriminates() -> None:
         # 这一步**不能**用固定轮数：`begin_attempt` 经 `run_in_threadpool` 落到线程池，
         # 全量套件下调度更慢——实测固定 50 轮偶发不够，于是 `begin_attempt` 还没记账、
         # 第二个候选还没出现，变异体的峰值停在 1，自证**假红**。
-        # 这里的循环等的是"某件事发生了"（有界、纯让出），不是"等了一段时间"。
         deadline = time.monotonic() + 5.0
         while store.count("begin_attempt") < 1 and time.monotonic() < deadline:
             await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，等 begin_attempt 落到替身账上
         assert store.count("begin_attempt") >= 1, (
             "第一行始终没有 begin_attempt：本场景的前提不成立（第二个候选不会出现）"
         )
-        # 再给若干轮，让循环把"该不该领第二个"这件事做完（此刻它一定会做）。
-        for _ in range(50):
-            await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让出控制权给执行器协程
-        peak = locks.max_leases_held
-        calls = list(locks.acquire_calls)
+        # 再等循环**自己跑够轮数**（N3：这是条件等待，不是"让出 50 次去凑"）。
+        # 修复前的形态需要**第 2 轮**才会领走第二个任务，故要求至少 3 轮留出余量；
+        # 轮数由 `_CountingStop` 数"问了 `stop` 几次"得出，与机器快慢无关。
+        required_checks = 2 * _B2_REQUIRED_LOOP_ITERATIONS
+        deadline = time.monotonic() + 5.0
+        while stop.is_set_calls < required_checks and time.monotonic() < deadline:
+            await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让出控制权给执行器协程（条件等待）
+        assert stop.is_set_calls >= required_checks, (
+            f"循环只跑了约 {stop.is_set_calls // 2} 轮（要求 ≥{_B2_REQUIRED_LOOP_ITERATIONS} 轮）："
+            f"本判据的前提不成立，峰值租约数不能作为证据"
+        )
         gate.set()
         stop.set()
         await asyncio.wait_for(loop_task, timeout=5)
+        # **循环完全停下来之后**才读峰值：这样它覆盖整段场景（含收尾），
+        # 而不是"循环跑到一半时的快照"。
+        peak = locks.max_leases_held
+        calls = list(locks.acquire_calls)
         return peak, calls
 
     fixed_peak, fixed_calls = await _peak_leases(TaskRunner)
@@ -1125,12 +1360,23 @@ async def test_b2_guard_discriminates() -> None:
 def test_run_forever_acquires_the_permit_before_claiming() -> None:
     """**B2 的顺序判据**（源码级，AST）：`run_forever` 里许可的获取必须**在**领取之前。
 
-    **它是补充判据，不是唯一判据**：行为判据是
-    `test_leases_held_never_exceed_the_concurrency_limit`（峰值租约数）+ 它的判别力自证
-    `test_b2_guard_discriminates`。这一条便宜且直接钉住语句顺序，
-    在两处都能防住"把 `acquire()` 挪到 `claim_once()` 之后"这种改动——
-    但**只有**它是不够的：源码顺序对了、运行期仍可能因为别的改动（例如把许可容量与门判据
-    改成不一致）而失守，而那要靠行为判据抓。
+    ## **行为判据为主、AST 判据为辅**（F11 要求的措辞就写在这里）
+
+    行为判据（**主要**）：
+
+    - `test_leases_held_never_exceed_the_concurrency_limit`（峰值租约数 ≤ `concurrency_limit`）；
+    - `test_b2_guard_discriminates`（把 `run_forever` 还原成"领了再排队"，上一条**变红**）。
+
+    本用例（**辅助**、便宜、直白地指出缺的是哪一条语句顺序）。为什么 MUST NOT 只留它：
+
+    - **它可以被仍然错的代码满足**：源码里 `semaphore.acquire()` 在 `claim_once()` 之前，
+      但许可容量与门判据（`len(self._inflight) >= concurrency_limit`）写成不一致时，
+      运行期照样会领了再排队——那种改动只有行为判据抓得到；
+    - **它对等价的正确写法可能误报**：把许可获取抽成一个辅助方法
+      （`await self._take_permit(semaphore)`）之后，本判据找不到 `.acquire` 会**直接报错**，
+      尽管行为完全正确。
+
+    两条判据的守备范围不同，不是重复；但**判红时的第一顺位是行为判据**。
 
     判据：`semaphore.acquire()` 那行的**行号 <** `self.claim_once()` 那行的行号。
     任一方找不到 → **直接报错**（判据 MUST NOT 退化成空操作）。
@@ -1281,12 +1527,17 @@ async def test_missing_handler_does_not_break_the_running_loop() -> None:
     判据是「终态写回完成之后 `run_forever` 仍在跑」（`not done()`），而不是"跑了很多轮"：
     后者会引入时序假设。等到 `mark_failed` 出现（那是 `execute` 的**最后**一步写回），
     再断言循环还活着，等价于「这个坏任务没有把循环带走」。
+
+    `poll_interval_s=0.0`（N4）：默认生产值是 1.0s，而本用例每轮都要等一个间隔才能重查 `stop`
+    ——不传它就会白等 1.02s（实测），而这段时间既不是判据也不是被测行为。
     """
     handler = FakeHandler()
     harness = Harness(
         tasks=[_claimed("task-a")],
         handlers={},
-        config=RunnerConfig(lease_ms=LEASE_MS, max_retries=0, concurrency_limit=4),
+        config=RunnerConfig(
+            lease_ms=LEASE_MS, max_retries=0, concurrency_limit=4, poll_interval_s=0.0
+        ),
     )
     stop = asyncio.Event()
     loop_task = asyncio.create_task(harness.runner.run_forever(stop=stop))
@@ -1306,42 +1557,269 @@ async def test_missing_handler_does_not_break_the_running_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A1：心跳 MUST NOT 泄漏（否则租约被永久续期，任务再也无法回收）
+# F1/F2/F3：心跳生命周期 MUST **结构上**不可泄漏
+#
+# 同一个根因（`create_task(_heartbeat())` 与 `try` 之间有可抛语句），三条入口：
+#   F1（blocker）处理器抛**非 `AiCoreError`**（编程错误——`TaskHandler.handle` 的
+#                docstring 明说这是预期形态）
+#   F2（major）  取消落在 **`execute` 自己**身上（关停 drain 阶段被取消）
+#   F3            `handle` 是同步 `def` / 没有该属性
+#
+# 控制者的隔离探针（`lease_ms=150` → 心跳 50ms）在**修复前**的三条入口上都是
+# `renew +7`、活动心跳 task=1；对照组（处理器抛 `AiCoreError`）是 `renew +0`。
 # ---------------------------------------------------------------------------
-class _BadTimeoutHandler:
-    """`timeout_s()` 抛异常的处理器（模拟**处理器作者的一个 bug**）。
 
-    这正是 A1 的触发条件：修复前 `_declared_timeout_s(handler)` 在
-    `create_task(_heartbeat())` **之后**、`try` **之前**执行，于是它一抛，
-    心跳就脱离了所有回收路径——按 `lease_ms/3` 一直续期成功，
-    **没有任何实例能再领到这个任务**（`SET NX` 永不成功），行永远停在 `PROCESSING`。
+#: 观察"心跳还会不会继续续期"的窗口：≥3 个心跳间隔（`SHORT_LEASE_MS=30` → 10ms）。
+_HEARTBEAT_OBSERVE_S = 0.05
+
+
+class _ValueErrorHandler:
+    """**F1**：把活干起来之后抛 `ValueError`（**非 `AiCoreError`** 的编程错误）。
+
+    这条路径正是 `TaskHandler.handle` 的 docstring 逐字承诺的形态：
+    "抛别的异常……终态不写（**留待租约过期后由别的实例重做**）"。
+    修复前那个承诺**不成立**——心跳会带着租约一直续期，任务再也回不来。
+    """
+
+    def __init__(self, *, gate: asyncio.Event | None = None) -> None:
+        self._gate = gate
+        self.started = asyncio.Event()
+        self.entered = False
+
+    def timeout_s(self) -> float:
+        return 30.0
+
+    async def handle(self, task: ClaimedTask) -> None:
+        self.entered = True
+        self.started.set()
+        if self._gate is not None:
+            await self._gate.wait()
+        raise ValueError("payload 拼错了（处理器作者的 bug，不是业务失败）")
+
+
+class _SyncHandleHandler:
+    """**F3**：`handle` 是**同步**函数（`asyncio.create_task` 会抛 `TypeError`）。"""
+
+    def __init__(self) -> None:
+        self.entered = False
+
+    def timeout_s(self) -> float:
+        return 30.0
+
+    def handle(self, task: ClaimedTask) -> None:  # 故意不是 async def
+        self.entered = True
+
+
+class _HangForeverHandler:
+    """一直挂着、**吞掉取消**的处理器（F5 用：取消之后仍不结束）。
+
+    `except CancelledError: continue` 之后继续等一个新的 Event —— 于是
+    `_dissolve_task` 的取消请求"看起来发出去了"，但 task 永不结束。
+    这正是 F5 要的"不合作的处理器"，也是"取消不掉它"这条诚实边界的载体。
+
+    ## 它 MUST 可被**外部放行**（否则会把事件循环的关停挂死）
+
+    第一版没有 `release()`，结果**用例跑不完**：`asyncio.run()` 收尾时会
+    `_cancel_all_tasks` 并 `gather` 它们，而这个 task 会一次又一次吞掉取消
+    ⇒ 收尾永久挂住（实测：单条用例 90s 不返回，只能 kill）。
+    故加一个**只有用例能置位**的 Event：循环的退出条件是"被放行"，不是"被取消"。
     """
 
     def __init__(self) -> None:
-        self.handled = False
+        self.started = asyncio.Event()
+        self.cancelled_once = False
+        self._release = asyncio.Event()
+
+    def release(self) -> None:
+        """让处理器可以结束（**用例收尾必须调用**，见类 docstring）。"""
+        self._release.set()
 
     def timeout_s(self) -> float:
-        raise KeyError("handler 的 timeout_s 访问了一个不存在的配置项")
+        return 30.0
 
     async def handle(self, task: ClaimedTask) -> None:
-        self.handled = True
+        self.started.set()
+        while True:
+            try:
+                await self._release.wait()
+                return
+            except asyncio.CancelledError:
+                self.cancelled_once = True
+                # **吞掉取消**：继续等放行（新的 `wait()` 会新建一个 future）。
+                continue
 
 
-async def test_handler_timeout_bug_does_not_leak_the_heartbeat() -> None:
-    """**A1**：`handler.timeout_s()` 抛异常时，**心跳必须被收掉**（不泄漏）。
+async def test_dissolve_task_gives_up_after_a_bounded_wait(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**F5**：处理器**吞掉取消**时，`_dissolve_task` 必须在**有界**时间内放手。
 
-    三段断言，缺一不可：
+    复核者的实测（修复前）：租约 0.033s 就丢失，而 `execute` 到 **1.561s** 才返回，
+    **放弃之后仍发生 1 次付费调用**——即"主动放弃"被写成了"等它做完"。
 
-    1. `execute` 把异常**照旧抛出**（编程错误原样上抛，不吞）；
-    2. 抛出之后**没有后台 task 还在跑**（尤其没有 `_heartbeat`）——
-       评审探针的形态是：`execute` 早返回，而 0.25s 内心跳**又跑了 8 次**、
-       `all_tasks()` 里仍挂着 `_heartbeat`、`release` 0 次；
-    3. `renew` 的调用次数**不再增长**——心跳泄漏的唯一可见后果就是"它还在续期"，
-       而"续期成功"意味着**租约永不过期**、任务被永久占住（最坏形态）。
+    ## 场景（必须让 `execute` 走到"放弃"那一步）
 
-    断言 3 用"同一个计数读两次、中间让出若干次事件循环"来做：不真等、不依赖墙钟。
+    `renew_result=False` ⇒ 心跳首次续期即被拒 ⇒ 租约丢失 ⇒ 走 `_dissolve_task` 取消处理器。
+    处理器吞掉取消**永不结束**，故「它什么时候返回」只由那个上界决定——
+    这正是本判据的自变量（若处理器会自己结束，有界/无界就看不出差别）。
+
+    ## 判据（三条，都是行为）
+
+    ① `execute` 的返回时间 ≤ 上界的常数倍（**不是** 30s 的 `timeout_s`）；
+    ② 超界时记一条 ERROR（放手**不静默**）；
+    ③ 处理器确实被取消过——否则本用例会退化成"什么都没发生"的平凡真。
+
+    上界用 `monkeypatch` 调小到 0.2s，故本用例的墙钟成本是几百毫秒而不是 1 秒。
+
+    ## 判别力自证
+
+    见 `test_f5_bound_guard_discriminates`：把 `_dissolve_task` 里的 `wait_for` 摘掉
+    （**内存变异**），同一个判据**必须变红**（它会一直等那个永不结束的处理器）。
     """
-    handler = _BadTimeoutHandler()
+    bound_s = 0.2
+    monkeypatch.setattr("aicore.core.task_runner.CANCEL_WAIT_TIMEOUT_S", bound_s, raising=True)
+
+    handler = _HangForeverHandler()
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        renew_result=False,  # 续期首次即被拒 = 租约丢失 ⇒ 必然走 _dissolve_task
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    claimed = await harness.runner.claim_once()
+    assert claimed is not None
+
+    started = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
+        # 外层 `wait_for` 是**判据的一部分**：变异体在这里会撞上它并变成 TimeoutError，
+        # 而不是把整个套件挂死（"挂死"比"变红"贵一个数量级）。
+        await asyncio.wait_for(
+            harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")),
+            timeout=bound_s * 5,
+        )
+    elapsed = time.monotonic() - started
+
+    assert handler.cancelled_once, "处理器没有被取消过：本用例的前提不成立"
+    assert elapsed < bound_s * 3, (
+        f"execute 花了 {elapsed:.3f}s 才返回（上界 {bound_s}s）："
+        f"`_dissolve_task` 在无上限地等一个吞掉取消的处理器——F5 的失效形态"
+    )
+    assert "没有响应取消" in caplog.text, (
+        f"超界放手没有记 ERROR：{caplog.text!r}——静默放手会让运维无从发现"
+    )
+    # 收尾：那个处理器因"吞掉取消"仍在后台（诚实边界：取消不掉它），
+    # **放行**它（而不是再取消一次——再取消也会被吞掉，且会让事件循环关停挂住）。
+    handler.release()
+    await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让被放行的处理器与 execute 收尾
+
+
+async def test_f5_bound_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**F5 的判别力自证**：摘掉 `_dissolve_task` 的 `wait_for`，上一条判据**必须变红**。
+
+    内存变异（**文件从不被写**）：把
+
+    ```python
+    await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+    ```
+
+    换成裸 `await asyncio.shield(task)`——即修复前那个"无上限地 await"。
+    处理器吞掉取消且永不结束，故**唯一**能让 `execute` 返回的就是那个上界；
+    没有它，本用例会撞上自己的外层 `wait_for` 并抛 `TimeoutError`（红）。
+    """
+    mutant_cls = _mutant_runner_class(
+        (
+            "        await asyncio.wait_for(asyncio.shield(task), timeout=resolved_timeout_s)\n",
+            "        await asyncio.shield(task)\n",
+        ),
+    )
+    bound_s = 0.2
+    monkeypatch.setattr("aicore.core.task_runner.CANCEL_WAIT_TIMEOUT_S", bound_s, raising=True)
+
+    handler = _HangForeverHandler()
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        renew_result=False,
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    runner = mutant_cls(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: handler},
+        policies=REGISTRY,
+        config=harness.runner.config,
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+
+    executing = asyncio.create_task(
+        runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
+    )
+    # **判据本体（生产侧那一条）在这里必然撞墙**：`execute` 不会在上界内返回。
+    # 用 `pytest.raises(TimeoutError)` 把它表达成"红"，而不是让套件挂死。
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(executing), timeout=bound_s * 5)
+
+    # 收尾：放行处理器 ⇒ 变异体那个无上限的 `await` 才可能走完。
+    # 这一步同时是"变异体确实卡在等待上"的正面证据（放行之前它一直没返回）。
+    assert not executing.done(), (
+        "变异体的 execute 已经返回了：它并未无上限地等——本自证不成立"
+    )
+    handler.release()
+    await asyncio.wait_for(executing, timeout=5.0)
+
+
+async def _assert_no_heartbeat_leak(harness: Harness, task_id: str) -> None:
+    """F1/F2/F3 共用的「心跳没有泄漏」判据（②③）与后果判据（④）。
+
+    ①② 由调用方断言（各自的出口行为）；本函数负责：
+
+    - **②（判别力所在）** `renew` 次数**不再增长**——泄漏的心跳唯一可见的后果就是
+      "它还在续期"，而续期成功意味着**租约永不过期、任务被永久占住**；
+    - **③** `asyncio.all_tasks()` 里没有 `_heartbeat`；
+    - **④（最贴近后果）** 推进时钟越过租约之后，**另一个实例能领到它**。
+
+    **判据顺序是有意的**：② 是判别力所在（修复前它必红），④ 是后果陈述——
+    ④ 单独不具判别力，因为一个仍在续期的心跳在"推进时钟后立刻领取"这个窗口里
+    也可能来不及续期（时间竞态）。故 ② 在前，④ 只在 ② 通过之后才有意义。
+    """
+    renews_before = len(harness.locks.renew_calls)
+    # ≥3 个心跳间隔：泄漏的心跳会在这段时间里继续跑（它的间隔只有 10ms）。
+    await asyncio.sleep(_HEARTBEAT_OBSERVE_S)  # ai-allow-sleep: 50ms=5 个间隔，看是否仍在续期
+
+    assert len(harness.locks.renew_calls) == renews_before, (
+        f"心跳仍在续期（{renews_before} → {len(harness.locks.renew_calls)} 次）："
+        f"租约被永久续期 ⇒ `SET NX` 永不成功 ⇒ **没有实例能再领到这个任务**"
+    )
+    leaked = [
+        task.get_coro().__qualname__
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
+    assert not any("_heartbeat" in name for name in leaked), (
+        f"心跳 task 泄漏：{leaked}——它会一直续期，租约永不过期、"
+        f"任务再也无法被任何实例回收"
+    )
+    claim = await harness.locks.acquire_from_another_instance(task_id, lease_ms=LEASE_MS)
+    assert claim is not None, (
+        "另一个实例领不到这个任务：租约被孤儿心跳永久续期，"
+        "任务永远停在 PROCESSING（这是泄漏最贴近后果的判据）"
+    )
+
+
+async def test_programming_error_in_handler_does_not_leak_the_heartbeat() -> None:
+    """**F1（blocker）**：处理器抛 `ValueError` 时，心跳 MUST 被收掉。
+
+    ① 出口行为：`ValueError` **原样上抛**（编程错误不吞、不改写成业务失败）；
+    ②③④ 见 `_assert_no_heartbeat_leak`。
+    """
+    handler = _ValueErrorHandler()
     harness = Harness(
         tasks=[_claimed("task-a")],
         handlers={TASK_TYPE: handler},
@@ -1353,30 +1831,152 @@ async def test_handler_timeout_bug_does_not_leak_the_heartbeat() -> None:
     claimed = await harness.runner.claim_once()
     assert claimed is not None
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="payload 拼错了"):
         await harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
 
-    renews_after_raise = len(harness.locks.renew_calls)
-    # 让出若干次事件循环：泄漏的心跳会在这段时间里继续跑（它的间隔只有 10ms）。
-    for _ in range(40):
-        await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，把控制权让给可能泄漏的心跳 task
-    await asyncio.sleep(0.05)  # ai-allow-sleep: 50ms，给泄漏的心跳足够时间再跑几轮（≤0.15s）
+    assert handler.entered, "处理器没有被启动：本用例的前提不成立"
+    await _assert_no_heartbeat_leak(harness, "task-a")
+    # 编程错误不写终态（留待租约回收）——与 ②③④ 一起构成"放弃但不静默"的完整口径。
+    assert harness.store.count("mark_succeeded") == 0
+    assert harness.store.count("mark_failed") == 0
 
-    leaked = [
-        task
-        for task in asyncio.all_tasks()
-        if task is not asyncio.current_task() and not task.done()
-    ]
-    heartbeat_names = [task.get_coro().__qualname__ for task in leaked]
-    assert not any("_heartbeat" in name for name in heartbeat_names), (
-        f"心跳 task 泄漏：{heartbeat_names}——它会一直续期，租约永不过期、"
-        f"任务再也无法被任何实例回收（A1 的失效形态）"
+
+async def test_external_cancel_of_execute_does_not_leak_the_heartbeat() -> None:
+    """**F2（major）**：取消落在 **`execute` 自己**身上时，心跳与处理器 task 都要被收掉。
+
+    ① 出口行为：`CancelledError` **原样传播**（绝不吞掉、也不退化成 lease_lost）；
+    ②③④ 见 `_assert_no_heartbeat_leak`。
+
+    v1（修复前）在这一路上会把处理器**孤儿化**：`CancelledError` 传播是对的，
+    但 `_dissolve_task(handler_task)` 与 `_cancel_heartbeat(heartbeat)` 都不执行
+    ⇒ 心跳继续续期 + 处理器仍在 sleep（之后照常发出付费调用）。
+    """
+    gate = asyncio.Event()
+    handler = _ValueErrorHandler(gate=gate)  # 用 gate 把它挂在"已经开始干活"的状态
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
     )
-    assert len(harness.locks.renew_calls) == renews_after_raise, (
-        f"execute 返回之后心跳仍在续期（{renews_after_raise} → "
-        f"{len(harness.locks.renew_calls)} 次）：租约被永久续期"
+    claimed = await harness.runner.claim_once()
+    assert claimed is not None
+    executing = asyncio.create_task(
+        harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
     )
-    assert not handler.handled, "处理器不该被启动（超时声明都没解析出来）"
+    await asyncio.wait_for(handler.started.wait(), timeout=5)  # 事件驱动：等它真的开工
+
+    executing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await executing
+
+    assert not handler.entered or gate is not None  # 处理器确实开工过
+    await _assert_no_heartbeat_leak(harness, "task-a")
+
+
+async def test_sync_handle_does_not_leak_the_heartbeat() -> None:
+    """**F3**：`handle` 是同步函数（`create_task` 抛 `TypeError`）时，心跳 MUST 被收掉。
+
+    ① 出口行为：`TypeError` 上抛（装配形态错误照旧炸出来，不吞）；
+    ②③④ 见 `_assert_no_heartbeat_leak`。
+    """
+    handler = _SyncHandleHandler()
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    claimed = await harness.runner.claim_once()
+    assert claimed is not None
+
+    with pytest.raises(TypeError, match="a coroutine was expected"):
+        await harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
+
+    await _assert_no_heartbeat_leak(harness, "task-a")
+
+
+async def test_missing_handle_attribute_does_not_leak_the_heartbeat() -> None:
+    """**F3（第二形态）**：处理器没有 `handle` 属性时（`AttributeError`）同样不泄漏。
+
+    与上一条同一处修复、不同入口：`create_task(handler.handle(...))` 在取属性时就抛。
+    单独立一条是因为修复前的泄漏点**不在** `create_task` 本身，而在"它落在 `try` 之外"——
+    两条入口一起才能证明"try 紧贴 create_task"这条结构要求。
+    """
+
+    class _NoHandle:
+        def timeout_s(self) -> float:
+            return 30.0
+
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: _NoHandle()},
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    claimed = await harness.runner.claim_once()
+    assert claimed is not None
+
+    with pytest.raises(AttributeError, match="handle"):
+        await harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
+
+    await _assert_no_heartbeat_leak(harness, "task-a")
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), float("inf"), 0.0, -1.5, "abc"],
+    ids=["nan", "inf", "0.0", "-1.5", "非数值"],
+)
+async def test_unusable_timeout_declaration_falls_back_and_still_times_out(
+    bad_value: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**F4**：`timeout_s()` 返回 `nan`/`inf`/`<=0`/非数值 → **不采用**，改走兜底超时。
+
+    判据是**后果**而不是"读到了哪个数"：让兜底值变小（`monkeypatch` 模块常量），
+    然后断言一个**挂死的**处理器确实被超时掐掉（`5002`）。
+    修复前 `nan`/`inf` 会被 `float()` 原样放行 ⇒ `asyncio.wait(timeout=nan)` 永不超时
+    ⇒ 这个用例会挂到外层 `wait_for` 上（红）。
+
+    `<= 0` 的后果不同（"立即超时"）但处置相同：与"没有声明"同一档，MUST NOT 采用。
+    """
+    fallback = 0.05
+    monkeypatch.setattr(
+        "aicore.core.task_runner.FALLBACK_HANDLER_TIMEOUT_S", fallback, raising=True
+    )
+
+    class _BadTimeout:
+        def timeout_s(self) -> object:
+            return bad_value
+
+        async def handle(self, task: ClaimedTask) -> None:
+            await asyncio.Event().wait()  # 挂死（只有超时能结束它）
+
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: _BadTimeout()},
+        config=RunnerConfig(
+            lease_ms=LEASE_MS, max_retries=0, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    claimed = await harness.runner.claim_once()
+    assert claimed is not None
+
+    await asyncio.wait_for(
+        harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=5.0
+    )
+
+    assert harness.store.count("mark_failed") == 1, (
+        f"timeout_s() 返回 {bad_value!r} 时任务没有被超时掐掉："
+        f"该值被静默采用了（nan/inf 会关掉任务级超时；<=0 会把正常任务全判超时）"
+    )
+    assert "error_code=5002" in harness.events, "兜底超时必须按 5002 走失败分流"
+
 
 
 # ---------------------------------------------------------------------------
@@ -1430,7 +2030,9 @@ async def test_transient_claim_failure_does_not_kill_the_loop(
     )
 
 
-async def test_claim_failure_backoff_can_be_interrupted_by_stop() -> None:
+async def test_claim_failure_backoff_can_be_interrupted_by_stop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """**A2**：领取失败的退避**可被 `stop` 打断**（验收第 19 条不得回退）。
 
     退避用 `stop.wait()` 当计时器而不是 `asyncio.sleep`：持续失败时 `stop.set()`
@@ -1438,6 +2040,14 @@ async def test_claim_failure_backoff_can_be_interrupted_by_stop() -> None:
 
     场景：让 `list_claimable` **永远失败**（持续故障），退避会一路涨到上限；
     在第一次失败之后立刻 `set`，断言循环迅速返回。
+
+    ## 判据的前提是**条件等待**，不是"让出 5 次"（F13）
+
+    第一版用 `for _ in range(5): await asyncio.sleep(0)` 去凑"循环已经进入退避计时"。
+    让步轮数不是判据：机器慢一点时循环可能还没走到退避，`stop.set()` 就落在了
+    "还没开始退避"的时刻——那时用例依然绿，但它证明的东西已经不是它声称的东西。
+    现在等的是**那件事本身**：退避的 ERROR 日志（它就在 `await stop.wait()` 那一行之前），
+    条件 + 有界 deadline，超时即断言失败。
     """
     harness = Harness(tasks=[], handlers={TASK_TYPE: FakeHandler()})
     harness.store.claim_failures = [RuntimeError("永久故障")] * 1000
@@ -1451,16 +2061,21 @@ async def test_claim_failure_backoff_can_be_interrupted_by_stop() -> None:
         ),
     )
     stop = asyncio.Event()
-    loop_task = asyncio.create_task(runner.run_forever(stop=stop))
-    # 等到第一次失败确实发生（`list_claimable` 被调用过），此刻循环正处在退避计时里。
-    deadline = time.monotonic() + 5.0
-    while harness.store.count("list_claimable") < 1 and time.monotonic() < deadline:
-        await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，把控制权让给执行器协程
-    for _ in range(5):
-        await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，确保循环已进入退避等待
-    started = time.monotonic()
-    stop.set()
-    await asyncio.wait_for(loop_task, timeout=2.0)
+
+    def _backoff_logged() -> bool:
+        return any("领取任务失败" in record.getMessage() for record in caplog.records)
+
+    with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
+        loop_task = asyncio.create_task(runner.run_forever(stop=stop))
+        deadline = time.monotonic() + 5.0
+        while not _backoff_logged() and time.monotonic() < deadline:
+            await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，把控制权让给执行器协程（条件等待）
+        assert _backoff_logged(), (
+            f"5s 内没有出现退避日志：本用例的前提不成立（循环没走到退避）\n{caplog.text}"
+        )
+        started = time.monotonic()
+        stop.set()
+        await asyncio.wait_for(loop_task, timeout=2.0)
 
     elapsed = time.monotonic() - started
     assert elapsed < 0.5, (
@@ -1469,23 +2084,29 @@ async def test_claim_failure_backoff_can_be_interrupted_by_stop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A1 / A2 的**判别力自证**（变异体 = 修复前的代码形态，直接继承生产类）
+# **F1/F2/F3 的判别力自证**（变异体 = 修复前的**结构性**形态，直接继承生产类）
 # ---------------------------------------------------------------------------
-class _PreFixA1Runner(TaskRunner):
-    """**A1 变异体**：把"解析超时声明"放回 `create_task(_heartbeat())` **之后**。
+class _PreFixExecuteRunner(TaskRunner):
+    """**F1/F2/F3 变异体**：把"进入 `try`"推迟到 `create_task` **之后**、且 `finally` 只收心跳。
 
-    修复前的执行顺序（`#` 标出与修复后的唯一差别）：
+    这与修复后的唯一差别是**结构**（不是三条路径各打一个补丁）：
 
     ```python
-    handler = self._handlers.get(...)
-    heartbeat = asyncio.create_task(_heartbeat())     # 心跳先起来
-    declared = self._declared_timeout_s(handler)      # ← 这一行可能抛（修复后已前移）
+    heartbeat = asyncio.create_task(_heartbeat())
+    handler_task = asyncio.create_task(handler.handle(claimed))   # ← 修复后它在 try 之内
+    await handler_task                                            # ← 非 AiCoreError 从这里冒出
     try: ...
-    finally: await self._cancel_heartbeat(heartbeat)
+    finally: await self._cancel_heartbeat(heartbeat)   # ← 只有"进了 try"才会执行
     ```
 
-    这一抛发生在 `try` 之外 ⇒ `finally` 不执行 ⇒ **心跳泄漏** ⇒ 它一直续期成功
-    ⇒ 租约永不过期 ⇒ 任务再也无法被任何实例回收。
+    修复前的生产代码是 `try` 从**更靠后**的位置才开始（`wait` 那一段），
+    于是「`create_task` 抛 `TypeError`（F3）」「`result()` 抛非 `AiCoreError`（F1）」
+    「取消落在 `execute` 自己身上（F2）」三条路径都在进入 `finally` **之前**冒出 `execute`
+    ⇒ 心跳与处理器 task 双双脱离所有回收路径。
+
+    变异体**只保留这三条路径共同需要的那段结构**（起心跳 → 创建/等待处理器 task），
+    因为它要证明的是"判据 ②③ 在修复前的结构上会红"，而不是复刻生产代码的每一行
+    （复刻越多，变异体本身的错误越容易伪装成"判据的判别力"）。
     """
 
     async def execute(self, claimed: ClaimedTask, *, claim: TaskClaim | None = None) -> None:
@@ -1493,7 +2114,7 @@ class _PreFixA1Runner(TaskRunner):
         if resolved is None:
             resolved = TaskClaim(task_id=claimed.task_id, token="", attempt=1)
         # 生产用 `run_in_threadpool`（同步 store → 线程池）；变异体只关心"心跳什么时候起、
-        # 解析超时抛在哪"，故直接调用同步 store —— 记进调用序列的效果一致。
+        # try 从哪里开始、finally 收哪些 task"，故直接调用同步 store —— 记进调用序列的效果一致。
         self._store.begin_attempt(
             claimed.task_id,
             account_id=claimed.account_id,
@@ -1510,9 +2131,121 @@ class _PreFixA1Runner(TaskRunner):
 
         handler = self._handlers.get(claimed.task_type)
         heartbeat = asyncio.create_task(_heartbeat())
-        # ---- 修复前的顺序：解析在心跳之后、try 之外 ----
-        self._declared_timeout_s(handler)
-        await self._cancel_heartbeat(heartbeat)
+        # ---- 修复前的结构：create_task 与首次 await 都在 try 之外 ----
+        handler_task = asyncio.create_task(handler.handle(claimed))
+        await handler_task
+        try:
+            pass
+        finally:
+            await self._cancel_heartbeat(heartbeat)
+
+
+@pytest.mark.parametrize(
+    "handler_factory",
+    [
+        lambda: _ValueErrorHandler(),
+        lambda: _SyncHandleHandler(),
+    ],
+    ids=["F1:处理器抛 ValueError", "F3:handle 是同步函数"],
+)
+async def test_f1_f3_guard_discriminates(
+    handler_factory: Callable[[], object], caplog: pytest.LogCaptureFixture
+) -> None:
+    """**F1/F3 的判别力自证**：在修复前的结构上，共用判据 `_assert_no_heartbeat_leak`
+    **必须变红**，且红在**判据 ②（心跳仍在续期）**上。
+
+    为什么断言的失败信息是"心跳仍在续期"而不是"有心跳 task 泄漏"：② 是**判别力所在**
+    （泄漏的唯一后果是"租约被永久续期"），③ 只是同一件事的另一种观察方式。
+    这里显式锚定 ②，是为了说明"用例的红来自失效形态本身"，
+    而不是来自任何与判据无关的偶然（例如变异体写错了导致不是 `ValueError`/`TypeError`）。
+
+    若变异体**没有**红，说明 F1/F3 的用例另有来源、或该结构其实无害——两种情况都必须查清，
+    故这里把"变异体自己也要真的失效"写进断言。
+    """
+    handler = handler_factory()
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},  # type: ignore[dict-item]
+        handler=handler,  # type: ignore[arg-type]
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    runner = _PreFixExecuteRunner(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: handler},  # type: ignore[dict-item]
+        policies=REGISTRY,
+        config=harness.runner.config,
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+
+    with caplog.at_level(logging.WARNING, logger="aicore.core.task_runner"):
+        with pytest.raises((ValueError, TypeError)):
+            await runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
+
+        # 判据 ② 必须红 —— 这正是修复前"租约被永久续期"的失效形态。
+        with pytest.raises(AssertionError, match="心跳仍在续期"):
+            await _assert_no_heartbeat_leak(harness, "task-a")
+
+    # 判据 ③ 也要红（同一形态的另一种观察方式）：泄漏的 `_heartbeat` 仍在 `all_tasks()` 里。
+    leaked = [
+        task.get_coro().__qualname__
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
+    assert any("_heartbeat" in name for name in leaked), (
+        f"变异体没有泄漏心跳：{leaked}——那说明 F1/F3 的判据另有来源，本自证不成立"
+    )
+    # 收尾：把泄漏的心跳收掉，免得影响后续用例。
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task() and "_heartbeat" in task.get_coro().__qualname__:
+            task.cancel()
+
+
+async def test_f2_guard_discriminates() -> None:
+    """**F2 的判别力自证**：取消落在 `execute` 自己身上时，修复前的结构**必然泄漏**心跳。
+
+    变异体里"进入 `try` 之前"就有一个 `await handler_task`，故 `execute` 被取消时
+    `finally` 不执行 —— 与生产修复前的形态同因同果。断言仍是"红在判据 ② 上"。
+    """
+    gate = asyncio.Event()
+    handler = _ValueErrorHandler(gate=gate)
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    runner = _PreFixExecuteRunner(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: handler},
+        policies=REGISTRY,
+        config=harness.runner.config,
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+    executing = asyncio.create_task(
+        runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
+    )
+    await asyncio.wait_for(handler.started.wait(), timeout=5)
+
+    executing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await executing
+
+    with pytest.raises(AssertionError, match="心跳仍在续期"):
+        await _assert_no_heartbeat_leak(harness, "task-a")
+
+    # 收尾：把泄漏的心跳与孤儿处理器 task 都收掉。
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
+    await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让取消请求送达被清理的 task
 
 
 class _PreFixA2Runner(TaskRunner):
@@ -1547,55 +2280,6 @@ class _PreFixA2Runner(TaskRunner):
                 continue
             self._track(asyncio.create_task(self._execute_with_permit(semaphore, claimed)))
         await self._drain_inflight()
-
-
-async def test_a1_guard_discriminates() -> None:
-    """**A1 的判别力自证**：把"解析超时"挪回心跳之后，`test_handler_timeout_bug_...`
-    的两条判据（无泄漏、`renew` 不再增长）**必须变红**。
-
-    断言的是**变异体的失效形态真的发生了**（心跳泄漏 + 仍在续期）——
-    没有这一步，"心跳没泄漏"可能只是"心跳压根没起来"之类的平凡真。
-    """
-    handler = _BadTimeoutHandler()
-    harness = Harness(
-        tasks=[_claimed("task-a")],
-        handlers={TASK_TYPE: handler},
-        handler=handler,
-        config=RunnerConfig(
-            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
-        ),
-    )
-    runner = _PreFixA1Runner(
-        store=harness.store,
-        locks=harness.locks,
-        handlers={TASK_TYPE: handler},
-        policies=REGISTRY,
-        config=harness.runner.config,
-    )
-    claimed = await runner.claim_once()
-    assert claimed is not None
-
-    with pytest.raises(KeyError):
-        await runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
-
-    renews_after_raise = len(harness.locks.renew_calls)
-    await asyncio.sleep(0.05)  # ai-allow-sleep: 50ms，让泄漏的心跳跑几轮（≤0.15s）
-
-    leaked = [
-        task.get_coro().__qualname__
-        for task in asyncio.all_tasks()
-        if task is not asyncio.current_task() and not task.done()
-    ]
-    assert any("_heartbeat" in name for name in leaked), (
-        f"变异体没有泄漏心跳：{leaked}——那说明 A1 的判据另有来源，本自证不成立"
-    )
-    assert len(harness.locks.renew_calls) > renews_after_raise, (
-        "变异体的心跳没有继续续期：本自证没有复现「租约被永久续期」这一失效形态"
-    )
-    # 收尾：把泄漏的心跳收掉，免得影响后续用例。
-    for task in asyncio.all_tasks():
-        if task is not asyncio.current_task() and "_heartbeat" in task.get_coro().__qualname__:
-            task.cancel()
 
 
 async def test_a2_guard_discriminates(caplog: pytest.LogCaptureFixture) -> None:
@@ -1665,6 +2349,12 @@ def test_runner_does_not_import_any_business_layer() -> None:
 
     `lint-imports` 守的是全树；这一条守的是**本文件**，且自带判别力自证
     （见 `test_import_guard_discriminates`）——否则判据可能只是"扫了个空文件"。
+
+    **两条都是结构判据（F11 的边界，如实登记）**：本层没有"行为版"的等价判据
+    ——"有没有 import 业务层"本身就是一个只能看源码的事实。它的**行为侧含义**
+    （策略表由组合根注入而不是自己 import）由
+    `test_a_structurally_satisfying_object_can_really_be_injected_and_used`
+    与 `tests/integration/test_main_assembly.py` 的装配用例间接覆盖。
     """
     hits = _forbidden_hits(_imported_modules(_runner_tree()))
     assert hits == [], f"core/task_runner.py 导入了业务层 {hits}（契约 4 禁止 core → 业务层）"
@@ -1718,6 +2408,13 @@ def test_runner_never_reads_policy_timeout() -> None:
     执行器若读了它，就会静默拿到一个**不随配置变**的超时——"取了一个看起来对的错值"
     比报错更难查。故 `core/task_runner.py` 的 `TaskPolicy` Protocol **不声明**该成员，
     并由本用例逐处钉住。
+
+    **行为判据为主、AST 判据为辅（F11）**：行为侧是
+    `test_handler_timeout_goes_through_the_failure_path_with_5002`（超时确实取
+    `handler` 声明的值）与 `test_unusable_timeout_declaration_falls_back_and_still_times_out`
+    （不可用的声明改走兜底）。本用例的已知弱点：把 `policy.timeout_s` 读进一个
+    **接收者名字不含 `policy`** 的局部变量（`t = p.timeout_s`）它就看不见——
+    故它只作辅助，MUST NOT 被当成"这条约束已被完整守住"。
     """
     assert _policy_timeout_reads(_runner_tree()) == [], (
         "core/task_runner.py 读了 policy.timeout_s：任务级超时 MUST 取 handler.timeout_s()"
@@ -1770,6 +2467,14 @@ def test_runner_has_no_task_type_literals() -> None:
     `task_runner.py` 还是空壳时会 `skip`，本文件在它交付后重新钉一遍
     （Task 4.7 之后那条 skip 会自动消失，两条同时生效）。
     本判据**不**断言 `TaskHandler` 之类的形状，只扫字符串常量——取严口径（含 docstring）。
+
+    **行为判据为主、AST 判据为辅（F11）**：行为侧是
+    `test_a_structurally_satisfying_object_can_really_be_injected_and_used`
+    （执行器经**注入的映射**解析类型，映射里放什么类型它就用什么）与
+    `test_unknown_policy_is_treated_as_not_retryable`（表里查不到的类型的处置）。
+    本用例的已知弱点：只在**注册表里恰好出现的字符串**上判红，
+    写一个不在 `REGISTRY` 里的类型字面量（例如 `"ocr-v2"`）它看不见——
+    故它只作辅助。
     """
     types = frozenset(REGISTRY)
     hits = sorted(
@@ -1807,14 +2512,131 @@ def test_store_calls_go_through_a_worker_thread() -> None:
 def test_runner_exposes_the_three_protocols_as_structural_types() -> None:
     """补充：`TaskStore` / `TaskHandler` / `TaskPolicy` 都是 `Protocol`（结构化子类型）。
 
-    这条不是形式主义：`main.py` 注入的是 `SqlTaskLeaseStore` 与注册表的 `TaskPolicy`，
-    两者**都不继承**本模块的任何基类——若这三个类退化成普通类，组合根那两处赋值
-    会在 mypy 下变成 `arg-type` 错误（实测过一次，见报告）。
+    ## 判据分两层，缺一不可（N4 的修复：此前只有第 1 层）
+
+    1. **类型层**：三个类都是 `Protocol`（`_is_protocol`）。这条**只说明声明形态**——
+       复核者指出它是"纯类型层断言"，一个 `runtime_checkable` 与否、
+       方法签名对不对，它一概不管；
+    2. **行为层**（本轮补上）：把一个**完全不继承这三个类**的对象真的传进去、
+       并且**真的被用起来**——`TaskRunner` 能拿它领取、跑完、写回。
+       这才是"组合根可以做结构化注入"的实际含义：`main.py` 注入的是
+       `SqlTaskLeaseStore` 与注册表的 `TaskPolicy`，两者**都不继承**本模块的任何基类。
+
+    为什么第 1 层仍要留着：**删掉它就无法区分"结构化子类型成立"与"碰巧能跑"**——
+    比如把 `TaskStore` 改成普通类后，第 2 层那组对象依然跑得通（Python 不检查），
+    而 mypy 会在组合根报 `arg-type`。两层合起来才同时覆盖"静态可注入"与"运行时可注入"。
     """
     for protocol_cls in (TaskStore, TaskHandler, TaskPolicy):
         assert getattr(protocol_cls, "_is_protocol", False), (
             f"{protocol_cls.__name__} 不是 Protocol：组合根无法做结构化注入"
         )
+
+
+async def test_a_structurally_satisfying_object_can_really_be_injected_and_used() -> None:
+    """**行为层判据**（N4）：不继承任何基类的对象能被 `TaskRunner` 真的用起来。
+
+    用一个**独立定义、不 import 任何 `Protocol`** 的三件套（store / locks / handler）走完
+    「领取 → 执行 → 写成功终态」全链路。它们与 `tests/unit/test_task_runner.py` 里那些替身
+    一样满足结构化接口；区别在于本用例**只**依赖"方法名与签名对得上"。
+    """
+    events: list[str] = []
+
+    class _Store:
+        """只实现 `TaskStore` 的方法，**不继承**它（且都是**同步**方法，见 `TaskStore`）。"""
+
+        def __init__(self) -> None:
+            self.claimed = False
+
+        def list_claimable(self, *, limit: int, now: datetime) -> Sequence[ClaimedTask]:
+            events.append(f"list_claimable({limit})")
+            return [] if self.claimed else [_claimed("task-a")]
+
+        def begin_attempt(self, task_id: str, *, account_id: str, created_at: datetime) -> None:
+            events.append("begin_attempt")
+
+        def mark_succeeded(
+            self,
+            task_id: str,
+            *,
+            account_id: str,
+            created_at: datetime,
+            progress: int,
+            finished_at: datetime,
+        ) -> None:
+            events.append("mark_succeeded")
+
+        def mark_failed(
+            self,
+            task_id: str,
+            *,
+            account_id: str,
+            created_at: datetime,
+            error_code: str,
+            finished_at: datetime,
+        ) -> None:
+            events.append("mark_failed")
+
+        def requeue(self, task_id: str, *, account_id: str, created_at: datetime) -> None:
+            events.append("requeue")
+
+    class _Locks:
+        """只实现锁店用到的四个方法，**不继承** `LockStore`。"""
+
+        def __init__(self) -> None:
+            self._claim: TaskClaim | None = None
+
+        async def acquire(self, task_id: str, *, lease_ms: int) -> TaskClaim | None:
+            events.append("acquire")
+            self._claim = TaskClaim(task_id=task_id, token="t", attempt=1)
+            return self._claim
+
+        async def renew(self, claim: TaskClaim, *, lease_ms: int) -> bool:
+            return True
+
+        async def release(self, claim: TaskClaim) -> bool:
+            events.append("release")
+            return True
+
+        async def is_deferred(self, task_id: str) -> bool:
+            return False
+
+        async def defer(self, task_id: str, *, delay_s: float) -> None:
+            events.append("defer")
+
+        async def close(self) -> None:
+            return None
+
+    class _Handler:
+        """只实现 `TaskHandler` 的两个方法，**不继承**它。"""
+
+        def timeout_s(self) -> float:
+            return 5.0
+
+        async def handle(self, task: ClaimedTask) -> None:
+            events.append(f"handle({task.task_id})")
+
+    runner = TaskRunner(
+        store=_Store(),  # type: ignore[arg-type]
+        locks=_Locks(),  # type: ignore[arg-type]
+        handlers={TASK_TYPE: _Handler()},  # type: ignore[dict-item]
+        policies={TASK_TYPE: _Policy()},  # type: ignore[dict-item]
+        config=RunnerConfig(
+            lease_ms=LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+
+    assert await runner.run_once() is True, "结构化注入的对象没能被真的用起来"
+    assert events == ["list_claimable(4)", "acquire", "begin_attempt", "handle(task-a)",
+                      "mark_succeeded", "release"], (
+        f"全链路没有按结构化接口跑完：{events}"
+    )
+
+
+class _Policy:
+    """`TaskPolicy` 的结构化实现（**不继承** `TaskPolicy`）。"""
+
+    task_type = TASK_TYPE
+    retryable = True
 
 
 # ---------------------------------------------------------------------------
@@ -1823,16 +2645,61 @@ def test_runner_exposes_the_three_protocols_as_structural_types() -> None:
 #: 内存变异体的模块名（`sys.modules` 里的临时条目，用完即撤；见 `_mutant_runner_class`）。
 _MUTANT_MODULE_NAME = "dsh_mutant_runner"
 
-#: 修复前 `run_forever` 的**方法体**（**领了再排队**）。自证时整块换进类源码里。
+
+def _mutant_runner_class(*patches: tuple[str, str]) -> type[Any]:
+    """把 `task_runner.py` 的源码在**内存里**改若干处，编译出一个变异类（**文件从不被写**）。
+
+    `patches` 是若干 `(锚点, 替换)`；**每个锚点都必须唯一**（不唯一即 `AssertionError`）。
+
+    ## 为什么必须内存变异（工单纪律）
+
+    "改 `src/` → 跑 → `finally` 还原"这条路一旦中途失败（断言失败、进程被杀、`Ctrl-C`），
+    就会把**变异体留在工作树里**，此后所有判据都在一个被改坏的产品上运行——
+    那是最难查的一类假绿。这里 `read_text()` → `str.replace` → `compile` → `exec`，
+    工作树里的 `.py` 从头到尾没被写过。
+
+    ## 实现上的三个要点
+
+    - **锚点必须唯一**（`source.count(anchor) == 1`）：否则"变异"会变成
+      "改了一堆地方"，红了也说不清是哪一处造成的；锚点找不到时是**报错**而不是静默跳过——
+      静默跳过会让自证变成"什么都没变、当然不红"。
+    - 变异模块临时登记进 `sys.modules`：`@dataclass` 在装饰期需要按 `cls.__module__`
+      反查模块（`from __future__ import annotations` 让注解是字符串），缺了它 `exec` 会抛
+      `AttributeError`。用完即删，不留痕迹。
+    - 返回的是**变异模块自己的** `TaskRunner` 类对象，与生产的类**不是同一个对象**。
+      故注入点全部传生产侧的对象（`Harness` 的 store / locks / config）——
+      这些注入点都是结构化 `Protocol`，跨模块实例化是合法的；也正因如此，
+      "变异体与生产类的差别**只有锚点那几处**"。
+    """
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    for anchor, replacement in patches:
+        count = source.count(anchor)
+        assert count == 1, (
+            f"变异锚点在 task_runner.py 里出现 {count} 次（要求恰好 1 次）：{anchor!r}——"
+            f"锚点漂了就必须先修锚点，MUST NOT 让它静默变成'什么都没变'"
+        )
+        source = source.replace(anchor, replacement)
+    module = types.ModuleType(_MUTANT_MODULE_NAME)
+    module.__file__ = str(RUNNER_PATH)
+    code = compile(source, str(RUNNER_PATH), "exec")
+    sys.modules[_MUTANT_MODULE_NAME] = module
+    try:
+        exec(code, module.__dict__)
+    finally:
+        del sys.modules[_MUTANT_MODULE_NAME]
+    mutant_cls: type[Any] = module.__dict__["TaskRunner"]
+    return mutant_cls
+
+
+#: 修复前 `run_forever` 的**方法体**（**领了再排队**）——语义说明，**不是可执行代码**。
 #:
 #: 语义 = 修复前：**先领取、再把协程挂到信号量上排队**（许可的获取时机在领取之后）。
 #: 它用的 `self.claim_once()` / `self._execute_with_permit(...)` / `self._track(...)`
-#: 都是**生产类自己的**成员，故替换体不含任何自己重写的逻辑。
+#: 都是**生产类自己的**成员。
 #:
-#: **只在 B2 的顺序判据的文档里被引用**（`test_run_forever_acquires_the_permit_before_claiming`），
-#: 不再有任何"用字符串拼出变异类"的代码——那条路已被 `_PreFixA1Runner` /
-#: `_PreFixA2Runner` 那种**直接继承生产类的子类**取代（字符串变异的锚点在缩进上一错就失真，
-#: 实测踩过三次）。
+#: **本常量没有读者**（此前的字符串变异实现已被删除）：B2 的顺序判据的判别力自证
+#: 由 `_PreFixB2Runner`（直接继承生产类的子类）承担——字符串变异的锚点在缩进上一错就失真，
+#: 实测踩过三次。保留它只为对照"修复前长什么样"，**故 MUST NOT 把它当成活判据**。
 _LEGACY_RUN_FOREVER_BODY = """\
 semaphore = asyncio.Semaphore(self._config.concurrency_limit)
 while not stop.is_set():
@@ -1948,9 +2815,15 @@ async def test_lease_loss_cancel_guard_discriminates() -> None:
         f"自证的前提不成立（它似乎在等处理器）"
     )
     # 变异体的特征 ②：处理器**被取消后又被接管**，它随后跑完并发出副作用。
-    deadline = time.monotonic() + 3.0
-    while not handler.completed and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)  # ai-allow-sleep: 等脱离的处理器跑完（循环等待）
+    #
+    # 等它的方式是**条件等待 + 有界 deadline**（`wrapped.detached` 里的 task 就是
+    # "被接管的那些工作"）：`execute` 返回时第一段已被取消、接管 task 已经建好，
+    # 故这里不需要"轮询到某个标志位"——直接等那些 task 自己结束。
+    assert wrapped.detached, (
+        "处理器没有被取消后接管：那说明取消根本没发生，本自证没有复现修复前的形态"
+    )
+    await asyncio.wait_for(asyncio.gather(*wrapped.detached), timeout=3.0)
+
     assert handler.completed is True, (
         "被接管的处理器没有跑完：那说明取消另有来源，本自证没有证明 B1 的判别力"
     )
@@ -1958,4 +2831,75 @@ async def test_lease_loss_cancel_guard_discriminates() -> None:
         f"外部副作用为 {handler.paid_calls}（期望 1）："
         f"自证没有复现「重复外部调用」这一失效形态"
     )
-    # 两条合起来 = 修复后的用例 ②③ 判据必然变红（它断言 completed=False 且 paid_calls=0）。
+    # 两条合起来 = 修复后用例的 ②③ 判据必然变红（它断言 completed=False 且 paid_calls=0）。
+
+
+async def test_m1_abandon_guard_discriminates() -> None:
+    """**M1 的判别力自证**：把"取消处理器"整个撤掉，**同一份判据** `_assert_lease_lost_abandons`
+    **必须变红**。
+
+    ## 变异（**内存变异，文件从不被写**，见 `_mutant_runner_class`）
+
+    "取消处理器"在本实现里有**两处**（这正是 F2 的修复：`finally` 里也无条件收一次），
+    故变异必须两处一起去掉，才等价于"修复前没人取消它"：
+
+    1. `if lease_lost or timed_out:` → `if timed_out:`（撤掉租约丢失时的取消）；
+    2. `finally` 里那行 `await _dissolve_task(handler_task)` → 删掉（撤掉兜底取消）。
+
+    第 2 处是**本轮新出现的**：复核者当初只变异第 1 处就全绿了；那个变异**现在不再是
+    "撤掉取消"**（`finally` 依然会取消），所以本自证必须两处一起动——
+    **这一点本身就是 F2 修复有效的证据**：租约丢失路径的取消从"一处条件分支"变成了
+    "结构上必然发生"，单一分支的变异不再能让它失效。
+
+    ## 为什么必须单独证明一次
+
+    判据 ②③（`completed is False` / `paid_calls == 0`）在**紧接着 `execute` 返回时读**是
+    **恒真**的——不取消时处理器只是一个脱离的 task 还在 `sleep`。复核者实测：
+    撤销取消后全量 1268 passed / 0 failed。所以"判据真的能判红"必须被看见一次。
+
+    本用例与签名用例共用 `_assert_lease_lost_abandons`（**同一份判据、同一个调用形态**），
+    差别只在产品代码的那两行。
+    """
+    mutant_cls = _mutant_runner_class(
+        ("if lease_lost or timed_out:", "if timed_out:"),
+        (
+            "            await self._cancel_heartbeat(heartbeat)\n"
+            "            await _dissolve_task(handler_task)\n",
+            "            await self._cancel_heartbeat(heartbeat)\n",
+        ),
+    )
+    handler = _BadTurnHandler(delay_s=0.3)
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        renew_result=False,  # 续期首次即被拒 = 租约丢失
+    )
+    runner = mutant_cls(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: handler},
+        policies=REGISTRY,
+        config=harness.short_heartbeat_config(),
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+    started = time.monotonic()
+    await asyncio.wait_for(
+        runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=3.0
+    )
+    elapsed = time.monotonic() - started
+
+    # 变异体不取消处理器 ⇒ 它自己睡醒（0.3s）才停下来 ⇒ **越过那一刻**再读判据。
+    stopped = await _wait_handler_stopped(handler, budget_s=2.0)
+    assert stopped, "变异体的处理器在 2.0s 内没跑完：本自证的前提不成立"
+    assert handler.paid_calls == 1, (
+        f"变异体没有复现「付费调用照发」（paid_calls={handler.paid_calls}）：本自证不成立"
+    )
+    with pytest.raises(AssertionError, match="跑完了"):
+        await _assert_lease_lost_abandons(harness, handler, elapsed=elapsed)
+    # 收到断言之后把脱离的处理器收掉，免得污染后续用例。
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
+    await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让取消请求送达被清理的 task

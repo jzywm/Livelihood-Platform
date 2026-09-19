@@ -159,6 +159,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import suppress
@@ -179,6 +180,7 @@ from aicore.core.lease import LockStore, TaskClaim
 __all__ = [
     "BACKOFF_BASE_S",
     "BEGUN_PROGRESS",
+    "CANCEL_WAIT_TIMEOUT_S",
     "CLAIM_FAILURE_BACKOFF_BASE_S",
     "CLAIM_FAILURE_BACKOFF_MAX_S",
     "CPU_THREAD_PREFIX",
@@ -241,6 +243,19 @@ POLL_INTERVAL_S: Final = 1.0
 #: 上限 30s 让"持续失败"表现为一条每分钟两条的 ERROR 心跳日志，既不刷屏也不静默。
 CLAIM_FAILURE_BACKOFF_BASE_S: Final = 0.5
 CLAIM_FAILURE_BACKOFF_MAX_S: Final = 30.0
+
+#: 取消处理器后的**等待上限**（秒）——F5 引入的模块常量（设计文档未给数值，同"未定档"一档）。
+#:
+#: 取 `1.0` 的理由：`cancel()` 只是"请求"，处理器可以吞掉取消或延迟响应；
+#: **无上限地等**会把「主动放弃」变成「等它做完」（复核者实测：租约 0.033s 就丢失，
+#: 而 `execute` 到 **1.561s** 才返回、放弃之后仍发出 1 次付费调用）。
+#: 1 秒足够让**合作**的处理器走完它自己的取消清理（`finally` / `except CancelledError`），
+#: 又不至于把放弃路径拖到任务级超时的量级。
+#:
+#: **超界的后果是"放手"而不是"更强硬地取消"**：Python 没有"强制结束协程"这回事，
+#: 超界之后那个处理器**仍在后台跑**（仍可能发出外部调用）。这一点写在 `_dissolve_task`
+#: 与类 docstring 的诚实边界里，MUST NOT 被读成"取消一定生效"。
+CANCEL_WAIT_TIMEOUT_S: Final = 1.0
 
 #: 领取时写回的进度值（`er.md` §6.1 L293：`progress` 是进度百分比，刚领到即已开始）。
 BEGUN_PROGRESS: Final = 1
@@ -657,7 +672,15 @@ class TaskRunner:
             created_at=claimed.created_at,
         )
 
+        # **状态初始化全部在起心跳之前**：这些是普通赋值，不可能抛——
+        # 于是「`create_task(_heartbeat())` 之后到 `try:` 之间没有任何可抛语句」
+        # 这条不变式在视觉上一眼可查（`try` 紧接 `create_task`）。
         lease_lost = False
+        succeeded = False
+        timed_out = False
+        error: AiCoreError | None = None
+        #: 处理器 task（`None` = 还没创建 / 装配缺失）。`finally` 里要收它，故先声明。
+        handler_task: asyncio.Task[None] | None = None
 
         async def _heartbeat() -> None:
             """独立 task 的续期心跳（间隔 `lease_ms / HEARTBEAT_DIVISOR`）。
@@ -700,66 +723,65 @@ class TaskRunner:
                     lease_lost = True
                     return
 
-        # **解析顺序是硬要求（A1）**：处理器解析与超时声明都**在起心跳之前**完成。
-        # 第一版把 `_declared_timeout_s(handler)` 放在 `create_task(_heartbeat())` 之后、
-        # `try` 之前，于是处理器作者的一个 bug（`timeout_s` 抛异常 / 返回 None）就让心跳
-        # **脱离所有回收路径**——它按 `lease_ms/3` 一直续期成功，**没有任何实例能再领到这个
-        # 任务**（`SET NX` 永不成功），行永远停在 `PROCESSING`。
-        # 实测（评审探针）：`execute` 抛 `KeyError` 后 0.25s 内心跳又跑了 8 次、`release` 0 次。
-        handler = self._handlers.get(claimed.task_type)
-        policy = self._policy_for(claimed.task_type)
-        declared_timeout = self._declared_timeout_s(handler)
-
+        # 起了心跳 ⇒ 从这一行到本协程返回的**每一条路径**都必须经过 `finally`。
         heartbeat = asyncio.create_task(_heartbeat())
-        succeeded = False
-        error: AiCoreError | None = None
-        timed_out = False
-        if handler is None:
-            # 装配缺失：显式失败（记 ERROR + 按失败分流），MUST NOT 静默跳过（§三）。
-            error = self._unresolved_handler_error(claimed)
-        else:
-            # 处理器**先落成 task** 再等（`asyncio.wait` 只收 `Task`/`Future`，不收裸协程）。
-            handler_task = asyncio.create_task(handler.handle(claimed))
-            done, _pending = await asyncio.wait(
-                {handler_task, heartbeat},
-                timeout=declared_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                # `timeout` 到期而两者都还没结束 → **任务级超时**。
-                #
-                # 为什么不用 `asyncio.wait_for(handler_task, ...)`：`wait_for` **恰好超时**时
-                # 取消的是被它包住的那个 task，而这个取消可能在处理器刚返回的同一瞬间到达——
-                # 那时抛的是 `CancelledError` 而不是 `TimeoutError`，一条**正常完成**的任务
-                # 会被判成超时（边界竞态）。这里自己判「谁都没结束」，语义不含糊。
-                timed_out = True
-                error = DependencyTimeoutError(
-                    f"任务 {claimed.task_id} 超过处理器声明的超时 {declared_timeout}s"
-                )
-            elif heartbeat in done:
-                # 租约丢失（或心跳在此之前就已结束）→ **取消处理**，见 §二之二。
-                lease_lost = True
-            else:
-                try:
-                    handler_task.result()  # 成功返回；失败按异常类型分流
-                except AiCoreError as exc:
-                    error = exc
-                except asyncio.CancelledError:
-                    # 外部取消（关停 / 调用方取消）→ 原样上抛，**绝不吞掉**。
-                    # 租约丢失这一路不经过这里：那条路是 `heartbeat in done` 分支。
-                    await _dissolve_task(handler_task)
-                    raise
-                else:
-                    succeeded = True
-
-        if lease_lost or timed_out:
-            # 两种情况下处理器都还可能在跑，**必须**取消并等它真的结束：
-            # - 租约丢失 → 放弃执行（§二之二）；
-            # - 任务级超时 → 「不再等它」（超时的处置本来就是掐掉）。
-            # `await` 是必须的：不 await 的话处理器可能在本协程返回后还在跑，
-            # 而取消产生的 `CancelledError` 也无人接收（`_dissolve_task` 负责吞掉它）。
-            await _dissolve_task(handler_task)
         try:
+            # **try 之内的一切都可抛**（解析、创建处理器 task、`asyncio.wait`、`result()`、
+            # 失败分流、终态写回）——它们抛出时 `finally` 照样收心跳。
+            #
+            # 第一版把「解析 handler / 超时声明」放在 `create_task` 之前（A1 的修法），
+            # 但 `result()` 的上抛只被 `AiCoreError` / `CancelledError` 兜住，
+            # 于是**非 `AiCoreError`**（`ValueError` 这类编程错误——`TaskHandler.handle` 的
+            # docstring 明说这是预期形态）、**外部取消落在 execute 自己身上**、
+            # **`handle` 不是 async / 没有该属性** 三条路径都会在进入 `finally` 之前冒出 `execute`，
+            # 心跳**脱离所有回收路径** ⇒ 一直续期 ⇒ `SET NX` 永不成功、没有实例能再领到它。
+            # 实测（控制者隔离探针，`lease_ms=150`）：三条路径都是 `renew +7`、活动心跳 task=1。
+            # 修法是**结构性的**（把 try 紧贴 create_task、且 finally 同时收两个 task），
+            # 不是给三条路径各打一个补丁。
+            handler = self._handlers.get(claimed.task_type)
+            policy = self._policy_for(claimed.task_type)
+            declared_timeout = self._declared_timeout_s(handler)
+            if handler is None:
+                # 装配缺失：显式失败（记 ERROR + 按失败分流），MUST NOT 静默跳过（§三）。
+                error = self._unresolved_handler_error(claimed)
+            else:
+                # 处理器**先落成 task** 再等（`asyncio.wait` 只收 `Task`/`Future`，不收裸协程）。
+                # `handle` 不是 async 时这一行抛 `TypeError`；没有该属性时抛 `AttributeError`
+                # —— 两者都在 try 内，故心跳仍会被 `finally` 收掉。
+                handler_task = asyncio.create_task(handler.handle(claimed))
+                done, _pending = await asyncio.wait(
+                    {handler_task, heartbeat},
+                    timeout=declared_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    # `timeout` 到期而两者都还没结束 → **任务级超时**。
+                    #
+                    # 为什么不用 `asyncio.wait_for(handler_task, ...)`：`wait_for` **恰好超时**时
+                    # 取消的是被它包住的那个 task，而这个取消可能在处理器刚返回的同一瞬间到达——
+                    # 那时抛的是 `CancelledError` 而不是 `TimeoutError`，一条**正常完成**的任务
+                    # 会被判成超时（边界竞态）。这里自己判「谁都没结束」，语义不含糊。
+                    timed_out = True
+                    error = DependencyTimeoutError(
+                        f"任务 {claimed.task_id} 超过处理器声明的超时 {declared_timeout}s"
+                    )
+                elif heartbeat in done:
+                    # 租约丢失（或心跳在此之前就已结束）→ **取消处理**，见 §二之二。
+                    lease_lost = True
+                else:
+                    try:
+                        handler_task.result()  # 成功返回；失败按异常类型分流
+                    except AiCoreError as exc:
+                        error = exc
+                    else:
+                        succeeded = True
+
+            if lease_lost or timed_out:
+                # 两种情况下处理器都还可能在跑，**必须**取消并等它结束（有界，见 F5）：
+                # - 租约丢失 → 放弃执行（§二之二）；
+                # - 任务级超时 → 「不再等它」（超时的处置本来就是掐掉）。
+                await _dissolve_task(handler_task)
+
             if not lease_lost:
                 if succeeded:
                     await self._mark_succeeded(claimed, resolved)
@@ -768,7 +790,16 @@ class TaskRunner:
                     assert error is not None
                     await self._handle_failure(claimed, policy, resolved, error)
         finally:
+            # **两个 task 都要收**（此前只收心跳）：`handler_task` 可能在
+            # 「租约丢失 / 超时 / 外部取消 / 非 AiCoreError 上抛」任何一种情形下还活着，
+            # 而它是**唯一**可能还在发出外部调用的东西。`_dissolve_task` 对
+            # 已结束的 task 与 `None` 都是空操作，故这里无条件调一次是安全的。
+            #
+            # 顺序是"先取消处理、再收心跳"？**不是**：先收心跳更安全——
+            # 心跳若还活着，它会在我们收处理器期间继续续期；先把它停掉，
+            # 后续收尾期间的租约状态就与本协程的判断一致。
             await self._cancel_heartbeat(heartbeat)
+            await _dissolve_task(handler_task)
 
     async def run_once(self) -> bool:
         """跑一轮：**没有可领取任务返回 `False`**，且此时**不调用 `acquire`**。
@@ -1012,10 +1043,26 @@ class TaskRunner:
         )
 
     def _declared_timeout_s(self, handler: TaskHandler | None) -> float:
-        """处理器声明的任务级超时；**缺声明时用保守兜底**（见 `FALLBACK_HANDLER_TIMEOUT_S`）。
+        """处理器声明的任务级超时；**任何不可用的声明都退到保守兜底**。
 
-        `handler is None` 时也走本方法（返回兜底值即可：那一路不会进 `wait_for`），
-        故签名收 `None` 而不是让调用方分两处取。
+        五类声明一律**不采用**，改走 `FALLBACK_HANDLER_TIMEOUT_S` + 一条 ERROR 日志：
+
+        | 形态 | 为什么不能采用 |
+        |---|---|
+        | 没有 `timeout_s` 属性 / 不可调用 | 没有声明 |
+        | 调用时抛异常 | 没有可用的声明 |
+        | 返回值不是数值（`float()` 抛） | 没有可用的声明 |
+        | **`nan` / `inf`（F4）** | **静默关掉任务级超时**（`wait(timeout=nan)` 永不超时） |
+        | `<= 0` | 等价于"立即超时"：正常任务全被判超时 |
+
+        第四行正是 `FALLBACK_HANDLER_TIMEOUT_S` 的注释逐字否决的那个形态
+        （"用无限超时会让挂死的处理器永久占住并发额度"），而
+        `float(declared())` 恰好把 `nan` / `inf` 放行了进去 —— **文档说不能、代码放行**
+        的又一例。非有限值因此与"没有声明"同一档处置。
+
+        **F4 是"文档说不能、代码放行"的又一例**：`FALLBACK_HANDLER_TIMEOUT_S` 的注释写着
+        "用无限超时会让挂死的处理器永久占住并发额度"，而 `float(declared())` 恰好把
+        `nan`/`inf` 放行了进去。非有限值因此与"没有声明"同一档处置。
         """
         if handler is None:
             return FALLBACK_HANDLER_TIMEOUT_S
@@ -1027,7 +1074,24 @@ class TaskRunner:
                 FALLBACK_HANDLER_TIMEOUT_S,
             )
             return FALLBACK_HANDLER_TIMEOUT_S
-        value: float = float(declared())
+        try:
+            value = float(declared())
+        except Exception:
+            _logger.error(
+                "处理器的 timeout_s() 无法解析成数值：按兜底 %.1fs 执行",
+                FALLBACK_HANDLER_TIMEOUT_S,
+                exc_info=True,
+            )
+            return FALLBACK_HANDLER_TIMEOUT_S
+        if not math.isfinite(value) or value <= 0:
+            _logger.error(
+                "处理器声明的超时 %r 不可用（非有限值或 <= 0）：按兜底 %.1fs 执行。"
+                "MUST NOT 采用它——nan/inf 会**静默关掉**任务级超时，"
+                "<= 0 会把正常任务全部判超时",
+                value,
+                FALLBACK_HANDLER_TIMEOUT_S,
+            )
+            return FALLBACK_HANDLER_TIMEOUT_S
         return value
 
     async def _handle_failure(
@@ -1173,25 +1237,61 @@ class TaskRunner:
         self._any_task_active.clear()
 
 
-async def _dissolve_task(task: asyncio.Task[None] | None) -> None:
-    """取消一个 task 并**等它真的结束**（`None` 与已结束的 task 都是空操作）。
+async def _dissolve_task(
+    task: asyncio.Task[None] | None, *, timeout_s: float | None = None
+) -> None:
+    """取消一个 task 并**有界地**等它结束（`None` 与已结束的 task 都是空操作）。
 
-    两件事都必须做，缺一个都会留下问题：
+    三件事都必须做，缺一个都会留下问题：
 
-    - **`cancel()` 之后 MUST `await`**：不 await 的话，本协程可能在处理器还没响应取消时
+    - **`cancel()` 之后要 `await`**：不 await 的话，本协程可能在处理器还没响应取消时
       就返回了（协程仍在事件循环上跑），而取消产生的 `CancelledError` 也没人接收；
+    - **等待 MUST 有界（F5）**：`cancel()` 只是"请求",处理器可以吞掉取消或延迟响应
+      ——无上限地 await 会把「主动放弃」变成「等它做完」。实测（复核者的探针）：
+      租约 0.033s 就丢失，而 `execute` 到 **1.561s** 才返回、**放弃之后仍发生 1 次付费调用**。
+      超界时记一条 ERROR 并**不再等**（task 留在后台，见下面那句诚实话）。
     - **吞掉 `CancelledError`**：本函数是"清理"动作，不该把它传播给调用方
-      （调用方若正处在"外部取消"路径上，会自己 `raise`）。
+      （调用方正处在"外部取消"路径上时会自己上抛）。
 
-    **它取消不掉已经交给线程的工作**：处理器若把活放进了 `run_cpu_bound`，
-    那个线程会继续跑到结束（Python 不能安全强杀线程）。这一点写在类 docstring 的
-    §二之二 表格里，MUST NOT 在任何地方写成"副作用已回滚"。
+    ## 为什么默认值写成 `None` 而不是 `= CANCEL_WAIT_TIMEOUT_S`
+
+    `CANCEL_WAIT_TIMEOUT_S` 在 `__all__` 里是**公开常量**。写成默认参数的话，
+    它在**函数定义时**就被求值并固化，于是"改这个常量"变成一个**没有任何效果**的动作
+    ——那正是本文件反复在防的"会骗人的接缝"（调用方以为控制了行为）。
+    故改在**调用时**解析，让常量真的是常量、也让用例能把上界调小来压测这条路径。
+
+    ## 它做不到的事（诚实边界，MUST NOT 被读成"取消一定生效"）
+
+    - **取消不掉已经交给线程的工作**（`run_cpu_bound`）：那个线程会继续跑到结束
+      （Python 不能安全强杀线程）。这一点在类 docstring 的 §二之二 表格里；
+    - **取消不掉"吞掉取消的处理器"**：本函数等 `timeout_s` 之后就放手，
+      那个处理器**仍在后台跑**，仍可能发出付费调用。故 `execute` 的返回时间
+      **不是**只由 `timeout_s` 决定（最多再加上这里的 `CANCEL_WAIT_TIMEOUT_S`），
+      而"放弃之后一定没有副作用"这句话**不成立**。
     """
+    resolved_timeout_s = CANCEL_WAIT_TIMEOUT_S if timeout_s is None else timeout_s
     if task is None or task.done():
         return
     task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=resolved_timeout_s)
+    except TimeoutError:
+        # 处理器不合作：记 ERROR 后**放手**。`shield` 让超时不会把 task 再取消一次
+        # （它已经在取消中了），也让我们能区分"它结束了"与"我们不等了"。
+        _logger.error(
+            "处理器在 %.1fs 内没有响应取消：不再等它（它可能仍在后台运行、"
+            "仍可能发出外部调用），本协程就此返回",
+            resolved_timeout_s,
+        )
+    except asyncio.CancelledError:
+        # 两种来源：① 处理器响应了取消（正常路径，吞掉）；② 调用方取消本协程
+        # （外部取消）——后者在 `task.cancelled()` 为 False 时可辨，此时原样上抛。
+        if not task.cancelled():
+            raise
+    except Exception:
+        # 处理器在取消过程中抛了别的异常：那不是本清理动作关心的事，
+        # 但 MUST NOT 静默——记一条 ERROR 后再返回（`execute` 的 finally 不该被它打断）。
+        _logger.error("处理器在被取消时抛出异常（忽略，清理继续）", exc_info=True)
 
 
 def cpu_pool(max_workers: int) -> ThreadPoolExecutor:
