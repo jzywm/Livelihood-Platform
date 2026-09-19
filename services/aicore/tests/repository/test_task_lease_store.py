@@ -23,14 +23,27 @@
 
 本文件把它们两两对上，且**现读**（不抄成常量——第 3 组有过「把权威表述抄进测试、
 测试就只剩抄得对不对」的假绿教训）。
+
+## 四条判据各自能红的形态（一处**已删的恒真判据**记在这里）
+
+| 判据 | 现读的源 | 能红的形态 |
+|---|---|---|
+| `..._match_the_state_machine_constants` | `service/task/state.py` | 就地字面量与状态机漂移 |
+| `..._match_the_ddl_enum` | `deploy/sql/ddl/10_ai_task.template.sql` | 写库会被 MySQL 拒绝的值 |
+| `..._match_the_orm_enum` | `repository/models.py` 的 `AiTask` | 模型与 DDL 漂移 |
+| `..._documents_all_three_statuses` | `docs/er.md` §6.1 | 文档口径改了而代码没跟 |
+
+**已删**：`test_each_literal_is_a_non_empty_str`（参数化 3 条）——它断言
+`isinstance(LOCAL_STATUS_LITERALS[name], str) and value.strip()`，
+而被断言的值是**本文件刚从被测模块 import 进来的常量**：import 成功即说明值存在，
+`Final` 声明缺值本来就是 `SyntaxError`。**它不可能红**（复核者记为 N4 的一处），
+删掉不减少任何覆盖（上表四条才是真判据）。删除痕迹见文件末尾的 `_removed_..._note`。
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
-import pytest
 
 from aicore.repository.models import AiTask
 from aicore.repository.task_lease_store import (
@@ -140,10 +153,16 @@ def test_er_doc_documents_all_three_statuses() -> None:
     )
 
 
-@pytest.mark.parametrize("name", sorted(LOCAL_STATUS_LITERALS))
-def test_each_literal_is_a_non_empty_str(name: str) -> None:
-    """三个字面量都是非空 `str`（防"声明成 `Final` 却忘了赋值"这类形态）。"""
-    value = LOCAL_STATUS_LITERALS[name]
-    assert isinstance(value, str) and value.strip(), (
-        f"{name} 必须是非空字符串，实际 {value!r}（{type(value).__name__}）"
-    )
+def _removed_tautological_test_note() -> None:
+    """**不是用例**（前缀 `_`，pytest 不收集）：记录这里删过一条**恒真判据**。
+
+    删除的是 `test_each_literal_is_a_non_empty_str`（参数化 3 条）：它断言
+    `isinstance(LOCAL_STATUS_LITERALS[name], str) and value.strip()`，
+    而 `LOCAL_STATUS_LITERALS` 是**同一文件刚从被测模块 import 进来的常量**——
+    import 成功即说明值存在，`Final` 声明缺值本来就是 `SyntaxError`。
+    也就是说**它不可能红**，只在测试计数上多算三条（复核者把它记为 N4 的一处）。
+
+    覆盖没有因此减少，`*_STATUS` 的三重一致性由本文件四条**现读**判据承担（见模块 docstring）。
+    留一个**不叫 `test_` 的空函数**而不是整段删掉，是为了让"这里曾有一条恒真判据"在文件里
+    留痕——复核者正是靠这种痕迹才没有把删除误读成"覆盖被砍"。**MUST NOT** 给它加上断言。
+    """

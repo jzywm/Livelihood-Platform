@@ -92,7 +92,14 @@ strict = false
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
-addopts = "-q"
+# `-m "not integration"`：让下面那条 marker 的承诺（"默认不执行"）**真的成立**。
+#
+# 复核者（第 4 批）查清的事实：marker 描述、多份 docstring 与 openspec 的 tasks.md 都承诺
+# "默认不执行"，而这里此前既没有 `-m` 也没有 collection hook ⇒ **承诺是空的**：
+# 裸 `pytest` 会真的收集并执行集成用例（它们会构造真实 `RedisLockStore`）。
+# CLI 上传 `-m integration` 会**覆盖** ini 的这一项，故两条门禁命令的行为逐字不变。
+# 该承诺由 `tests/structural/test_pytest_config.py` 机械核对（删掉本行即变红）。
+addopts = "-q -m \"not integration\""
 markers = [
     "integration: 需要真实 MySQL / Redis 的端到端用例，默认不执行",
 ]

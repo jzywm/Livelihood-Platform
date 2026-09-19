@@ -76,25 +76,25 @@ Task 4.11 的「`4003` / `5002` 分别计数」据此可用。
 执行侧扫描用的是**同一个字段**，故两边的月份必然一致（同一条行不会跨月）。若改成按账号扫，
 就必须给 `list_claimable` 加一个账号参数——那会改工单给定的接口，而且执行器**不知道有哪些账号**。
 
-## ★ 已知缺口：`mark_failed` 的 `error_code` **没有落库**（如实登记，MUST 先读）
+## ★ 曾经的缺口：`mark_failed` 的 `error_code` **没有落库**（已闭合，本节保留成因）
+
+> **本节此前逐字标题为「已知缺口：`mark_failed` 的 `error_code` **没有落库**（如实登记）」。**
+> 那句话在本轮之前是对的，之后就不对了——但正文在 §43 更新时只改了一处，
+> **旧的"缺口"章节被留了下来**，于是同一个文件里同时存在"落不了库"与"已可落库"两种说法
+> （复核者把它记为"自相矛盾"）。现按实际状态改正，并把成因保留下来备查。
 
 工单 §2.6 逐字要求「四个写方法用 `TaskRepo.update_status`（**既有能力，MUST 复用**）」，
-而 `TaskRepo.update_status` 的列集合**只有 `status` / `progress` / `finished_at`**
-（`task_repo.py:139-145` 的 `status_update_statement`；Task 3.7 有一条用例**逐列钉住**那三列），
+而 `TaskRepo.update_status` 原本的列集合**只有 `status` / `progress` / `finished_at`**
+（`task_repo.py` 的 `status_update_statement`；Task 3.7 有一条用例**逐列钉住**那三列），
 签名里**没有** `error_code`。
 
 三条要求同时成立时只剩一种可能：**不改 `task_repo.py` 就写不了 `error_code`**。
-而工单 §Files 把 `repository/**` 的**既有文件**列为不可改，故本任务：
+故当时的实现是"收下参数但落不了库"，并记一条 WARNING + 在报告里点名。
 
-- `mark_failed` 忠实按工单用 `update_status` 写状态列；
-- `error_code` 参数**收下但落不了库**，故**显式记一条 WARNING**（不静默丢弃参数），
-  并在报告里点名这条缺口；
-- **MUST NOT** 被读成「4.11 的 `4003`/`5002` 分别计数已经可用」：
-  Task 4.11 要靠 `ai_task.error_code` 做分别计数，而 `FAILED` 行的该列此刻会是 `NULL`。
-
-**补齐它的落点**（留给获授权的任务）：`status_update_statement` 的 `.values(...)` 增加
-一个可选列、`update_status` 增加 `error_code: str | None = None` 形参、Task 3.7 的
-列集合用例同步放行该列。改动很小，但**必须在授权范围内做**。
+**本轮（Task 4.7 修复轮，B3）获得授权后按原计划补齐**：`status_update_statement` 的
+`.values(...)` 增加一个**可选**列、`update_status` 增加 `error_code: str | None = None` 形参；
+Task 3.7 的"恰好三列"用例**原样保留**，另加一条"传了就恰好四列且值正确"的用例。
+WARNING 与"落不了库"的说明随修复一起删除。
 
 ## 依赖面（契约 3）
 

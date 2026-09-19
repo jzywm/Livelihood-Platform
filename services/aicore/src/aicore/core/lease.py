@@ -60,6 +60,32 @@
 只 import `aicore.core.*` 与 stdlib，外加三方包 `redis.asyncio`
 （三方包不在分层契约的管辖范围内，工单 §4 明示允许）。
 MUST NOT import `aicore.provider` / `aicore.service` / `aicore.repository` / `aicore.port`。
+
+## 七、入参拒绝面：**两个实现同判**（F9）
+
+`LockStore` 是交付契约，而"单测绿、生产抛"是这几轮反复出现的形态，故替身 MUST NOT
+比真 Redis 宽松。真 Redis 实测会拒绝的值，两侧都用**同一个函数 + 同一个异常类型**拒绝：
+
+| 输入 | 真 Redis | 本模块两侧的处置 |
+|---|---|---|
+| `acquire(lease_ms=0 / -5)` | `invalid expire time` | `InvalidLeaseArgumentError` |
+| `acquire(lease_ms=1000.5)` | `value is not an integer` | 同上 |
+| `renew(lease_ms<=0 / 小数)` | `PEXPIRE 0` **删键** / `-5` 报错 | 同上 |
+| `defer`，`int(s*1000) == 0` | `PX 0` 报错 | 按"不退避"处置（不写键 + 清旧的） |
+| `defer(delay_s=1.9999)` | 实际退避 **1998ms** | `_defer_delay_ms` 截断到整毫秒，两侧一致 |
+
+生产调用点**今天都不可达**（`Settings.lease_ms ge=1`、执行器退避下界 1.0s）——
+不构成不修的理由（见上）。跨实现一致性用例（`tests/integration/test_lease_redis.py`）
+把**同一组输入**喂两侧并断言同判。
+
+### 已接受差异：过期边界的比较符（F9(b)）
+
+真 Redis 判"键过期"用的是 `now > when`，替身用 `now >= expires_at`（`live_lease` /
+`purge_expired` / `live_attempt_counter` 三处都是 `>=`）。实测最大差 **1ms**。
+**本模块选择 `>=` 并把它登记为已接受差异**，理由：替身的时间由注入时钟驱动，
+用例要求「`advance(lease_ms/1000)` 恰好让租约过期」可判定；改成 `>` 会让"恰好推进一个租期"
+落在边界之外，于是每个用例都得再加一点点余量——那正是本模块其它地方一直在消灭的东西。
+"1ms 内谁先认为过期"不影响协议语义：两个实例之间的回收竞争本来就要靠 `SET NX` 决出胜负。
 """
 
 from __future__ import annotations
@@ -72,12 +98,15 @@ from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 
 __all__ = [
     "LEASE_KEY_PREFIX",
     "AttemptCounter",
     "InMemoryLockStore",
     "InMemoryState",
+    "InvalidLeaseArgumentError",
     "LeaseToken",
     "LockStore",
     "RedisLockStore",
@@ -262,6 +291,80 @@ def _require_positive_count_ttl(attempt_count_ttl_ms: int) -> int:
     return attempt_count_ttl_ms
 
 
+class InvalidLeaseArgumentError(ValueError):
+    """入参是**真 Redis 会拒绝的值**（F9）：两个实现用同一个异常、同一个判据。
+
+    ## 为什么要有这个类型（而不是让 Redis 自己报 `ResponseError`）
+
+    工单 §F9 的实测：内存替身比真 Redis **宽松 4 处**，其中
+
+    - `acquire(lease_ms=0 / -5)` → 真 Redis `invalid expire time`，替身照发租约并计数；
+    - `acquire(lease_ms=1000.5)` → 真 Redis `value is not an integer`，替身照发。
+
+    若只在 Redis 侧重抛 `redis.exceptions.ResponseError`，两侧的**判据**就成了两个类型，
+    而"同一组输入喂两侧、断言同判"这条一致性用例正是要钉住的东西。
+    故两侧都在**发命令之前**用同一段校验（`_require_lease_ms`）拒绝**同一组**值，
+    抛同一个异常类型。
+
+    ## 为什么继承 `ValueError`
+
+    这是**调用方把参数传错了**（不是服务端装配错误，也不是业务失败）：
+
+    - 继承 `ValueError` 而不是 `AiCoreError`：`AiCoreError` 是被执行器按失败分流的业务错误，
+      若让它落到那条路径上，一个编程错误会被写成"任务失败 + 重试/转人工"；
+    - 不用 `ParamError`：那是 400 语义（HTTP 请求参数），会把"执行器内部传错"报成"调用方传错"。
+
+    生产路径**今天不可达**（`Settings.lease_ms ge=1`、执行器的退避下界 1.0s），
+    但 `LockStore` 是交付契约——"单测绿、生产抛"正是这几轮反复出现的形态，
+    故按契约边界修，而不是按今天的可达性修。
+    """
+
+
+def _require_lease_ms(lease_ms: int) -> int:
+    """`lease_ms` 必须是**正整数**（真 Redis 对 `PX` 的要求），否则抛 `InvalidLeaseArgumentError`。
+
+    真 Redis 的实测口径（工单 §F9）：
+
+    - `SET k v NX PX 0`（含负数）→ `invalid expire time in 'set' command`；
+    - `PX 1000.5` → `value is not an integer or out of range`。
+
+    第三类被拒的是 `bool`：`isinstance(True, int)` 为真，`lease_ms=True` 会被 `PX 1`
+    悄悄接受成"1 毫秒的租约"——一个几乎立刻过期的租约看起来像"领取成功"，
+    实际下一次 `renew` 就已经不是自己的了。这类"看起来成对的类型"必须显式挡掉。
+    """
+    if isinstance(lease_ms, bool) or not isinstance(lease_ms, int) or lease_ms <= 0:
+        raise InvalidLeaseArgumentError(
+            f"lease_ms 必须是正整数毫秒，收到 {lease_ms!r}"
+            f"（{type(lease_ms).__name__}）：真 Redis 的 PX 会报 invalid expire time / "
+            f"value is not an integer or out of range"
+        )
+    return lease_ms
+
+
+def _defer_delay_ms(delay_s: float) -> int:
+    """把 `delay_s` 折算成 `PX` 用的**整毫秒**（`<= 0` = 不该写这个键）。
+
+    ## 截断口径必须两侧一致（F9 的第 4 处）
+
+    真 Redis 收的是整数毫秒，故 `defer(delay_s=1.9999)` 实际退避 **1998ms 左右**；
+    第一版的内存替身直接存 `clock + 1.9999` ⇒ 1999.9ms。差异只有 1~2ms，
+    但"替身与真实现的口径不同"这件事本身必须消失——否则一致性用例测的是替身自己的定义。
+
+    故本函数是**唯一**的折算处，两侧都调它，并把 `delay_ms / _MS_PER_SECOND` 作为内存侧的时长。
+
+    ## 非正 / 非有限 → 返回 0（= "不写键"）
+
+    - `int(delay_s * 1000) == 0`（即 `0 < delay_s < 0.001`）：真 Redis 的 `PX 0` 会**报错**，
+      故两侧统一按"不退避"处置（调用方传这么小的值，意图就是"立刻可领"）；
+    - `nan` / `inf`：真 Redis 会因为 `int(inf * 1000)` 抛 `OverflowError`；
+      `nan` 更危险——旧实现里 `clock + nan` 的比较恒真，退避**永不结束**且没有任何报错。
+      两者都归到"不写键"（最安全的解释是**别把任务锁死**）。
+    """
+    if not math.isfinite(delay_s):
+        return 0
+    return int(delay_s * _MS_PER_SECOND)
+
+
 def _new_token() -> LeaseToken:
     """生成一次领取的 token。
 
@@ -371,10 +474,11 @@ class InMemoryLockStore:
     | 语义 | Redis | 本类 |
     |---|---|---|
     | 租约键占用 | `SET NX PX` 失败 | `leases` 里有未过期项 |
-    | 租约到期 | `PX` 自动删除 | `expires_at <= clock.monotonic()` |
+    | 租约到期 | `PX` 自动删除 | `expires_at <= clock.monotonic()`（见 §七） |
     | 尝试计数 | `INCR` + 首次 `PEXPIRE` | `AttemptCounter.n += 1`（到期同上） |
-    | 退避期 | 退避键存在 | `deferrals` 里有未到期项 |
+    | 退避期 | 退避键存在 | `deferrals` 里有未到期项（按整毫秒截断） |
     | token 校验 | Lua 里 `GET == ARGV[1]` | `_Lease.token == claim.token` |
+    | **非法入参** | `PX <= 0` / 小数毫秒报错 | `InvalidLeaseArgumentError`（同一个校验函数） |
 
     ## 边界（如实登记）：本类**不**校验 `token` 的唯一性
 
@@ -406,7 +510,13 @@ class InMemoryLockStore:
 
     async def acquire(self, task_id: str, *, lease_ms: int) -> TaskClaim | None:
         """原子领取。检查与写入之间**没有 `await`**，故在 asyncio 单线程下天然原子
-        （这正是 Redis 那段 Lua 脚本的等价物）。"""
+        （这正是 Redis 那段 Lua 脚本的等价物）。
+
+        `lease_ms` 先过 `_require_lease_ms`（F9）：真 Redis 会拒绝 `PX <= 0` 与小数，
+        替身 MUST NOT 反而照发一个立刻过期的租约——"替身比真实现宽松"是最坏的一类替身，
+        它让离线段全绿而生产段一启动就抛。
+        """
+        lease_ms = _require_lease_ms(lease_ms)
         self._state.purge_expired()
         if task_id in self._state.deferrals:
             return None
@@ -421,7 +531,13 @@ class InMemoryLockStore:
         return TaskClaim(task_id=task_id, token=token, attempt=n)
 
     async def renew(self, claim: TaskClaim, *, lease_ms: int) -> bool:
-        """续期（**仅当仍归本 token 所有**）。"""
+        """续期（**仅当仍归本 token 所有**）。
+
+        `lease_ms` 同样过 `_require_lease_ms`：真 Redis 的 `PEXPIRE key 0` 会**删除**键
+        （即"续期"变成"释放"），而 `PEXPIRE key -5` 报 `invalid expire time`。
+        替身若不校验，就会把"续期失败"表现成"续期成功"（F9 的同族形态）。
+        """
+        lease_ms = _require_lease_ms(lease_ms)
         lease = self._state.live_lease(claim.task_id)
         if lease is None or lease.token != claim.token:
             return False
@@ -457,15 +573,25 @@ class InMemoryLockStore:
         （任务被永久挡住且没有任何报错）。`inf` 同理——真 Redis 会因为
         `int(inf * 1000)` 抛 `OverflowError`。两者都按"不退避"处理，
         因为"调用方传了非法时长"最安全的解释是**别把任务锁死**。
+
+        ## 折算成整毫秒（F9 的第 3、4 处）
+
+        `0 < delay_s < 0.001` 时 `int(delay_s * 1000) == 0`，真 Redis 的 `PX 0` **报错**
+        ——归到"不写键"那一档；`delay_s = 1.9999` 时真 Redis 退避 **1998ms**，
+        替身此前退避 1999.9ms。两处都由 `_defer_delay_ms` 统一（两侧同一个折算函数）。
         """
         self._state.purge_expired()
-        if delay_s <= 0 or not math.isfinite(delay_s):
-            # 非正/非有限：**清除**已有的退避（若上一步设过），并返回。
+        delay_ms = _defer_delay_ms(delay_s)
+        if delay_ms <= 0:
+            # 非正/过短/非有限：**清除**已有的退避（若上一步设过），并返回。
             # 「清除」而不是"什么都不做"：调用方传 0 的意图是"现在就能领"，
             # 若残留着更早设的退避窗口，那个意图就没被实现。
             self._state.deferrals.pop(task_id, None)
             return
-        self._state.deferrals[task_id] = self._state.clock.monotonic() + delay_s
+        # **按毫秒截断后再折算回秒**：与真 Redis 的 `PX <int ms>` 逐字同口径。
+        self._state.deferrals[task_id] = (
+            self._state.clock.monotonic() + delay_ms / _MS_PER_SECOND
+        )
 
     async def close(self) -> None:
         """内存实现没有连接可关（**幂等**，MUST NOT 清键：清键不等于关连接）。"""
@@ -565,6 +691,30 @@ class RedisLockStore:
     两处取返回值都用 `int(...)` 归一（`int(b"3")` 与 `int(3)` 都成立），
     故不依赖那个全局开关——它与「脚本返回值到底是 bytes 还是 int」无关，
     设上只会让将来读别的键时多一层隐式解码。
+
+    ## 为什么 Redis 客户端**显式不自动重试**（N1，产品行为决定）
+
+    redis-py 8.1.0 的默认值是 `Retry(ExponentialWithJitterBackoff(base=1, cap=10), retries=10)`
+    ——**一次调用内部最多重试 10 次**。实测（复核者）：裸 `Redis(port=1).ping()` 要 **26.0s**
+    才把连接错误抛出来，而 `test_unreachable_redis_fails_fast_without_touching_the_row`
+    一条用例就占了集成段的 **25.18s / 50.10s**。
+
+    这不只是慢：它把 **26 秒的长尾藏进一次"看起来很快"的调用**里——
+    而那正是 **A2 刚消灭掉的形态**（A2 就是"一次瞬时错误不该杀死轮询循环"，
+    改法是给 `run_forever` 加**有界退避**）。上游已经有分层处置：
+
+    | 路径 | 上游处置 |
+    |---|---|
+    | `claim_once` 抛错 | `run_forever` 记 ERROR + **有界**退避（0.5s → 上限 30s） |
+    | `renew` 抛错 | 心跳记 WARNING + **放弃执行**（`design.md:208`） |
+
+    两处都**已经**在没有重试的前提下正确工作，故客户端再叠 10 次重试只是把
+    同一个抖动放大成 26 秒的不可观测等待。
+
+    **代价（如实登记）**：Redis 的一次瞬时抖动现在会立刻冒到执行器，表现为
+    一条 ERROR/WARNING 日志 + 一次有界退避（原先它可能被客户端内部悄悄重试掉）。
+    即"更早、更响、但更快恢复"，而不是"少一次错误日志"。
+    这也是**产品行为**的改动，已单列在修复报告里。
     """
 
     __slots__ = ("_client", "_count_ttl_ms", "_prefix", "_scripts")
@@ -578,7 +728,13 @@ class RedisLockStore:
         prefix: str = LEASE_KEY_PREFIX,
         attempt_count_ttl_ms: int = DEFAULT_ATTEMPT_COUNT_TTL_MS,
     ) -> None:
-        self._client: Redis = Redis(host=host, port=port, db=db)
+        self._client: Redis = Redis(
+            host=host,
+            port=port,
+            db=db,
+            # 显式不重试（`NoBackoff` + 0 次）：理由见类 docstring 的 N1 一节。
+            retry=Retry(NoBackoff(), 0),
+        )
         self._prefix = prefix
         self._count_ttl_ms = _require_positive_count_ttl(attempt_count_ttl_ms)
         self._scripts: dict[str, Any] = {}
@@ -595,7 +751,13 @@ class RedisLockStore:
 
     # ---- `LockStore` 协议 ----
     async def acquire(self, task_id: str, *, lease_ms: int) -> TaskClaim | None:
-        """原子领取：退避中或已被占 → `None`；否则返回带**尝试序号**的 `TaskClaim`。"""
+        """原子领取：退避中或已被占 → `None`；否则返回带**尝试序号**的 `TaskClaim`。
+
+        `lease_ms` 先过 `_require_lease_ms`（F9）：真 Redis 本来就会因 `PX <= 0` /
+        小数毫秒报错，提前在 Python 侧拒绝让**两侧的判据是同一个异常类型**
+        （一致性用例要断言"同判"），也省掉一次注定失败的往返。
+        """
+        lease_ms = _require_lease_ms(lease_ms)
         script = self._script("acquire", _ACQUIRE_LUA)
         token = _new_token()
         raw = await script(
@@ -612,7 +774,12 @@ class RedisLockStore:
         return TaskClaim(task_id=task_id, token=token, attempt=attempt)
 
     async def renew(self, claim: TaskClaim, *, lease_ms: int) -> bool:
-        """续期：键仍归本 token 所有才成功（Lua 里 `GET == token` 的判据）。"""
+        """续期：键仍归本 token 所有才成功（Lua 里 `GET == token` 的判据）。
+
+        `lease_ms` 先过 `_require_lease_ms`（F9 的同族）：`PEXPIRE key 0` 在真 Redis 上
+        会**删除**键（"续期"变成"释放"），`PEXPIRE key -5` 报 `invalid expire time`。
+        """
+        lease_ms = _require_lease_ms(lease_ms)
         script = self._script("renew", _RENEW_LUA)
         raw = await script(
             keys=[lease_key(claim.task_id, prefix=self._prefix)],
@@ -636,18 +803,19 @@ class RedisLockStore:
     async def defer(self, task_id: str, *, delay_s: float) -> None:
         """写退避键（带 `PX`）。
 
-        **非正 / 非有限的 `delay_s` → 不写键，并清掉已有的退避键**（A4）：
+        **非正 / 非有限 / 折算后不足 1ms 的 `delay_s` → 不写键，并清掉已有的退避键**（A4 + F9）：
         与 `InMemoryLockStore.defer` 同一口径（那边有完整的理由说明）。
         真 Redis 的 `SET k v PX 0` 会报 `invalid expire time`，
         故"写一个立即到期的键"这条路**走不通**；改为"不写 + 清掉旧的"，
         语义等价（任务立刻可领），且与替身逐字一致。
+        折算走 `_defer_delay_ms`（**同一个**函数），故 `defer(1.9999)` 在两侧都是 1998ms。
         """
         key = defer_key(task_id, prefix=self._prefix)
-        if delay_s <= 0 or not math.isfinite(delay_s):
+        delay_ms = _defer_delay_ms(delay_s)
+        if delay_ms <= 0:
             await self._client.delete(key)
             return
         script = self._script("defer", _DEFER_LUA)
-        delay_ms = int(delay_s * _MS_PER_SECOND)
         await script(keys=[key], args=[delay_ms])
 
     async def close(self) -> None:

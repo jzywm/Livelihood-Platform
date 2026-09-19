@@ -11,13 +11,22 @@
 | **真实 Redis 的原子性**（两条连接并发抢同一把锁） | **不可替代** | 第 27 条 |
 | **真实 `PX` 语义**（`PTTL` 与到点回收） | 模拟（注入时钟） | 第 28 条 |
 
-## 关于真等待（本文件只有一处）
+## 关于真等待（本文件两处，逐处写明）
 
 工单 §3.4 第 28 条逐字允许「**这里允许真等**，因为它是集成段；但等待时间 MUST ≤ 2s」
 ——真实 `PX` 的到期只能靠真实时间证明（注入时钟改不了 Redis 服务端的过期计时）。
-本文件只有 `test_lease_expires_and_becomes_claimable_again` 里有**一处** `await asyncio.sleep`，
-带 `# ai-allow-sleep: <理由>` 行级豁免（验收脚本第 4 项的判据支持该豁免，理由必填）。
-`lease_ms=1000` + 等待 1.1s，故最坏 1.1s ≤ 2s。
+本文件有**两处** `await asyncio.sleep`，都带 `# ai-allow-sleep: <理由>` 行级豁免
+（验收脚本第 4 项的判据支持该豁免，理由必填）：
+
+| 位置 | 用途 | 等待 |
+|---|---|---|
+| `test_lease_expires_and_becomes_claimable_again` | 真实 `PX` 到点回收 | 1.1s |
+| `test_attempt_counter_expires_after_its_own_ttl` | 计数键自己的 TTL 到点 | 0.7s |
+
+> 更正（本轮）：此处此前写"本文件**只有一处** `await asyncio.sleep`"，而实际是两处
+> ——A3/A4 补上"计数键自己的 TTL"那条用例时漏改了这句话。
+
+睡眠豁免：2 处（机械判据逐文件比对，见 `tests/structural/test_sleep_exemption_counts.py`）。
 
 ## 键前缀
 
@@ -343,3 +352,107 @@ async def test_redis_store_rejects_non_positive_count_ttl(bad: int) -> None:
     host, port, db = redis_integration_target()
     with pytest.raises(ValueError, match="必须为正"):
         RedisLockStore(host=host, port=port, db=db, attempt_count_ttl_ms=bad)
+
+
+# ---------------------------------------------------------------------------
+# F9：**入参拒绝面**的跨实现一致性（同一组输入喂两侧，断言同判）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "lease_ms",
+    [0, -5, 1000.5],
+    ids=["0", "-5", "1000.5（小数）"],
+)
+async def test_both_implementations_reject_the_same_lease_ms(
+    redis_prefix: str, lease_ms: object
+) -> None:
+    """**F9(a)**：真 Redis 会拒绝的 `lease_ms`，**两侧都拒绝**（同一个异常类型）。
+
+    工单给出的真 Redis 实测：`PX 0` / `PX -5` → `invalid expire time in 'set' command`；
+    `PX 1000.5` → `value is not an integer or out of range`。
+    第一版的内存替身**照发租约并计数** ⇒ 离线段全绿、生产段一启动就抛。
+
+    现在两侧都在发命令之前走同一个 `_require_lease_ms`，故判据是**同一个异常类型**
+    （`ValueError` 的同一个子类）——这正是"同一组输入喂两侧、断言同判"的字面含义。
+    **本用例不需要连 Redis**（校验在往返之前），但它被标 `integration` 是因为同族的
+    真 Redis 行为只能在这里记录；判据本身是两侧对称的。
+    """
+    from aicore.core.lease import InMemoryLockStore as _InMemory
+
+    clock = _StepClock()
+    memory = _InMemory(clock=clock)
+    redis_store = _redis_store_with(redis_prefix, attempt_count_ttl_ms=60_000)
+    try:
+        for name, store in (("内存替身", memory), ("真 Redis", redis_store)):
+            try:
+                await store.acquire(_task_id(), lease_ms=lease_ms)  # type: ignore[arg-type]
+            except ValueError as exc:
+                assert "lease_ms 必须是正整数毫秒" in str(exc), f"{name} 抛的是别的错：{exc}"
+            else:
+                pytest.fail(
+                    f"{name} 没有拒绝 lease_ms={lease_ms!r}（真 Redis 会报 "
+                    f"invalid expire time / value is not an integer）"
+                )
+    finally:
+        await redis_store.close()
+
+
+async def test_both_implementations_truncate_defer_to_whole_milliseconds(
+    redis_prefix: str,
+) -> None:
+    """**F9(b)**：`defer(1.0009)` 在两侧都是**整毫秒**（真 Redis 的 `PTTL ≈ 1000ms`）。
+
+    第一版替身存 `clock + 1.0009`，真 Redis 收 `PX 1000`。差不到 1ms，但口径必须一致——
+    否则上面那条"两侧语义一致"的用例测的是替身自己的定义。
+    这里直接读真 Redis 的 `PTTL`（原始事实），并断言它在 1000ms 附近而不是 1001ms。
+    """
+    from aicore.core.lease import InMemoryLockStore as _InMemory
+
+    task_id = _task_id()
+    clock = _StepClock()
+    memory = _InMemory(clock=clock)
+    redis_store = _redis_store_with(redis_prefix, attempt_count_ttl_ms=60_000)
+    try:
+        await memory.defer(task_id, delay_s=1.0009)
+        await redis_store.defer(task_id, delay_s=1.0009)
+
+        memory_remaining = memory.state.deferrals[task_id] - clock.monotonic()
+        redis_pttl = await redis_store.client.pttl(defer_key(task_id, prefix=redis_prefix))
+    finally:
+        await redis_store.close()
+
+    assert redis_pttl > 0, "真 Redis 上退避键不存在：defer 没有写键"
+    assert abs(redis_pttl - 1000) <= 50, (
+        f"真 Redis 的 PTTL 是 {redis_pttl}ms（期望 ≈1000ms，即 `int(1.0009*1000)`）"
+    )
+    assert abs(memory_remaining - 1.000) < 1e-9, (
+        f"内存替身的退避时长是 {memory_remaining}s（期望 1.000s，即截断到整毫秒）——"
+        f"两侧口径不一致"
+    )
+
+
+@pytest.mark.parametrize("delay_s", [0.0001, 0.0009], ids=["0.0001", "0.0009"])
+async def test_both_implementations_do_not_defer_below_one_millisecond(
+    redis_prefix: str, delay_s: float
+) -> None:
+    """**F9(c)**：`int(delay_s*1000) == 0` 时两侧都**不设退避**（真 Redis 的 `PX 0` 会报错）。
+
+    真 Redis 那一侧如果照旧发 `PX 0`，脚本会抛 `invalid expire time`；
+    故两侧都按"不退避"处置（不写键 + 清掉旧的）。本用例断言**两侧都没有退避键**。
+    """
+    from aicore.core.lease import InMemoryLockStore as _InMemory
+
+    task_id = _task_id()
+    clock = _StepClock()
+    memory = _InMemory(clock=clock)
+    redis_store = _redis_store_with(redis_prefix, attempt_count_ttl_ms=60_000)
+    try:
+        await memory.defer(task_id, delay_s=delay_s)
+        await redis_store.defer(task_id, delay_s=delay_s)
+
+        assert await memory.is_deferred(task_id) is False, "内存替身设了退避（真实现做不到）"
+        assert await redis_store.is_deferred(task_id) is False, "真 Redis 上出现了退避键"
+        redis_exists = await redis_store.client.exists(defer_key(task_id, prefix=redis_prefix))
+    finally:
+        await redis_store.close()
+
+    assert redis_exists == 0, "真 Redis 上仍有退避键残留"

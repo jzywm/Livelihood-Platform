@@ -192,6 +192,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             await runner_task
         except asyncio.CancelledError:
+            # **已知边界（F8，如实登记，只登记不修）**：走到这里说明 lifespan 自己
+            # **被取消**了（关停被中止，例如进程被强杀、`gather` 取消子任务）。
+            # `CancelledError` **必须**原样上抛（吞掉它会让取消语义失效），
+            # 而下面的 `runner.stop()` / `locks.close()` / `dispose()` / `flush_logging()`
+            # 因此**全部被跳过**——执行器自建的 CPU 池、Redis 连接、数据库连接池都不会被释放。
+            #
+            # 为什么不在这里"记一条日志再继续清理"：那样等于在取消路径上继续 await
+            # 一串清理动作，而取消的语义恰恰是"尽快停"。且**树内没有生产者**触发这条路
+            # （uvicorn 正常关停走的是 `stop.set()` 那条分支）。故按"已知边界"登记：
+            # 读到本行的人应当知道"关停被中止时清理不会跑完"，而不是以为它跑完了。
             raise
         except Exception:
             # 死亡本身已由 done-callback 记过一条；这里是"关停时又看到一次"，

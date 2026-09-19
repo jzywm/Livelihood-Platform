@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -312,9 +313,12 @@ async def test_failure_backs_off_then_exhausts_to_failed(runner_env: _Env) -> No
        → 第 2 次失败，`attempt=2 > max_retries=1` → `mark_failed`；
     4. 库里终态 `FAILED`、`finished_at` 非空。
 
-    ⚠ **`error_code` 此刻不会落库**：`SqlTaskLeaseStore.mark_failed` 写不了该列
-    （`TaskRepo.update_status` 的列集合不含它）。故断言该列为 `None`——
-    把缺口变成可复现的事实（见模块 docstring 的说明）。
+    **`error_code` 真的落库了**（B3 的修复点，见 L346 起的断言）：Task 4.11 的
+    「`4003` / `5002` 分别计数」靠这一列。
+
+    > 更正（本轮）：本段此前逐字写着「⚠ **`error_code` 此刻不会落库**……故断言该列为 `None`」
+    > ——而同一个用例里早已改成断言**真实码值**。docstring 与代码说法相反，是复核者记的
+    > "声称的判据 ≠ 实际判据"里的一处：修复时只改了断言，忘了改这句话。
     """
     task_id = _task_id()
     runner_env.insert_task(task_id)
@@ -357,12 +361,23 @@ async def test_unreachable_redis_fails_fast_without_touching_the_row(runner_env:
     """31. Redis 不可达时（错误端口）**`claim_once` MUST 抛错而不是吞掉**，
     且**任务状态不被改动**（fail fast，不假装成功）。
 
-    判据两段：
+    判据三段：
 
     1. `claim_once` 抛异常（**不是**返回 `None`）——返回 `None` 会让执行器以为
        「没有任务」，于是 Redis 挂了也照样安静地空转（运维看不到任何信号）；
     2. 库里的行**一个字节都没变**（status / progress / finished_at 都是原值）——
-       fail fast 的语义是「什么都没做」，不是「做了一半」。
+       fail fast 的语义是「什么都没做」，不是「做了一半」；
+    3. **时延有界**（N1，本轮补上）：用例名里的 "fails fast" 此前**无人验证**。
+
+    ## N1：为什么第三条必须存在，以及它的数值从哪来
+
+    复核者实测：本用例**单独耗时 25.18s**（集成段 50.10s 的一半），
+    而成因不在 aicore——redis-py 8.1.0 默认 `Retry(…, retries=10)`，
+    裸 `Redis(port=1).ping()` 要 **26.0s** 才抛。
+    修法（控制者裁定 (a)）：生产侧**显式不重试**（`RedisLockStore` 只传
+    `Retry(NoBackoff(), 0)`；理由与代价写在它的类 docstring 里）。
+    上界取 **5s**：它比"连不上"所需的正常时间（毫秒级）宽三个数量级，
+    又比 26s 小一个数量级，故"重试回来了"这条回归一定会被它抓住。
     """
     task_id = _task_id()
     runner_env.insert_task(task_id)
@@ -378,11 +393,18 @@ async def test_unreachable_redis_fails_fast_without_touching_the_row(runner_env:
         config=RunnerConfig(lease_ms=LEASE_MS, max_retries=3, concurrency_limit=2),
     )
 
+    started = time.monotonic()
     with pytest.raises(Exception):  # noqa: B017 - 这里断言的是"必须抛"，类别由 redis-py 决定
         await runner.claim_once()
+    elapsed = time.monotonic() - started
 
     after = runner_env.read_row(task_id)
     assert after == before, f"Redis 不可达时任务行被改动了：{before} -> {after}"
+    assert elapsed < 5.0, (
+        f"claim_once 花了 {elapsed:.1f}s 才抛出（上界 5s）："
+        f"Redis 客户端又在内部自动重试了（redis-py 默认 retries=10，实测 26s）——"
+        f"长尾被藏进一次'看起来很快'的调用里，而那正是 A2 消灭掉的形态"
+    )
     await runner.aclose()
     await broken.close()
 

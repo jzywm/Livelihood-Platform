@@ -405,3 +405,106 @@ async def test_defer_with_positive_delay_still_blocks() -> None:
     assert await store.acquire(TASK, lease_ms=LEASE_MS) is None
     clock.advance(5.5)
     assert await store.acquire(TASK, lease_ms=LEASE_MS) is not None
+
+
+# ---------------------------------------------------------------------------
+# F9：入参拒绝面——替身 MUST NOT 比真 Redis 宽松
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "bad_lease_ms",
+    [0, -5, 1000.5, True],
+    ids=["0", "-5", "1000.5（小数）", "True（bool）"],
+)
+async def test_acquire_rejects_lease_ms_redis_would_reject(bad_lease_ms: object) -> None:
+    """**F9**：真 Redis 会拒绝的 `lease_ms`，替身 MUST 也拒绝（且**同一个异常类型**）。
+
+    真 Redis 实测口径：`SET k v NX PX 0` / `PX -5` → `invalid expire time in 'set' command`；
+    `PX 1000.5` → `value is not an integer or out of range`。
+    替身此前**照发租约并计数**——即"替身比真实现宽松"，它让离线段全绿、生产段一启动就抛。
+
+    `True` 单列一条：`isinstance(True, int)` 为真，若不显式挡掉，`PX 1` 会被悄悄接受成
+    "1 毫秒的租约"——它看起来像"领取成功"，而下一次 `renew` 时已经不是自己的了。
+
+    断言的是**两件事**：抛出的类型（`ValueError` 子类，好让跨实现一致性用例能断言"同判"）
+    与**没有留下任何键**（"抛之前先写了一半"是更隐蔽的形态）。
+    """
+    clock = FakeClock()
+    store = _store(clock)
+
+    with pytest.raises(ValueError, match="lease_ms 必须是正整数毫秒"):
+        await store.acquire(TASK, lease_ms=bad_lease_ms)  # type: ignore[arg-type]
+
+    assert store.state.leases == {}, f"拒绝 {bad_lease_ms!r} 时仍写下了租约键"
+    assert store.state.attempts == {}, f"拒绝 {bad_lease_ms!r} 时仍累加了尝试计数"
+
+
+async def test_renew_rejects_lease_ms_redis_would_reject() -> None:
+    """**F9 的同族**：`renew` 的 `lease_ms` 同样被拒。
+
+    真 Redis 上这两个值是两种不同的坏：`PEXPIRE key 0` 会**删除**键
+    （于是"续期"变成"释放"，而调用方以为续上了），`PEXPIRE key -5` 报
+    `invalid expire time`。替身若照收，就会把"续期失败"表现成"续期成功"。
+    """
+    clock = FakeClock()
+    store = _store(clock)
+    claim = await store.acquire(TASK, lease_ms=LEASE_MS)
+    assert claim is not None
+
+    for bad in (0, -5, 1000.5):
+        with pytest.raises(ValueError, match="lease_ms 必须是正整数毫秒"):
+            await store.renew(claim, lease_ms=bad)  # type: ignore[arg-type]
+
+    # 阳性对照：合法值照常续期成功（判据不是"renew 一律抛"）。
+    assert await store.renew(claim, lease_ms=LEASE_MS) is True
+
+
+@pytest.mark.parametrize(
+    "delay_s",
+    [0.0001, 0.0005, 0.0009],
+    ids=["0.0001", "0.0005", "0.0009"],
+)
+async def test_defer_shorter_than_one_millisecond_does_not_defer(delay_s: float) -> None:
+    """**F9 第 3 处**：`int(delay_s * 1000) == 0` 的退避 MUST NOT 生效。
+
+    真 Redis 收整数毫秒，`PX 0` **直接报错**（`invalid expire time`）；
+    替身此前会真的设一个 0.0001s 的退避窗口——"替身做得到、真实现做不到"。
+    两侧现在都走 `_defer_delay_ms`，折算后为 0 ⇒ 按"不退避"处置（不写键 + 清旧的）。
+
+    与 `nan`/`inf` 归到同一档的理由也一致：调用方传这么小的值时，
+    意图就是"立刻可领"；把它变成一个"几乎立刻过期但确实存在"的键只会制造竞态。
+    """
+    clock = FakeClock()
+    store = _store(clock)
+
+    await store.defer(TASK, delay_s=delay_s)
+
+    assert await store.is_deferred(TASK) is False, (
+        f"delay_s={delay_s!r} 折算后不足 1ms（真 Redis 的 PX 0 会报错），替身却真的退避了"
+    )
+
+
+async def test_defer_truncates_to_whole_milliseconds_like_redis() -> None:
+    """**F9 第 4 处**：`defer(1.0009)` 的退避时长按**整毫秒截断**（真 Redis 收 `PX 1000`）。
+
+    第一版替身直接存 `clock + 1.0009`（1000.9ms），真 Redis 只退避 1000ms。
+    差不到 1ms 不影响协议，但"两侧的口径不同"会让跨实现一致性用例变成
+    "在测替身自己的定义"，故由 `_defer_delay_ms` 统一。
+
+    ## 取值是**故意挑的**（判据要能判红）
+
+    截断后 `1000ms`、不截断 `1000.9ms`，故**在 `t = 1.0005s` 处两种实现给出相反答案**：
+    截断 ⇒ 已过期（可领取）；不截断 ⇒ 仍在退避。本用例在该时刻断言"可领取"，
+    于是它**能分辨**这两种实现（真 Redis 那一侧由集成用例比对 `PTTL`）。
+    """
+    clock = FakeClock()
+    store = _store(clock)
+
+    await store.defer(TASK, delay_s=1.0009)
+
+    clock.advance(0.999)
+    assert await store.is_deferred(TASK) is True, "0.999s 时不该已经可以领取"
+    clock.advance(0.0015)  # 累计 1.0005s：截断后（1.000s）已过期，未截断（1.0009s）仍退避
+    assert await store.is_deferred(TASK) is False, (
+        "累计 1.0005s 时仍在退避：替身存的是 1.0009s 而不是截断后的 1.000s"
+        "（与真 Redis 的 `PX <int ms>` 不同口径）"
+    )
