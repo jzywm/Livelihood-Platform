@@ -27,6 +27,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -95,20 +96,42 @@ def test_dependency_is_not_available_before_startup() -> None:
     这条证明上面那条的绿灯**来自装配**，而不是来自某种"取不到就给个默认值"的兜底。
     若哪天有人把 `get_settings` 改成"缺属性就 `Settings()`"，本用例立刻变红——
     那正是 `api/deps.py` 的 docstring 明确禁止的形态（兜底会把误配置推迟到运行期）。
+
+    ## 判据键的是**异常出处**，不只是异常类型（本轮收紧）
+
+    第一版写成 `try: client.get(...) except AttributeError: return`，即"抛了
+    `AttributeError` 就算走对了路"。问题在于 `TestClient` 会把**处理函数内部**的
+    `AttributeError` 原样抛出：于是"取不到就造个假的兜底"这类实现也落进同一个
+    `except` 分支 ⇒ 用例**仍然全绿**。实测（内存变异 `get_settings` 的兜底写法）：
+
+    - 兜底 `Settings()`（请求变成 200）→ 判红 ✓；
+    - 兜底 `Settings.model_construct()` / `SimpleNamespace()` → **仍绿** ✗：
+      它们让请求在处理函数里炸出
+      `AttributeError: 'types.SimpleNamespace' object has no attribute 'env'`，
+      走的是**完全不同的那条路**，却被当成了"期望路径"。
+
+    故判据收紧成两条**正面事实**：① 抛出的必须是 `State.__getattr__` 那一条
+    （消息里点名缺失的属性 `settings`）；② 路由**没有**观察到任何 settings 值。
+    兜底一旦出现，两者必有一条不成立——"红了"不再等于"走对了路"。
+
+    **`match` 刻意不带引号**：键的是"**缺的是哪个属性**"，不是上游文案的标点。
+    写成 `match="'settings'"` 会把判据耦合到 Starlette 今天的排版（单引号）：
+    上游改成双引号、或写成 `State has no attribute settings`，这条就会因**纯排版**变红
+    ——那种红换不来任何判别力，却会**训练人忽略红**（本项目刚花一轮消灭随机假红，
+    这是同一类成本）。去掉引号后信息一字不少，判别力实测不受影响：
+    `SimpleNamespace` 兜底的异常消息
+    `'types.SimpleNamespace' object has no attribute 'env'` 里没有 `settings`，照样判红。
     """
     observed: list[Settings] = []
     app = _build_probe_app(observed)
 
     client = TestClient(app)  # 刻意不进 `with`：不触发 lifespan
-    try:
-        response = client.get("/__probe__/settings")
-    except AttributeError:
-        # 期望路径：Starlette 的 State.__getattr__ 在属性缺失时即抛。
-        return
+    with pytest.raises(AttributeError, match="settings"):
+        client.get("/__probe__/settings")
 
-    assert response.status_code == 500, (
-        f"未启动时依赖竟然可用（HTTP {response.status_code}）："
-        f"说明有人加了兜底取值，配置错误会被推迟到运行期"
+    assert observed == [], (
+        "依赖竟然解析出值并交给了路由：说明有人加了兜底取值"
+        "（`api/deps.py` 明令禁止，它会把误配置推迟到运行期）"
     )
 
 
