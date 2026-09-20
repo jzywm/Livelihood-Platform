@@ -52,6 +52,7 @@ RFC 9110 的 `202 Accepted` 定义即「请求已被接受处理，但处理尚�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal
@@ -65,9 +66,12 @@ from aicore.api.deps import (
     get_account_id,
     get_engine_factory,
     get_now,
+    get_settings,
 )
+from aicore.core.config import Settings
 from aicore.core.envelope import Envelope
 from aicore.core.errors import PARAM_MISSING_CODE, PARAM_VALUE_CODE, ParamError
+from aicore.service.task.confidence import confidence_thresholds
 from aicore.service.task.registry import TaskPolicy, assert_submittable
 from aicore.service.task.state import PROCESSING
 from aicore.service.task.submit import SubmitOutcome, submit_ocr_task
@@ -210,17 +214,21 @@ async def submit_ocr(
     account_id: Annotated[str, Depends(get_account_id)],
     factory: Annotated[SessionFactory, Depends(get_engine_factory)],
     now: Annotated[datetime, Depends(get_now)],
+    settings: Annotated[Settings, Depends(get_settings)],
     idempotency_key: Annotated[str | None, Header(alias=IDEMPOTENCY_KEY_HEADER)] = None,
 ) -> Envelope[TaskAccepted]:
     """受理一次证照 OCR 任务：落 `ai_task` 后立即返回任务号。
 
-    依赖的三个提供者各管一件事，且都**可被替换**（测试注入固定时钟 / 沙盒会话）：
+    依赖的四个提供者各管一件事，且都**可被替换**（测试注入固定时钟 / 沙盒会话 / 阈值）：
 
     - `get_account_id`：身份取网关注入的 `X-User-Id`，缺失 / 空白即 `2001`（fail-closed）；
     - `get_engine_factory`：会话工厂由组合根装配（写路径用 `write_session()`——
       本次请求要落一行 `ai_task`）；
     - `get_now`：**由调用方传入的时刻**——分片月与 `created_at` 都由它现算，
-      查幂等与插入共用同一个值（月边界，见 `service/task/submit.py`）。
+      查幂等与插入共用同一个值（月边界，见 `service/task/submit.py`）；
+    - `get_settings`：**只为两个置信度阈值**（Task 4.10）。它们在受理时被冻进
+      `ai_task.model_meta.thresholds`（`spec.md:128` 的"**当次**快照"），执行期读回它来分级。
+      注意这里**不读** `provider` / 凭据之类的字段——路由只用它做这一件事。
 
     幂等：`Idempotency-Key` 头显式给了就用它，否则由 `imageKey` + `docType` 派生
     （`er.md:290`「同 imageKey+docType 返回原任务号」）。命中时返回**原任务号**且库行数不增。
@@ -245,6 +253,10 @@ async def submit_ocr(
         idem_key=idempotency_key,
         now=now,
         policy=policy,
+        thresholds=confidence_thresholds(
+            high=settings.confidence_high,
+            medium=settings.confidence_medium,
+        ),
     )
     return Envelope[TaskAccepted].ok(TaskAccepted(taskId=outcome.task.task_id, status=PROCESSING))
 
@@ -258,6 +270,7 @@ def _submit_in_session(
     idem_key: str | None,
     now: datetime,
     policy: TaskPolicy,
+    thresholds: Mapping[str, float],
 ) -> SubmitOutcome:
     """在工作线程里开会话并完成提交（**同步**函数，故 MUST 经 `run_in_threadpool` 调用）。
 
@@ -276,4 +289,5 @@ def _submit_in_session(
             idem_key=idem_key,
             now=now,
             policy=policy,
+            thresholds=thresholds,
         )

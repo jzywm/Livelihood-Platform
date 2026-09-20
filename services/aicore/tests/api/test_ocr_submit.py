@@ -18,9 +18,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sys
 import types
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -118,6 +120,19 @@ def _task_rows(engine: Engine, *, month: str = "202607") -> list[dict[str, Any]]
     return [dict(row) for row in rows]
 
 
+def _model_meta_of(row: Mapping[str, Any]) -> Any:
+    """把裸 SQL 读回来的 `model_meta` 解析成 dict（JSON 列在裸读下是**字符串**）。
+
+    为什么需要它：ORM 的 `JSON` 类型会在读的时候反序列化，而 `_task_rows` 刻意走**裸 SQL**
+    （要绕过被测代码的读路径），于是拿到的就是库里存的那串文本——sqlite 与 MySQL 都一样。
+    这不是缺陷，而是"绕过 ORM 就必须自己做这一步"的代价，写在助手注释里免得后人也踩。
+    """
+    raw = row["model_meta"]
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return raw
+
+
 def test_accepted_returns_202_with_the_task_accepted_contract(
     api_client: TestClient, sandbox_engine: Engine, clock: _Clock
 ) -> None:
@@ -167,7 +182,19 @@ def test_submission_writes_exactly_one_row_with_the_declared_columns(
     assert row["progress"] == 0
     assert row["finished_at"] is None, "非终态不得有 finished_at"
     assert row["error_code"] is None, "PROCESSING 不得有 error_code"
-    assert row["model_meta"] is None, "血缘（model_meta）在执行期才写，归 Task 4.7"
+    # **Task 4.10 改了这一列的口径**：提交期就冻**当次置信度阈值快照**（`spec.md:128`）。
+    # 此前这里断言 `model_meta is None`（"血缘归执行期写"）——本任务把"阈值快照"提前到
+    # 受理时刻（那是"当次"能被冻结的最早时刻，也是 M1 唯一可观测的时刻），故断言改成
+    # **逐字比对那份快照**；其余四个血缘键（channel/provider/modelVersion/promptVersion）
+    # 仍归执行期补（第 5 组），见 `submit.py::new_task` 的 docstring。
+    expected_thresholds = {
+        "high": api_client.app.state.settings.confidence_high,
+        "medium": api_client.app.state.settings.confidence_medium,
+    }
+    assert _model_meta_of(row) == {"thresholds": expected_thresholds}, (
+        f"提交期的 model_meta 应只含当次阈值快照 {expected_thresholds!r}（spec.md:128），"
+        f"实际 {row['model_meta']!r}"
+    )
     assert row["is_eval_sample"] == 0
     assert str(row["created_at"]).startswith("2026-07-15 10:30"), (
         f"created_at 应等于注入的 now（UTC 存储、无时区列），实际 {row['created_at']!r}"
@@ -862,6 +889,7 @@ def test_none_idem_key_conflict_is_not_absorbed(
             idem_key="idem-explicit-ignored",
             now=JULY,
             policy=assert_submittable(SUBMITTED_TASK_TYPE),
+            thresholds={"high": 0.9, "medium": 0.7},
         )
 
     assert len(_task_rows(sandbox_engine)) == 1, "失败路径上又落了行"

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -78,6 +79,7 @@ from aicore.core.idgen import new_id
 from aicore.repository.base import ShardKey
 from aicore.repository.models import AiTask
 from aicore.repository.task_repo import TaskRepo
+from aicore.service.task.confidence import MODEL_META_THRESHOLDS_KEY
 from aicore.service.task.registry import TaskPolicy
 from aicore.service.task.state import PROCESSING
 
@@ -150,7 +152,14 @@ def compute_idem_key(*, explicit: str | None, image_key: str, doc_type: str) -> 
     return digest[:_DERIVED_IDEM_KEY_LENGTH]
 
 
-def new_task(*, account_id: str, task_type: str, idem_key: str | None, now: datetime) -> AiTask:
+def new_task(
+    *,
+    account_id: str,
+    task_type: str,
+    idem_key: str | None,
+    now: datetime,
+    thresholds: Mapping[str, float],
+) -> AiTask:
     """按 `er.md` §6.1 L284-298 **逐列**造一条新任务（不落库）。
 
     逐列口径（`status`/`progress`/`error_code`/`model_meta`/`is_eval_sample`/`finished_at`
@@ -164,8 +173,19 @@ def new_task(*, account_id: str, task_type: str, idem_key: str | None, now: date
     | `status` | 固定 `PROCESSING`——**不得由调用方指定** | §6.1 L292 列默认值 |
     | `progress` | `0` | §6.1 L293「0~100」 |
     | `error_code` / `finished_at` | `None`（终态才有值） | §6.1 L294 / L298 |
-    | `model_meta` | `None`：**执行期才写血缘**（通道/供应商/prompt 版本），归 4.7 | §6.1 L295 |
+    | `model_meta` | **只放阈值快照** `{"thresholds": {...}}`（见下） | §6.1 L295 + `spec.md:128` |
     | `is_eval_sample` | `False`：固定评估集样本由取样流程标记，不在提交期决定 | §6.1 L296 |
+
+    ## `model_meta` 在**提交期**就写阈值快照（Task 4.10）
+
+    `spec.md:128` 要的是「**当次**置信度阈值快照」——留痕的意义是"依据什么阈值作出的判定"
+    可追溯。提交期是"当次"能被**冻结**的最早时刻，也是 M1 阶段唯一可观测的时刻
+    （没有真实 OCR 执行，见 `service/task/confidence.py` 的模块 docstring）。
+
+    另外四个血缘键（`channel` / `provider` / `modelVersion` / `promptVersion`）**要等真正
+    调用通道之后才知道**，故这里**只**写 `thresholds` 一个键——第 5 组拿到
+    `ProviderResult.identity` 后用 `ProviderIdentity.as_model_meta()` 合并写回。
+    写半份血缘**不是**偷懒：把未知的四个键填成 `None`/空串会让"血缘缺失"看起来像"已记录"。
 
     `now` 由**调用方**传入（可注入固定时钟）：测试要能构造跨月边界与固定时间，
     而测试内 MUST NOT 出现任意 sleep（`tests/conftest.py` 文件头）。
@@ -181,7 +201,7 @@ def new_task(*, account_id: str, task_type: str, idem_key: str | None, now: date
         status=PROCESSING,
         progress=0,
         error_code=None,
-        model_meta=None,
+        model_meta={MODEL_META_THRESHOLDS_KEY: dict(thresholds)},
         is_eval_sample=False,
         created_at=now,
         finished_at=None,
@@ -197,6 +217,7 @@ def submit_ocr_task(
     idem_key: str | None,
     now: datetime,
     policy: TaskPolicy,
+    thresholds: Mapping[str, float],
 ) -> SubmitOutcome:
     """受理一次 OCR 提交：幂等命中即返回既有任务，否则落库并读回。**顺序是硬要求**。
 
@@ -218,6 +239,12 @@ def submit_ocr_task(
     `policy` 是**已过准入判定**的任务类型策略（受理处调 `assert_submittable` 的返回值）：
     本函数不重复判定，只取 `policy.task_type` 落库。把「准入」与「使用」分成两步，
     是为了让「未实现类型被拒」只发生在受理处一个地方（两处判定必然漂移）。
+
+    `thresholds` 是**受理时的置信度分级阈值快照**（`confidence_thresholds(...)` 的产物）：
+    它被冻进 `ai_task.model_meta.thresholds`（`spec.md:128` 的「**当次**快照」），
+    执行期（第 5 组）读回它来分级，而**不是**读当时的全局配置——否则运营一改阈值，
+    历史任务的分级依据就会跟着漂移，"留痕"也就无从谈起。
+    幂等命中时**不写**（`created=False`，既有行一列都不动）。
 
     ## 并发同键：撞 `uk_idem` 之后**回读原任务**，而不是报 5000（Task 4.9 收口）
 
@@ -261,6 +288,7 @@ def submit_ocr_task(
         task_type=policy.task_type,
         idem_key=effective_key,
         now=now,
+        thresholds=thresholds,
     )
     try:
         repo.insert(session, task)
