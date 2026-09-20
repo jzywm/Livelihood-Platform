@@ -21,9 +21,13 @@
 ## 能力的边界（如实登记，MUST NOT 当成"已经验过"）
 
 - 判据 A 是**源码级**的：它能证明"注册表不是靠分支解析类型"，不能证明"执行器会走表查找"
-  ——后者要等 Task 4.7 的 `task_runner` 落地，本任务时该文件仍是 docstring 空壳，
-  故判据 B 此刻走 `pytest.skip`（**不假装验过**），且跳过条件是「文件无代码」而非
-  「本用例不想跑」：Task 4.7 一交付执行器，同一条用例自动变成真断言。
+  ——后者要等 Task 4.7 的 `task_runner` 落地（Task 4.6 时该文件还是 docstring 空壳）。
+- 判据 B 的"对象不在就跳过"分支已在 4.11 追加轮**改成硬断言**（`assert RUNNER_PATH.is_file()`）。
+  历史如实留档：Task 4.6 时扫不到对象，跳过是当时的真实需求；但执行器一交付，这个理由就
+  **过期**了——继续留着跳过，等于给"有人把执行器删空/清成空壳"发一张**静默通行证**：
+  判据 2 会以 SKIPPED 的形态消失，而报告里看不出任何异常。扫描对象是**本仓交付物**，
+  缺失属于缺陷而不是环境（同轮修掉的随机自跳过是同一形态：
+  `tests/repository/test_apply_ddl_mysql.py::test_apply_ddl_rejects_bad_month`）。
 - 判据 B 取严口径：`docstring` 里出现类型名同样算命中（工单 §3 原文是「不出现任何任务类型
   字面量」）。放宽的那一档留给判据 A（它只判"逐类型分支"这一种行为）。
 - 本文件不校验「执行器真的用上了注册表」，也不校验超时值是否符合真实任务耗时——两者的
@@ -631,16 +635,17 @@ def test_adding_a_type_does_not_require_touching_the_runner() -> None:
     1. `registry.py` 源码里 MUST NOT 出现逐类型分支（`if task_type == …` / `match task_type`），
        类型 → 策略的解析 MUST 是表查找（`REGISTRY[…]`）——保证「新增类型 = 加一行表项」
        而不是「加一个 elif」（design.md:194）；
-    2. `core/task_runner.py` 里 MUST NOT 出现任何任务类型字面量。Task 4.7 才实现它，
-       本任务时它仍是 1 行 docstring 空壳 → 该条**显式跳过并说明**，MUST NOT 假装验过。
+    2. `core/task_runner.py` 里 MUST NOT 出现任何任务类型字面量。
+       历史：Task 4.7 才实现它，Task 4.6 时它还是 docstring 空壳 ⇒ 当时该条**显式跳过**；
+       4.11 追加轮把「对象不在就跳过」改成**硬断言**（理由见模块 docstring 与判据 2 处的注释）。
 
     判据 1 自带判别力自证：本用例内构造「用 elif 链」的合成实现，断言判据**会**把它判红；
     再断言它**不**误伤表查找写法。没有这一步，判据可能只是"扫了个空文件"而已
     —— 若 `find_per_type_branches` 恒返回空，判据 1 在任何代码上都恒绿。
 
-    **跳过与判据 1 的关系**：判据 1 的断言在跳过点**之前**全部执行完毕（断言失败会直接红），
-    故判据 2 报 SKIPPED 时判据 1 仍是真验过的。判据 2 的判据本体另有
-    `test_runner_literal_scan_is_discriminating` 用合成样本证明其判别力，与空壳与否无关。
+    **判据 1 与判据 2 的顺序关系**：判据 1 的全部断言排在判据 2 之前，故判据 2 判红时
+    判据 1 的结果依然可信（前面已经真验过）。判据 2 的判据本体另有
+    `test_runner_literal_scan_is_discriminating` 用合成样本证明其判别力，与执行器是否空壳无关。
     """
     source = _read(REGISTRY_PATH)
 
@@ -701,14 +706,22 @@ def test_adding_a_type_does_not_require_touching_the_runner() -> None:
     )
 
     # ---- 判据 2：task_runner.py 里没有任务类型字面量 ----
-    if not RUNNER_PATH.is_file():
-        pytest.skip(f"{RUNNER_PATH.name} 尚不存在：Task 4.7 才创建它，本任务没有可扫描的对象")
+    #
+    # 这两个条件曾经是 `pytest.skip`（Task 4.6 时 `task_runner.py` 尚未创建；见模块 docstring）。
+    # 本轮改成**硬断言**：扫描对象是**本仓自己交付**的东西，不是环境。
+    # 「对象不在就跳过」的代价是：有人把执行器删空/清成空壳时，判据 2 会以 SKIPPED 的形态
+    # **静默退出而不是判红**——与刚修掉的"随机值碰巧命中就跳过"同病，
+    # 本仓已判过这种形态是**假 skip**（`tests/integration/test_main_assembly.py:216`：
+    # 「判据必须与用例的**真实需求**对齐」）。
+    assert RUNNER_PATH.is_file(), (
+        f"{RUNNER_PATH.name} 不存在：判据 2 的扫描对象是**本仓交付物**，"
+        f"缺失属于缺陷而不是环境，MUST NOT 用跳过把它藏起来"
+    )
     runner_source = _read(RUNNER_PATH)
-    if not _has_code_beyond_docstring(ast.parse(runner_source)):
-        pytest.skip(
-            f"{RUNNER_PATH.name} 仍是 docstring 空壳（AST 里除模块 docstring 外没有任何节点）："
-            f"扫它等于扫一个空集，此刻下断言只是假绿；Task 4.7 交付执行器后本断言自动生效"
-        )
+    assert _has_code_beyond_docstring(ast.parse(runner_source)), (
+        f"{RUNNER_PATH.name} 仍是 docstring 空壳（AST 里除模块 docstring 外没有任何节点）："
+        f"扫它等于扫一个空集 ⇒ 执行器被清空了，同样是缺陷，MUST NOT 静默跳过"
+    )
     literals = find_task_type_literals(runner_source, registered_types())
     assert literals == [], (
         f"{RUNNER_PATH.name} 出现任务类型字面量 {literals}：执行器应按注册表表查找解析类型，"
@@ -720,7 +733,8 @@ def test_runner_literal_scan_is_discriminating() -> None:
     """判据 2 的判据本体：分支式 runner 必须判红，表查找式 runner 必须判绿。
 
     这条**不跳过**（它扫的是合成样本，与 `task_runner.py` 是否空壳无关）：
-    于是即便判据 2 此刻报 SKIPPED，它的判别力也已经被证明过，而不是"因为没对象所以没验"。
+    故它与判据 2 是**互补**的两件事——判据 2 说"真文件里没有字面量"，本条说"判据本身有
+    判别力"。两者都 MUST NOT 退化成跳过：判据 2 一旦 SKIPPED，"真文件被验过"就没了证据。
     """
     task_types = registered_types()
     branching_runner = (
