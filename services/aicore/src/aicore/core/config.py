@@ -91,6 +91,8 @@ _RULE_PROVIDER_KEY = "provider-key"
 _RULE_BUDGET_ORDER = "budget-order"
 #: Task 3.4 新增（控制者裁定）：只读地址的配对约束。
 _RULE_READONLY_PAIR = "readonly-pair"
+#: Task 4.10 新增：置信度分级两条阈值的顺序（`medium > high` 即反序，拒绝启动）。
+_RULE_CONFIDENCE_ORDER = "confidence-order"
 _WARNING_PROVIDER_KEY_UNCOVERED = "provider-key-uncovered"
 
 # ---------------------------------------------------------------------------
@@ -404,6 +406,26 @@ class Settings(BaseSettings):
     lease_ms: int = Field(default=30000, ge=1)
     max_retries: int = Field(default=3, ge=0)
 
+    # ---- 置信度分级阈值（Task 4.10）----
+    #
+    # **为什么有默认值**：`er.md:301` 把分级阈值标为「✅ 已定（2026-09-11）：
+    # HIGH ≥0.9 / MEDIUM 0.7~0.9 / LOW <0.7 —— 已定档，工作台运营期可调」。
+    # 即：**平台已定档**（同 `circuit_error_ratio` 那一档），故给默认值；
+    # 而"运营期可调"要求它**可配**，故是字段而不是模块常量。
+    #
+    # **边界归属规则不在配置里**：这两个字段只改"两条线画在哪"；
+    # `c == high` 归 HIGH、`c == medium` 归 MEDIUM 这条规则由
+    # `service/task/confidence.py::classify_confidence` 唯一实现（控制者裁定，见该模块 docstring）。
+    confidence_high: float = Field(default=0.9, ge=0, le=1)
+    """置信度分级的**高**档下界：`c >= 本值` ⇒ `HIGH`（`er.md:301`：HIGH ≥0.9）。"""
+
+    confidence_medium: float = Field(default=0.7, ge=0, le=1)
+    """置信度分级的**中**档下界：`0.7 <= c < confidence_high` ⇒ `MEDIUM`（`er.md:301`）。
+
+    小于本值 ⇒ `LOW`；`confidence is None` ⇒ **不判级**且转人工兜底
+    （控制者裁定，见 `service/task/confidence.py` 的模块 docstring §二）。
+    """
+
     # ---- MySQL 派生属性（读写分离的地址口径；本组成组放置，见各属性 docstring）----
     @property
     def mysql_dsn(self) -> str:
@@ -540,10 +562,28 @@ class Settings(BaseSettings):
                 f"请补上只读主机，或把只读端口也留空（两处都留空 = 没有独立从库）"
             )
 
+        # 置信度分级阈值的**顺序约束**（Task 4.10）：`confidence_medium > confidence_high`
+        # = 中档下界高于高档下界 ⇒ MEDIUM 区间变空、且 `high` 以下一大段被判成 MEDIUM。
+        #
+        # 字段级校验（`ge=0, le=1`）管不到两者的相对关系，而配错的后果是**静默错档**：
+        # 运营把 HIGH 调到 0.8、MEDIUM 调到 0.85 之后，0.9 的判定仍会落 MEDIUM
+        # （先命中的是 `>= high`？不是——`high=0.8` 会先命中 HIGH，于是 0.82 也被判成 HIGH，
+        # 而运营以为 MEDIUM 从 0.85 起）。两种解释都错，且现场没有任何信号。
+        # 故与 `budget_degrade_ratio < budget_alert_ratio` 同一档：启动期拒绝。
+        # **相等是允许的**（`medium == high` ⇒ MEDIUM 档为空，是一个可表达的取舍），
+        # 只有"反序"才是无意义配置。
+        if self.confidence_medium > self.confidence_high:
+            blockers.append(
+                f"[跨字段：{_RULE_CONFIDENCE_ORDER}] 置信度分级阈值顺序颠倒："
+                f"confidence_medium={self.confidence_medium} 高于 "
+                f"confidence_high={self.confidence_high}；"
+                f"中档区间 [{self.confidence_medium}, {self.confidence_high}) 会变空，"
+                f"且 {self.confidence_high} 以下的一段会被判成 HIGH——请让中档下界不大于高档下界"
+            )
+
         if blockers:
             # 纯文本、无原始取值：消息由字段名、枚举值与阈值数字（非密钥）拼成。
             raise ValueError("\n".join(blockers))
-
         self._warn_on_mock_fallback()
         self._warn_on_uncovered_channel_credentials()
         return self

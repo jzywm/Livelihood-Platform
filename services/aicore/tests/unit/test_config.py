@@ -69,6 +69,9 @@ EXPECTED_FIELDS = frozenset(
         "provider_max_retries",
         "circuit_error_ratio",
         "circuit_cooldown_s",
+        # Task 4.10 的置信度分级两项（`er.md:301` 已定档 0.9 / 0.7，可配）。
+        "confidence_high",
+        "confidence_medium",
     }
 )
 
@@ -242,6 +245,49 @@ def test_defaults_are_applied_when_only_required_values_given(
     assert settings.concurrency_limit == 4
     assert settings.lease_ms == 30000
     assert settings.max_retries == 3
+    # Task 4.10：置信度分级阈值走 `er.md:301` 的已定档值（0.9 / 0.7）。
+    assert settings.confidence_high == 0.9
+    assert settings.confidence_medium == 0.7
+
+
+def test_confidence_thresholds_reject_a_reversed_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`confidence_medium > confidence_high` → 拒绝启动（跨字段规则 `confidence-order`）。
+
+    与 `budget_degrade_ratio < budget_alert_ratio` 同一档：两个字段各自都在 `[0, 1]` 内，
+    字段级校验看不出它们**相对**错了；而反序的后果是"中档区间变空 + `high` 以下一段被判成
+    HIGH"——运营以为改了中档线，实际得到了另一个档位表，现场没有任何信号。
+
+    只测"反序被拒"不够，故同时断言**相等是允许的**（`medium == high` ⇒ MEDIUM 档为空，
+    是一个可表达的取舍），以及**正序被接受**（否则这条规则可能只是"任何组合都拒"）。
+    """
+    _clear_aicore_env(monkeypatch)
+    for name, value in BASE_ENV.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError) as excinfo:
+        build_settings(
+            monkeypatch,
+            env_extra={"AICORE_CONFIDENCE_HIGH": "0.7", "AICORE_CONFIDENCE_MEDIUM": "0.9"},
+        )
+    assert "confidence-order" in str(excinfo.value), (
+        f"反序的两条阈值必须被跨字段规则拦下并点名：{excinfo.value}"
+    )
+
+    # 相等：允许（MEDIUM 档为空是合法取舍）。
+    equal = build_settings(
+        monkeypatch,
+        env_extra={"AICORE_CONFIDENCE_HIGH": "0.8", "AICORE_CONFIDENCE_MEDIUM": "0.8"},
+    )
+    assert equal.confidence_high == equal.confidence_medium == 0.8
+
+    # 正序：接受。
+    normal = build_settings(
+        monkeypatch,
+        env_extra={"AICORE_CONFIDENCE_HIGH": "0.95", "AICORE_CONFIDENCE_MEDIUM": "0.6"},
+    )
+    assert (normal.confidence_high, normal.confidence_medium) == (0.95, 0.6)
 
 
 @pytest.mark.parametrize("missing", REQUIRED_FIELDS)
