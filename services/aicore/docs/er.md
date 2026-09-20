@@ -6,7 +6,7 @@
 > 数据域归属：**独立库 `aicore`**（自建，与主站库隔离，M1 起；服务自有库原则，边界基准 v2.0 §2.12）；权威数据（A-02 档案/信用分、A-08 预警）仍在 CRED/DASH，经内部接口事件回写（不复制权威数据）。
 > **技术选型（2026-09-16 定档）**：独立库 `aicore` 维持 **MySQL 8**（与全平台一致，**不引入 PostgreSQL**）；用户习惯与购买影响因素**不由本服务持有**——本服务仅提供 `POST /aicore/habit/summarize` **无状态计算**（只算不存、不建记忆表），权威存储归 PROFILE（`profile_habit` / `profile_habit_factor` / `behavior_daily_agg`，边界基准 v2.0 §2.11/§4.16-C16）；短期会话记忆归 Redis（ASSIST 30 分钟 TTL），与长期习惯分属两条数据线（PDD v1.19 §4.4）。
 > 口径：与 openapi.yaml 冲突时以 openapi.yaml 为准。
-> 版本：v1.2 · 2026-09-16（v1.0「不落业务库」口径；v1.1 按用户拍板方案 A 改为**独立库 `aicore`**；v1.2 新增 **AI 准确率提升闭环结构**——`ocr_correction`（人工复核纠错回流）、`ai_task.model_meta`（模型/Prompt 血缘）、`review_verdict.authority_written/authority_event_id`（C8 人工确认才可写权威数据 + 事件对账），共 9 表；并登记「习惯权重无状态计算、不落库」边界）。
+> 版本：v1.3 · 2026-09-19（v1.0「不落业务库」口径；v1.1 按用户拍板方案 A 改为**独立库 `aicore`**；v1.2 新增 **AI 准确率提升闭环结构**——`ocr_correction`（人工复核纠错回流）、`ai_task.model_meta`（模型/Prompt 血缘）、`review_verdict.authority_written/authority_event_id`（C8 人工确认才可写权威数据 + 事件对账），共 9 表；并登记「习惯权重无状态计算、不落库」边界；**v1.3 将 `ai_task.task_id` 定为 `task_` + 创建月 `YYYYMM` + UUID hex（自描述分片月，总长恒 32）**——修掉「上月提交、次月轮询即 404」，详见 §5.4/§7.1）。
 
 ## 1. ER 图（Mermaid）
 
@@ -17,7 +17,7 @@ erDiagram
     %% 权威数据在 CRED（A-02 档案/信用分）/ DASH（A-08 预警），经内部接口事件回写——逻辑关联、非外键
 
     AI_TASK {
-        varchar task_id PK "任务号task_前缀+UUID,统一异步任务队列"
+        varchar task_id PK "任务号task_前缀+创建月YYYYMM+UUIDhex,自描述分片月,总长32"
         varchar account_id "提交账号,分表键"
         varchar idem_key UK "幂等键(account_id+idem_key联合唯一,NULL豁免)"
         enum type "任务类型:OCR/VISION_REVIEW/KITCHEN_ANOMALY/RISK_PREDICT"
@@ -236,8 +236,8 @@ erDiagram
 
 | 表 | 主键 | 生成方式 | 说明 |
 |---|---|---|---|
-| `ai_task.task_id` | varchar(32) 业务号 | `task_` 前缀 + UUID | 前端轮询凭据 |
-| `ocr_result.task_id` | varchar(32)（= 任务号） | 由 `ai_task` 带入 | 同月分片路由凭据 |
+| `ai_task.task_id` | varchar(32) 业务号 | **`task_` + `YYYYMM`（创建月）+ UUID hex** | 前端轮询凭据，**自描述分片月**（见下「为什么 task_id 带月份」） |
+| `ocr_result.task_id` | varchar(32)（= 任务号） | 由 `ai_task` 带入 | 同月分片路由凭据（月份直接从 `task_id` 得出，无需另查） |
 | **`ocr_correction.correction_id`** | varchar(32) 业务号 | `cor_` 前缀 + UUID | 随任务同月分片（`task_id` 路由） |
 | `vision_review.review_id` / `vision_marker.marker_id` | varchar(32) 业务号 | `rev_` / `marker_` 前缀 + UUID | 工作台查询/复核凭据 |
 | `kitchen_anomaly.anomaly_id` | varchar(32) 业务号 | `kan_` 前缀 + UUID | 复核流凭据 |
@@ -245,7 +245,42 @@ erDiagram
 | `vision_qa_log.qa_id` | varchar(32) 业务号 | `qa_` 前缀 + UUID | 审计留痕凭据 |
 
 - **Python 侧不参与雪花域**（高并发 §2.3.2 边界定稿）：AICORE 主键用业务号 + UUID，不用雪花、无 workerId、**无时钟回拨风险面**；雪花 ID 与时钟回拨三档预案仅适用于写库 Java 域。
-- 分表路由一律以业务字段 `created_at`/`task_id` 所在月为准，不依赖任何内嵌时间戳。
+- 分表路由一律以业务字段 `created_at`/`task_id` 所在月为准，**不依赖毫秒级内嵌时间戳**（无时钟回拨风险面）。
+
+#### 为什么 `task_id` 带月份（2026-09-19 定档）
+
+**问题**：`ai_task` 按月分表，而轮询接口 `GET /aicore/tasks/{taskId}` 的入参**只有 `task_id`**。
+若 `task_id` 不含月份信息，则「本月表查不到」无法区分「任务不存在」与「任务在上月的表里」——
+表现为**上月 23:59:59 提交的任务，次月 00:00:01 轮询就 404**。
+逐月试探扫描被 §5.3 明令禁止（查询 MUST 携带分片键下推、禁止跨分片）。
+
+**定档口径**：`task_id` = `task_` + `YYYYMM` + `UUID hex`，**总长恒 32**：
+
+| 段 | 长度 | 例 |
+|---|---|---|
+| `task_` 前缀 | 5 | `task_` |
+| 创建月 `YYYYMM` | 6 | `202607` |
+| UUID hex（截断） | 21 | `9f2e7c1a3b4d5e6f7a8b9` |
+| **合计** | **32** | `task_2026079f2e7c1a3b4d5e6f7a8b9` |
+
+于是 `task_id` **自描述分片月**：轮询、结果表 1:1 查询、纠错表 1:N 查询都只需**一次**
+针对该月的查询，**仍然满足「单月一次查询、不跨分片」**，且无需引入任何额外索引或映射表。
+
+**与 L248「不依赖任何内嵌时间戳」的关系（口径澄清，不是推翻）**：本条禁的是
+**雪花式毫秒时间戳**——它的风险面是「时钟回拨导致发号重复」与「须引入 workerId」。
+而 `YYYYMM` 是**创建时由 `created_at` 冻结进字符串的业务标签**，此后**永不再从时钟推导**：
+它不参与发号唯一性（唯一性由 UUID hex 承担），也不随时钟变化。
+故两者不是同一类东西，本条**未放开**毫秒时间戳，也**未**让 AICORE 参与雪花域。
+
+**熵的口径**：UUID4 的 hex 截到 **21 位 = 84 位随机性**。按生日界，
+84 位在「单表 2000 万行触发再分」（§5.2）的容量下碰撞概率可忽略；
+唯一性最终由**数据库主键约束**兜底。截断的取舍理由同 §5.4 原有说明：
+截断的风险是"概率极低的主键冲突"，超长的风险是**每一行都写不进去**。
+
+**只改 `task_id` 一类，其余 5 类前缀不变**：只有 `task_id` 需要被拿来定位月表
+（它是轮询与结果/纠错表的定位凭据）；`cor_`/`rev_`/`marker_`/`kan_`/`qa_` 各自按自己的业务键访问，
+不承担跨月定位职责，加月份只会白占长度、且要连带改它们的宽度账。
+
 
 ### 5.5 读写分离与冷热归档
 
@@ -285,7 +320,7 @@ erDiagram
 
 | 字段 | 类型 | 空 | 键 | 默认 | 说明 |
 |---|---|---|---|---|---|
-| task_id | varchar(32) | NO | PK | — | 任务号 `task_` 前缀 + UUID，轮询 GET /aicore/tasks/{taskId} |
+| task_id | varchar(32) | NO | PK | — | 任务号 `task_` 前缀 + 创建月 `YYYYMM` + UUID hex（**自描述分片月**，见 §5.4），轮询 GET /aicore/tasks/{taskId} |
 | account_id | varchar(32) | NO | — | — | 提交账号，**分表键**（与 created_at 组合） |
 | idem_key | varchar(64) | YES | UK(联合) | NULL | 幂等键；`uk_idem(account_id, idem_key)` NULL 豁免（同月表内唯一） |
 | type | enum('OCR','VISION_REVIEW','KITCHEN_ANOMALY','RISK_PREDICT') | NO | — | — | 任务类型（K-02 统一队列） |
@@ -425,9 +460,13 @@ erDiagram
 ### 7.1 ai_task（统一异步 AI 任务，按月分表）
 
 - **用途**：统一任务队列与结果回执（K-02）——OCR/视觉审核/后厨识别/风险预测四类异步任务的公共任务壳。
-- **主键（策略）**：`task_id` varchar(32) 业务号（`task_` 前缀 + UUID）；Python 侧不参与雪花域（高并发 §2.3.2 边界），无时钟回拨风险面。
+- **主键（策略）**：`task_id` varchar(32) 业务号（`task_` 前缀 + **创建月 `YYYYMM`** + UUID hex，**自描述分片月**，见 §5.4）；Python 侧不参与雪花域（高并发 §2.3.2 边界），无时钟回拨风险面。
 - **索引**：PRIMARY KEY(`task_id`)；KEY `idx_account_created`(`account_id`, `created_at`)——分片键剪枝 + 本人任务列表；UNIQUE KEY `uk_idem`(`account_id`, `idem_key`)——NULL 豁免，同月表内幂等（同 imageKey+docType 返回原任务号）；KEY `idx_status_created`(`status`, `created_at`)；**KEY `idx_eval`(`is_eval_sample`, `type`)**——固定评估集回归取样本（2026-09-16 增）。
 - **约束**：状态机 PROCESSING→SUCCEEDED/FAILED/MANUAL_REVIEW；仅本人可查（2002 越权）；按月分表，跨月查询走分表路由、禁跨分片 JOIN。
+- **轮询的月份来源（2026-09-19 定档）**：`GET /aicore/tasks/{taskId}` 从 **`task_id` 内解析创建月**（§5.4），
+  故「本月表查不到」**不再**混淆「不存在」与「在上月表里」——上月提交的任务下月仍可轮询，
+  且仍然**只查该月一张表**（满足 §5.3 的分片键下推、不跨分片）。
+  热表 12 个月内的任务因此始终可查；超过 12 个月转冷归档后按 §5.5 的归档快照回捞（M1 未实现，返回 404）。
 - **血缘（2026-09-16 增）**：`model_meta` 必须随任务落库（通道/供应商/modelVersion/promptVersion/阈值快照）——满足 PRD §4「依据什么模型」可追溯；换模型后历史结论可比、可复盘准确率。
 - **评估集（2026-09-16 增）**：`is_eval_sample=true` 的样本构成**固定回归集**，模型/Prompt/阈值改动前后跑同一集对比，避免「无对照的变好了」。
 - **安全**：不存证件/人脸原始数据；result 内容脱敏输出。

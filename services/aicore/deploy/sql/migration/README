@@ -1,0 +1,90 @@
+AICORE 迁移目录（Task 3.5）
+===========================
+
+这里放的是 **Alembic 版本化迁移**：结构定义的**另一条落地路径**。
+
+    权威定义   deploy/sql/ddl/**            纯 SQL DDL，先改它
+    元数据     src/aicore/repository/models.py   代码侧唯一映射，后改它
+    迁移       deploy/sql/migration/versions/**  由元数据生成，MUST NOT 手写
+
+三条路径说的是同一份结构；一致性由 Task 3.6 的三源比对（DDL ↔ er.md ↔ 元数据，
+有库时叠加 information_schema）强制，而不是靠人记得同步。
+
+常用命令（工作目录 = services/aicore）
+------------------------------------
+
+    # 升到最新（演练库：先把 DSH_IT_MYSQL_PASSWORD 设上，见下"连哪个库"）
+    .venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
+
+    # 顺带把某个月的三张分片物理表建出来（分片表不进迁移，见下）
+    .venv\Scripts\python.exe -m alembic -c alembic.ini -x shard_month=202607 upgrade head
+
+    # 看当前库停在哪个版本 / 迁移链
+    .venv\Scripts\python.exe -m alembic -c alembic.ini current
+    .venv\Scripts\python.exe -m alembic -c alembic.ini history
+
+    # 降级：**默认被拒**（生产禁用破坏性 DDL，走 expand-migrate-contract）
+    #   演练确需降级时显式放行：-x allow_downgrade=1
+
+连哪个库（口令 MUST NOT 进仓库）
+------------------------------
+
+`alembic.ini` 的 `sqlalchemy.url` 刻意留空；URL 由 `env.py` 从环境变量组装，
+优先级固定：
+
+1. `DSH_IT_MYSQL_*`（演练库轨，`DSH_IT_MYSQL_PASSWORD` 非空即生效，
+   缺省库 `aicore_test`）；
+2. `AICORE_MYSQL_*`（应用配置轨，复用 `core.config.Settings`）。
+
+演练轨必须优先：`tests/conftest.py` 会把 `AICORE_MYSQL_PASSWORD` 注入成占位值
+（那是"假凭据 → 假 skip"的坑），而本机 `.env` 的应用库名是产品库 `aicore`。
+每次运行的第一行输出会打印**口令已遮蔽**的目标库与配置来源，照着核对即可。
+
+分片表由运行时创建（不在迁移里）
+------------------------------
+
+`ai_task` / `ocr_result` / `ocr_correction` 的物理表名带月份（`ai_task_202607`），
+**分片表由运行时创建**——`repository/sharding.py` 的 `ensure_month_tables()`，
+写入前按业务时间现算月份。`env.py` 的 `include_object` 把这三张表**两个方向都排除**
+（模型侧的逻辑名 `ai_task`、库侧的物理名 `ai_task_202607`）：不排除的话，
+autogenerate 既会想把 3 张表塞进基线，也会想 `drop_table('ai_task_202607')`。
+
+理由：月份是**运行期数据**，迁移是**时点结构**。把某个月的物理表写死进迁移，
+等于让"新月份"必须等一次发版。
+
+迁移钩子（`upgrade` 之后当月表就绪）：`env.py` 的 `create_shard_tables_for(conn, month)`
+把建表**委托**给 `sharding.ensure_month_tables`（唯一实现处，MUST NOT 另写一份）；
+CLI 侧由 `-x shard_month=YYYYMM` 在 upgrade 结束后自动调用。
+
+新增迁移的正确姿势
+------------------
+
+**新增迁移的正确姿势**是：**先改 DDL 与模型，再让 Alembic 生成**，绝不手写 `op.*`。
+
+1. 改 `deploy/sql/ddl/**`（权威）→ 再改 `src/aicore/repository/models.py`（同一改动内）；
+2. 生成（`--autogenerate` 会连库比对，需要可连的库）：
+
+       .venv\Scripts\python.exe -m alembic -c alembic.ini revision --autogenerate -m "加 xxx 列"
+
+3. **逐行读生成的文件**：autogenerate 只报"库与模型的差"，判断不了"这次改动该不该上"，
+   也认不出"改列类型会丢数据"这类语义问题；
+4. 若这次改动含破坏性 DDL（`drop_table` / `drop_column` / 收窄类型），
+   MUST NOT 直接发版：按 expand-migrate-contract 拆成多步
+   （扩展 → 双写回灌 → 切读 → 收缩），spec §2.3 与 `docs/er.md` §5.6；
+5. 本地跑一遍"再生成一次必须为空"（幂等口径 1）：
+
+       .venv\Scripts\python.exe -m alembic -c alembic.ini revision --autogenerate -m "probe"
+
+   生成的脚本里**不该有任何 `op.` 调用**；有就说明模型与库没对齐，
+   先修模型/DDL，**MUST NOT** 靠手改生成物掩盖（`tests/repository/test_migration.py`
+   的集成用例把这条口径钉住了）；
+6. 探针产物 MUST NOT 留在 `versions/`：交付时这里**恰好 1 条基线迁移**。
+
+基线迁移
+--------
+
+`versions/<rev>_baseline_schema.py` 是**唯一**的基线，由 `--autogenerate` 从
+`Base.metadata` 生成，含 **6 张非分片表**（`vision_review` / `vision_marker` /
+`review_verdict` / `kitchen_anomaly` / `risk_predict_result` / `vision_qa_log`）。
+它的 `downgrade()` 只撤自己建的那 6 张表；`upgrade()` 里 MUST NOT 出现
+`drop_table` / `drop_column`（`tests/repository/test_migration.py` 用 AST 守着）。

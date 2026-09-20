@@ -49,3 +49,6 @@ Thumbs.db
 
 # ---- git worktree（superpowers 隔离工作区，物理内容仍在 .git/worktrees）----
 .worktrees/
+
+# ---- 本地 SDD 工具脚本(控制者用,不入库) ----
+.sdd-tools.py

@@ -1,0 +1,133 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicore"
+version = "0.1.0"
+description = "AI 能力中心服务（AICORE）· 民生甄选平台"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141",
+    # starlette 是被直接 import 的（main.py 的中间件基类与 build_middleware_stack 覆盖、
+    # core/trace.py 的 ASGI 类型），不能只靠 fastapi 的传递依赖：fastapi 只要求
+    # starlette>=0.46.0 且无上界，上游一旦更换实现或调整依赖，本服务会在部署时才炸。
+    # 上界 <2 是刻意的：main.py 覆盖了 Starlette 内部约定的 build_middleware_stack，
+    # 大版本升级需人工复核该覆盖仍成立，而不是被动接受破坏性变更。
+    "starlette>=1.6,<2",
+    "uvicorn[standard]>=0.53",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "sqlalchemy>=2.0.54",
+    "pymysql>=1.2",
+    "redis>=8.1",
+    "httpx>=0.28",
+    "alembic>=1.20",
+    "structlog>=24.0",
+    "cryptography>=50.0",
+    "pillow>=12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "import-linter>=2.15",
+    "ruff>=0.16",
+    "mypy>=2.3",
+    # tests/conftest.py 的 anyio_backend 夹具是 brief 强制项；
+    # anyio 此前只是 pytest-asyncio 的传递依赖，显式声明后夹具才有直接的依赖归属（Task 1.4 继续扩展该文件）。
+    "anyio>=4.15",
+    # tests/unit/test_errors.py 直接 import yaml 解析 services/_common/openapi.yaml 的码表
+    # （「错误码必须落在平台表内」的比对用例）。此前只作为 uvicorn[standard] 的传递依赖存在，
+    # 与 prod 依赖同一原则：直接 import 就必须显式声明。
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+# 注释与文档使用中文是本仓库的强制要求（DEVELOPMENT_CONSTRAINTS.md §2）。
+# 注意：不要用 ignore 关闭 RUF001/RUF002/RUF003 —— 那会连带关掉字符串字面量里的
+# 易混字符检测，而那里才是该规则安全价值最高的地方（西里尔字母 а、全角数字
+# 悄悄混进环境变量名 / 字典键 / 断言字符串时，只有这三条规则能发现）。
+# 因此改为逐个放行中文文档实际用到的全角标点，规则本身全部保持开启：
+#   （ U+FF08 全角左括号    ） U+FF09 全角右括号
+#   ： U+FF1A 全角冒号      ； U+FF1B 全角分号
+#   ， U+FF0C 全角逗号
+# 本集合的确定方法（可复现，非凭感觉）：统计后续任务简报与 VENV.md 中出现的
+# 全角/表意标点字符集，得到 7 个（、。，（）:；）；再用 ruff 实测哪些真正触发
+# RUF001/2/3 —— 只有 、（U+3001）之外的 ，：；（） 会触发，。与、不触发。
+# 这里放行全部 7 个，使后续任务写中文 docstring 时不会逐字符踩坑。
+# 它们只出现在中文注释与 docstring 中，不参与标识符与键值，放行无安全代价：
+# 西里尔字母、全角数字等真正的易混字符仍在检测范围内。
+#
+# Task 3.1 追加 3 个（同样是"写中文技术注释时真会用到"的标点，逐个放行的理由同上）：
+#   ？ U+FF1F 全角问号      连续反问句里比半角问号更符合中文排版（"是 DDL 缺注释？还是断言错？"）
+#   −  U+2212 减号          算式差值的正式符号（"源 11 个 − 渲染后 8 个"）
+#   ×  U+00D7 乘号          计数表达式（"{table}×2 + {month}×1"）
+# 三者都只出现在注释与断言消息里，不参与标识符/键值/被测字符串，放行无安全代价。
+#
+# Task 3.8 追加 1 个：
+#   –  U+2013 en dash       引用权威文档的行号区间（"er.md §5.4 L239–L248"）
+allowed-confusables = ["、", "。", "（", "）", "，", "：", "；", "？", "−", "×", "–"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+# `-m "not integration"`：让下面那条 marker 的承诺（"默认不执行"）**真的成立**。
+#
+# 复核者（第 4 批）查清的事实：marker 描述、多份 docstring 与 openspec 的 tasks.md 都承诺
+# "默认不执行"，而这里此前既没有 `-m` 也没有 collection hook ⇒ **承诺是空的**：
+# 裸 `pytest` 会真的收集并执行集成用例（它们会构造真实 `RedisLockStore`）。
+# CLI 上传 `-m integration` 会**覆盖** ini 的这一项，故两条门禁命令的行为逐字不变。
+# 该承诺由 `tests/structural/test_pytest_config.py` 机械核对（删掉本行即变红）。
+#
+# ⚠ 反向的坑（B4）：命令行传 `-o addopts=""` 会**连这一项一起清掉** ⇒ 那一次运行会
+# **静默恢复 50 条真连 Redis / MySQL 的集成用例**（实测：裸收集 1304 → 1354）。
+# 本任务的门禁用它来清掉 `-q` 看清汇总行，故凡是"默认段"的命令都必须由 CLI 显式给
+# `-m "not integration"`。完整说明见 tests/structural/test_pytest_config.py 的模块 docstring。
+addopts = "-q -m \"not integration\""
+markers = [
+    "integration: 需要真实 MySQL / Redis 的端到端用例，默认不执行",
+]
+# 定向静默两条**来自第三方库内部**的弃用警告，使测试输出保持干净。
+# 两条都不是本项目代码的问题，且都无法在不改依赖的前提下修掉：
+#   1) fastapi/testclient.py:1 —— starlette 的 StarletteDeprecationWarning，提示
+#      「用 httpx 已弃用，建议装 httpx2」。本项目不引入 httpx2（见设计文档偏差 V2）。
+#      httpx2 落地后删除本行。
+#   2) starlette/testclient.py:53 —— anyio.abc.BlockingPortal 别名弃用，位于 starlette 自身源码内。
+# 只按 message 精确匹配，不整类静默 DeprecationWarning，以免掩盖本项目引入的新警告。
+#
+# 为什么不加 "error" 兜底：这两条警告由 conftest 在**导入期**触发（fixture 内延迟导入
+# TestClient 已实测无法规避——warnings.warn 发生在 starlette 模块层），而 pytest 应用
+# filterwarnings 的时机在 conftest 导入之后，故 "error" 会在收集阶段直接报错（exit 4），
+# 而非在本项目的用例上失败。若将来要让新警告失败，应在 CI 层用 `-W error` 并排除这两条。
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated",
+]
+
+[tool.coverage.run]
+source = ["src/aicore"]
+omit = ["src/aicore/main.py", "src/aicore/provider/deepseek.py", "src/aicore/provider/cloud_vision.py", "src/aicore/provider/cloud_ocr.py"]
+
+[tool.coverage.report]
+fail_under = 80

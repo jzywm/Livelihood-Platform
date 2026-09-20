@@ -20,7 +20,7 @@
 - **错误码只能取 `_common/openapi.yaml` `ErrorCode` 枚举内的值**：`0` `1001` `1002` `1003` `2001` `2002` `2003` `2004` `3001`–`3011` `4001`–`4004` `5000` `5001` `5002` `5003`。AICORE 用到：`1001`/`1002`/`1003`/`2001`/`2002`/`2004`/`3006`/`4003`/`5000`/`5002`。
 - **traceId 请求头 = `X-Request-Id`**（`PDD` §8.5.1 L1750）；**MUST NOT** 使用 `X-Trace-Id`。
 - **内部凭据请求头 = `X-Internal-Token`**；服务端间接口 **MUST NOT** 接受终端用户 JWT。
-- **日志必含 11 字段**：`time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` / `bizType` / `opCode` / `code` / `message`；**MUST NOT** 记录明文密钥、支付敏感信息、原始图像、未脱敏证件字段。
+- **日志必含 12 字段**（PDD §8.5.1 L1747 逐字）：`time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` / `bizType` / `opCode` / `code` / `message`；**MUST NOT** 记录明文密钥、支付敏感信息、原始图像、未脱敏证件字段。
 - **AI 超时 5s**（高并发 §7.6 L423）。
 - **数据库**：独立库 `aicore`，MySQL 8，InnoDB，`utf8mb4`，时间 `datetime(3)`（UTC 存储、输出 Asia/Shanghai），置信度 `decimal(3,2)`，风险分 `decimal(5,2)`，数组用 JSON 列，**MUST NOT** 存原始图像或证件明文。**枚举值与 `openapi.yaml` `components.schemas` 一一对应**。
 - **ID 策略**：`前缀 + UUID`，**总长 ≤32**（所有 ID 列均 `varchar(32)`）；前缀集 `task_` / `cor_` / `rev_` / `marker_` / `kan_` / `qa_`；**MUST NOT** 引入雪花 ID 或 workerId。
@@ -40,7 +40,7 @@
 ```
 services/aicore/
 ├── pyproject.toml                     依赖 + ruff/mypy/pytest/coverage 工具链配置
-├── setup.cfg                          import-linter 契约（必须 UTF-8 无 BOM 保存）
+├── .importlinter                      import-linter 分层契约（INI 形式，UTF-8 无 BOM）
 ├── .gitignore                         Python 产物忽略
 ├── .env.example                       配置模板（仅占位符，无真实密钥）
 ├── src/aicore/
@@ -266,7 +266,7 @@ AICORE_INTERNAL_TOKEN=<内部凭据>
 
 分层：core（横切）/ api（协议适配）/ service（业务编排）/ provider（外部模型通道）
      / repository（自有库访问）/ port（跨服务出向端口）。
-分层依赖规则见 setup.cfg 的 import-linter 契约与 tests/structural/。
+分层依赖规则见 `.importlinter` 的 import-linter 契约与 tests/structural/。
 """
 
 __version__ = "0.1.0"
@@ -341,7 +341,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 - [ ] **Step 1: 写 `src/aicore/core/__init__.py`**
 
 ```python
-"""横切关注点。本层 MUST NOT 依赖 service / provider / repository（见 setup.cfg 契约）。"""
+"""横切关注点。本层 MUST NOT 依赖 service / provider / repository（见 .importlinter 契约）。"""
 ```
 
 - [ ] **Step 2: 写 `src/aicore/core/config.py` 空壳（Task 2.1 填实）**
@@ -367,7 +367,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 ```
 
 ```python
-"""结构化 JSON 日志（11 必含字段）。Task 2.6 实现。"""
+"""结构化 JSON 日志（12 必含字段，PDD §8.5.1 L1747 逐字）。Task 2.6 实现。"""
 ```
 
 - [ ] **Step 4: 写 `core/idgen.py`、`core/security.py`、`core/ratelimit.py`、`core/budget.py`、`core/task_runner.py` 空壳**
@@ -443,7 +443,14 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 ```
 
 ```python
-"""C8 权威回写前置条件：无人工复核结论则不存在回写入口。第 8 组实现。"""
+"""C8 权威回写前置条件。
+
+【合规红线 D5 / C8】无人工复核结论则 MUST NOT 存在回写入口，MUST NOT 出现绕过人工结论的
+回写分支——本文件受 tests/structural/test_source_guards.py 的 AST 扫描强制。
+确需吞掉异常时，必须在该 except 行加 `# ai-allow-swallow: <理由>` 显式豁免（理由必填，见修复轮 1 更正）。
+
+第 8 组实现具体回写入口；本任务仅建文件以保证结构检查从第一天起生效。
+"""
 ```
 
 - [ ] **Step 8: 写 `service/desensitize.py`（规则 6 的受检文件，本任务必须建）**
@@ -453,7 +460,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 
 【合规红线 D4 / R-03】脱敏失败或超时 MUST 拒绝外发，MUST NOT 出现「异常后继续执行」
 的降级分支——本文件受 tests/structural/test_source_guards.py 的 AST 扫描强制。
-确需吞掉异常时，必须在该 except 行加 `# noqa: ai-allow-swallow: <理由>` 显式豁免。
+确需吞掉异常时，必须在该 except 行加 `# ai-allow-swallow: <理由>` 显式豁免（理由必填，见修复轮 1 更正）。
 
 第 4 组实现具体算法；本任务仅建文件以保证结构检查从第一天起生效。
 """
@@ -480,7 +487,7 @@ git commit -m "chore: 搭建 AICORE 工程骨架与工具链"
 """外部模型通道 Protocol。
 
 service 层 MUST 只依赖本文件的 Protocol，MUST NOT 导入任何具体实现
-（mock / deepseek / cloud_vision / cloud_ocr）——由 setup.cfg 的 import-linter 契约强制。
+（mock / deepseek / cloud_vision / cloud_ocr）——由 `.importlinter` 的 import-linter 契约强制。
 """
 
 from __future__ import annotations
@@ -655,7 +662,7 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 ### Task 1.3: 分层依赖规则固化为检查
 
 **Files:**
-- Create: `services/aicore/setup.cfg`（import-linter 契约，**必须 UTF-8 无 BOM**）
+- Create: `services/aicore/.importlinter`（import-linter 分层契约，INI 形式，**必须 UTF-8 无 BOM**）
 - Modify: `services/aicore/tests/structural/test_layering.py`
 - Create: `services/aicore/tests/structural/test_source_guards.py`
 
@@ -672,6 +679,14 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 
 `tests/structural/test_layering.py`：
 
+> **以仓库实际文件为准**：下面是首版参考模板，权威定义是
+> `services/aicore/tests/structural/test_layering.py`。已落地的版本与本片段有三处差异，
+> 照抄会把旧写法写回去：
+> 1. 四条契约**各自**一条参数化阴性用例（`PROBES`），不是一条笼统的"注入违规"用例；
+> 2. 所有 lint 调用传 `cache_dir=None` 关缓存，**不再**用 `shutil.rmtree` 清
+>    `.import_linter_cache/`；
+> 3. 另有「放行正例」与「抽掉 ignore_imports 必变红」两条反证用例。
+
 ```python
 """分层依赖规则检查。
 
@@ -684,13 +699,12 @@ git commit -m "chore: 建立 AICORE 六层目录与模块契约空壳"
 from __future__ import annotations
 
 import importlib
-import shutil
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG = PROJECT_ROOT / "setup.cfg"
+CONFIG = PROJECT_ROOT / ".importlinter"
 
 
 @pytest.fixture(scope="module")
@@ -721,12 +735,13 @@ def test_violation_is_detected(lint: object) -> None:
     finally:
         target.unlink()
         importlib.invalidate_caches()
-        shutil.rmtree(PROJECT_ROOT / ".import_linter_cache", ignore_errors=True)
+        # 缓存：shipped 版本所有 lint 调用都传 cache_dir=None，不再需要 rmtree 清理
+        # （.import_linter_cache/ 根本不会生成）。
 
     assert lint(config_filename=str(CONFIG), no_logo=True) is True
 ```
 
-- [ ] **Step 2: 运行，确认第一步失败（`setup.cfg` 尚不存在）**
+- [ ] **Step 2: 运行，确认第一步失败（`.importlinter` 尚不存在）**
 
 ```powershell
 $root = "D:\progrom\services\aicore"
@@ -737,9 +752,13 @@ Pop-Location
 
 Expected: FAIL —— `FileNotFoundError` 或 `lint_imports` 读配置报错
 
-- [ ] **Step 3: 写 `setup.cfg`（用 Python 写以确保 UTF-8）**
+- [ ] **Step 3: 写 `.importlinter`（用 Python 写以确保 UTF-8）**
 
 ```powershell
+# 注意：以下为参考模板。**权威定义是仓库中的 services/aicore/.importlinter 本身**——
+# 该文件含多处实测得出的关键设置（allow_indirect_imports、递归通配 ignore_imports、
+# unmatched_ignore_imports_alerting、aicore.provider 整包禁止），每处都带注释说明依据。
+# 若本模板与之不一致，以实际文件为准；不要照抄本模板覆盖它。
 $root = "D:\progrom\services\aicore"
 & "$root\.venv\Scripts\python.exe" -c @"
 from pathlib import Path
@@ -749,6 +768,9 @@ root_package = aicore
 [importlinter:contract:api-no-repo-provider]
 name = api 层不得直接依赖 repository / provider
 type = forbidden
+# 必须显式写 true：forbidden 默认 false 会沿调用链报**传递**依赖，
+# 而 api -> service -> repository 正是本设计的分层路径，实测会被误判为违规。
+allow_indirect_imports = true
 source_modules =
     aicore.api
 forbidden_modules =
@@ -761,13 +783,24 @@ type = forbidden
 source_modules =
     aicore.service
 forbidden_modules =
+    aicore.provider
     aicore.provider.mock
     aicore.provider.selector
     aicore.provider.deepseek
     aicore.provider.cloud_vision
     aicore.provider.cloud_ocr
 ignore_imports =
-    aicore.service -> aicore.provider.base
+    aicore.service.** -> aicore.provider.base
+# 必须写递归通配 `aicore.service.**`，不能写 `aicore.service`：实测（grimp 3.17）
+# 非通配的 importer 名只精确匹配该模块自身、不覆盖子模块，而 service 的代码都在子模块里，
+# 故非通配写法恒匹配不到任何边，是一条永远失效的放行声明。三种写法的实测对照：
+#   aicore.service     -> aicore.provider.base  => 0 命中
+#   aicore.service.*   -> aicore.provider.base  => 命中
+#   aicore.service.**  -> aicore.provider.base  => 命中
+# 另：forbidden 契约默认 unmatched_ignore_imports_alerting=error，放行表达式匹配不到真实
+# 导入即判契约失败；当前各模块仍是空壳（尚无 service -> provider.base 的实际导入），用默认值
+# 会让干净代码的正例直接变红。故设为 warn：正例通过，且放行写错时仍会留下警告线索。
+unmatched_ignore_imports_alerting = warn
 
 [importlinter:contract:no-reverse-dependency]
 name = repository / provider / port 不得反向依赖 service
@@ -785,17 +818,18 @@ type = forbidden
 source_modules =
     aicore.core
 forbidden_modules =
+    aicore.api
     aicore.service
     aicore.provider
     aicore.repository
     aicore.port
 '''
-Path(r'$root\setup.cfg').write_text(cfg, encoding='utf-8')
-print('setup.cfg 已写入（UTF-8）')
+Path(r'$root\.importlinter').write_text(cfg, encoding='utf-8')
+print('.importlinter 已写入（UTF-8）')
 "@
 ```
 
-- [ ] **Step 4: 运行，确认两个用例都通过**
+- [ ] **Step 4: 运行，确认全部用例通过（用例数以仓库实际文件为准，见 Step 1 提示）**
 
 ```powershell
 $root = "D:\progrom\services\aicore"
@@ -804,9 +838,18 @@ Push-Location $root
 Pop-Location
 ```
 
-Expected: `2 passed`
+Expected: 全部 passed。用例数以仓库实际文件为准：shipped 版本是四条契约的参数化阴性用例
+（每条注入一处违规，并逐条确认其余三条契约仍 KEPT）+ 两条放行反证，不再是首版的 2 个。
 
 - [ ] **Step 5: 写规则 5、6 的 AST 扫描用例**
+
+> **修复轮 1 提示**：下面这段代码块是首版写法，规则 6 的扫描函数已被修复轮改写
+> （不再下探嵌套 def/lambda/class/内层 except）。以
+> `services/aicore/tests/structural/test_source_guards.py` 的实际内容为准，勿照抄本片段。**
+>
+> 豁免指令也以实际文件为准：shipped 实现是 `SWALLOW_EXEMPT_PATTERNS`（正式写法
+> `# ai-allow-swallow: <理由>` + 兼容写法 `# noqa: ai-allow-swallow: <理由>`，两条正则、理由必填）
+> 与 `has_swallow_exemption()`，而本片段只有一条只认正式写法的 `SWALLOW_EXEMPT`。
 
 `tests/structural/test_source_guards.py`：
 
@@ -818,7 +861,12 @@ Expected: `2 passed`
         的降级分支（D4 脱敏失败即拒绝、D5 无人工结论不回写）。
 
 规则 6 取向为「偏严 + 显式豁免」：不含 raise 的 except 即判违规，
-确需吞异常时必须写 `# noqa: ai-allow-swallow: <理由>` —— 宁可让人解释一次，也不漏掉。
+确需吞异常时必须写 `# ai-allow-swallow: <理由>` —— 宁可让人解释一次，也不漏掉。
+
+> **修复轮 1 更正（评审 M9）**：豁免指令的正式写法是 `# ai-allow-swallow: <理由>`（不带 `noqa:` 前缀），
+> 本文档下列片段已同步更新。早期口径 `# noqa: ai-allow-swallow: <理由>` 语法上仍被扫描接受，
+> 但 ruff 会把 `ai-allow-swallow` 当成 noqa 规则码，每次使用都打印一条 `Invalid # noqa directive` 警告，
+> 故新代码一律用不带前缀的正式写法。理由必填不变（裸指令不算豁免）。
 """
 
 from __future__ import annotations
@@ -839,7 +887,7 @@ HTTP_IMPORT_RE = re.compile(
 )
 
 GUARDED_FILES = ("service/desensitize.py", "service/verdict.py")
-SWALLOW_EXEMPT = re.compile(r"#\s*noqa:\s*ai-allow-swallow")
+SWALLOW_EXEMPT = re.compile(r"#\s*ai-allow-swallow:\s*\S+")
 
 
 def iter_python_files() -> list[Path]:
@@ -882,7 +930,7 @@ def test_no_silent_degradation_in_guarded_files(relative: str) -> None:
     assert not offenders, (
         f"{relative} 在第 {offenders} 行的 except 块中未重新抛出异常。"
         f"脱敏失败必须拒绝外发、无人工结论不得回写；确需吞异常请加 "
-        f"`# noqa: ai-allow-swallow: <理由>` 显式豁免。"
+        f"`# ai-allow-swallow: <理由>` 显式豁免。"
     )
 
 
@@ -920,7 +968,7 @@ Expected: `test_no_silent_degradation_in_guarded_files[service/desensitize.py]` 
 - [ ] **Step 9: 提交**
 
 ```bash
-git add services/aicore/setup.cfg services/aicore/tests/structural
+git add services/aicore/.importlinter services/aicore/tests/structural
 git commit -m "test: 固化 AICORE 分层依赖规则与合规红线结构检查"
 ```
 
@@ -1043,7 +1091,7 @@ def get_settings(request: Request) -> Any:
 """AICORE 组合根。
 
 **唯一允许把具体 Provider / repository 实现注入 service 的位置。**
-其余各层 MUST NOT 自行构造具体实现（由 setup.cfg 的 import-linter 契约强制）。
+其余各层 MUST NOT 自行构造具体实现（由 `.importlinter` 的 import-linter 契约强制）。
 
 路由路径不含 `/api/v1` 前缀：GATEWAY 已用 RewritePath 去前缀，
 故本服务路由与 openapi.yaml 一致，为 `/aicore/**` 与 `/health`。
@@ -1300,17 +1348,17 @@ git commit -m "feat: 实现 AICORE 组合根与存活检查"
 **Interfaces:**
 - Consumes: `core/trace.py` 的 `get_trace_id()`；`core/config.py` 的 `Settings.log_level`
 - Produces: `configure_logging(settings: Settings) -> None`；`get_logger(module: str) -> structlog.BoundLogger`；
-  `REQUIRED_LOG_FIELDS: frozenset[str]`（11 字段常量，供用例比对）
+  `REQUIRED_LOG_FIELDS: frozenset[str]`（12 字段常量，供用例比对）
 
-**硬约束**：必含 11 字段 `time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` /
+**硬约束**：必含 12 字段 `time` / `level` / `app` / `service` / `module` / `traceId` / `spanId` / `uid` /
 `bizType` / `opCode` / `code` / `message`（字段名与 PDD §8.5.1 L1747 **逐字一致**）；
 **`spanId` 输出字段但值为空**（`design.md` D9 明确不接 SkyWalking agent，不假装有埋点）；
 **MUST NOT** 记录明文密钥、未脱敏证件字段、原始图像。
 
-- [ ] Step 1~N：先写「输出为合法 JSON 且含全部 11 字段」用例，再写
+- [ ] Step 1~N：先写「输出为合法 JSON 且含全部 12 字段」用例，再写
   「`spanId` 存在且为空」用例，最后写「构造含证件号的输入，断言日志中不出现明文」用例
 
-**验收**：11 字段 schema 用例通过；`spanId` 留空；敏感信息不出现在日志
+**验收**：12 字段 schema 用例通过；`spanId` 留空；敏感信息不出现在日志
 
 ---
 
