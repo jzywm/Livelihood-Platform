@@ -16,7 +16,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 import pytest
@@ -311,10 +310,27 @@ def test_apply_ddl_is_idempotent(drill_month: str) -> None:
 
 @pytest.mark.integration
 def test_apply_ddl_rejects_bad_month(drill_month: str) -> None:
-    """参数自检：非法月份 MUST 以非 0 退出码拒绝，MUST NOT 静默建到错月份。"""
-    bad = uuid.uuid4().hex[:6]  # 6 位但含字母与数字，可能碰巧全数字则跳过
-    if bad.isdigit():
-        pytest.skip("随机值碰巧是纯数字，本用例只验证非数字月份被拒")
+    """参数自检：非法月份 MUST 以非 0 退出码拒绝，MUST NOT 静默建到错月份。
+
+    ## 取值为什么是**确定性**的（本轮修掉一处随机自跳过）
+
+    第一版取 `uuid.uuid4().hex[:6]`——6 位十六进制**可能碰巧全是数字**
+    （概率 `(10/16)**6 = 0.0596…`，即 **5.96%**），于是它会
+    `pytest.skip("随机值碰巧是纯数字")`。
+    后果有两层：
+
+    - **平均每 17 次跑就有一次静默不跑**（`1 / 0.0596 ≈ 16.8`），而报告里看起来仍是绿的
+      （一个自己决定不跑的用例，和一个不存在的用例没有区别）；
+    - 门禁规则是「集成段 `skipped != 0` 即视为未通过」⇒ 这条**随机**跳过会让那条规则
+      变成**假警报源**：真出问题时大家会先怀疑它。
+
+    故取值改成写死的 `"12345x"`：**必然含字母**、必然不是 6 位数字 ⇒ 每次都真的跑到断言。
+    **MUST NOT** 改成"重摇直到非全数字"的循环——那只是把不确定性藏进一个循环里。
+    """
+    bad = "12345x"  # 6 位、含字母 ⇒ 必然落到「必须是 6 位数字 YYYYMM」那条拒绝
+    assert len(bad) == 6 and not bad.isdigit(), (
+        "取值前提变了：本用例验的是『长度对但不是 6 位纯数字』这一档"
+    )
     result = _run_apply(bad)
     assert result.returncode != 0, "非法月份应被拒绝"
     assert "6 位数字" in result.stderr, f"拒绝原因应可读，实际 stderr：{result.stderr!r}"
