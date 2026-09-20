@@ -1623,11 +1623,16 @@ class _HangForeverHandler:
     `_cancel_all_tasks` 并 `gather` 它们，而这个 task 会一次又一次吞掉取消
     ⇒ 收尾永久挂住（实测：单条用例 90s 不返回，只能 kill）。
     故加一个**只有用例能置位**的 Event：循环的退出条件是"被放行"，不是"被取消"。
+
+    `finished` 是"**它真的结束了**"（B1 补）：只由 `handle` 最外层的 `finally` 置位，
+    而循环体内吞掉的取消**不会**置位它。于是收尾可以写成"放行 → 等 `finished`"
+    （条件等待 + 有界），而不是"放行 → 让出若干次再看"。
     """
 
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled_once = False
+        self.finished = asyncio.Event()
         self._release = asyncio.Event()
 
     def release(self) -> None:
@@ -1639,14 +1644,41 @@ class _HangForeverHandler:
 
     async def handle(self, task: ClaimedTask) -> None:
         self.started.set()
-        while True:
-            try:
-                await self._release.wait()
-                return
-            except asyncio.CancelledError:
-                self.cancelled_once = True
-                # **吞掉取消**：继续等放行（新的 `wait()` 会新建一个 future）。
-                continue
+        try:
+            while True:
+                try:
+                    await self._release.wait()
+                    return
+                except asyncio.CancelledError:
+                    self.cancelled_once = True
+                    # **吞掉取消**：继续等放行（新的 `wait()` 会新建一个 future）。
+                    continue
+        finally:
+            self.finished.set()
+
+
+async def _reap_hang_forever_handler(
+    handler: _HangForeverHandler, *, keep: Sequence[asyncio.Task[None]] = ()
+) -> None:
+    """**失败路径也要收干净**：放行处理器 → 等它真的结束 → 取消剩下的在飞 task。
+
+    为什么必须单独写这一步：把 `handler.release()` 放在断言**之后**时，
+    只要断言失败（而判别力自证里"断言失败"**正是预期路径**），这个吞掉取消的处理器
+    就会永远留在事件循环上 —— `asyncio.run()` 的收尾会**挂死**
+    （实测：整条用例 120s 不返回）。"挂死"比"变红"贵一个数量级（N7 的口径），
+    故每个用它的用例都在 `finally` 里调它。
+
+    `keep` 里的 task **不取消**：有的用例正在 `await` 它（例如 F5 自证里那个卡住的
+    `execute`）——取消它会让"等它收尾"变成 `CancelledError`，把自证的红伪装成另一种红。
+    """
+    handler.release()
+    await asyncio.wait_for(handler.finished.wait(), timeout=5.0)
+    protected = set(keep)
+    for task in asyncio.all_tasks():
+        if task is asyncio.current_task() or task in protected or task.done():
+            continue
+        task.cancel()
+    await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，把取消请求送达剩下的 task
 
 
 async def test_dissolve_task_gives_up_after_a_bounded_wait(
@@ -1665,16 +1697,22 @@ async def test_dissolve_task_gives_up_after_a_bounded_wait(
 
     ## 判据（三条，都是行为）
 
-    ① `execute` 的返回时间 ≤ 上界的常数倍（**不是** 30s 的 `timeout_s`）；
+    ① `execute` 的返回时间 ≤ **一个** `CANCEL_WAIT_TIMEOUT_S`（**不是** 30s 的 `timeout_s`，
+    也**不是**两倍上界——见 `_assert_abandon_wait_is_bounded` 的 B1 说明）；
     ② 超界时记一条 ERROR（放手**不静默**）；
     ③ 处理器确实被取消过——否则本用例会退化成"什么都没发生"的平凡真。
 
     上界用 `monkeypatch` 调小到 0.2s，故本用例的墙钟成本是几百毫秒而不是 1 秒。
 
-    ## 判别力自证
+    ## 判别力自证（两条，打在同一场景的**两个不同接缝**上）
 
-    见 `test_f5_bound_guard_discriminates`：把 `_dissolve_task` 里的 `wait_for` 摘掉
-    （**内存变异**），同一个判据**必须变红**（它会一直等那个永不结束的处理器）。
+    - `test_f5_bound_guard_discriminates`：摘掉 `_dissolve_task` 里的 `wait_for`
+      （**无上限**那一档）；
+    - `test_b1_abandon_budget_guard_discriminates`：让 `finally` 那次调用**各等一整档**
+      （**B1**：串行 2×）。
+
+    两条都不改场景（同一个吞掉取消的处理器、同一份 `renew_result=False`），
+    只改产品代码在该场景下的那一处行为。
     """
     bound_s = 0.2
     monkeypatch.setattr("aicore.core.task_runner.CANCEL_WAIT_TIMEOUT_S", bound_s, raising=True)
@@ -1692,28 +1730,134 @@ async def test_dissolve_task_gives_up_after_a_bounded_wait(
     claimed = await harness.runner.claim_once()
     assert claimed is not None
 
-    started = time.monotonic()
-    with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
-        # 外层 `wait_for` 是**判据的一部分**：变异体在这里会撞上它并变成 TimeoutError，
-        # 而不是把整个套件挂死（"挂死"比"变红"贵一个数量级）。
-        await asyncio.wait_for(
-            harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")),
-            timeout=bound_s * 5,
-        )
-    elapsed = time.monotonic() - started
+    try:
+        started = time.monotonic()
+        with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
+            # 外层 `wait_for` 是**判据的一部分**：变异体在这里会撞上它并变成 TimeoutError，
+            # 而不是把整个套件挂死（"挂死"比"变红"贵一个数量级）。
+            await asyncio.wait_for(
+                harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")),
+                timeout=bound_s * 5,
+            )
+        elapsed = time.monotonic() - started
 
-    assert handler.cancelled_once, "处理器没有被取消过：本用例的前提不成立"
-    assert elapsed < bound_s * 3, (
-        f"execute 花了 {elapsed:.3f}s 才返回（上界 {bound_s}s）："
-        f"`_dissolve_task` 在无上限地等一个吞掉取消的处理器——F5 的失效形态"
+        assert handler.cancelled_once, "处理器没有被取消过：本用例的前提不成立"
+        _assert_abandon_wait_is_bounded(elapsed, bound_s=bound_s)
+        assert "没有响应取消" in caplog.text, (
+            f"超界放手没有记 ERROR：{caplog.text!r}——静默放手会让运维无从发现"
+        )
+    finally:
+        # 那个处理器因"吞掉取消"仍在后台（诚实边界：取消不掉它），**放行**它。
+        # 放在 `finally` 里：断言失败时也必须收干净，否则会挂死事件循环的关停。
+        await _reap_hang_forever_handler(handler)
+
+
+def _assert_abandon_wait_is_bounded(elapsed: float, *, bound_s: float) -> None:
+    """**放弃路径的等待上界判据**（B1）：总等待 MUST ≤ **一个** `CANCEL_WAIT_TIMEOUT_S`。
+
+    ## 为什么阈值卡在 1.5× 而不是 3×（B1：第一版恰好放过了 2×）
+
+    `execute` 的放弃路径上有**两次** `_dissolve_task` 调用：`if lease_lost or timed_out:`
+    里那次、以及 `finally` 里的兜底那次。第一版两次**各等一整档**，于是复核者实测
+
+    ```
+    lease lost + swallow-cancel   elapsed = 2.031s   （生产常量 1.0s）
+    两条 ERROR：「处理器在 1.0s 内没有响应取消：不再等它…」
+    ```
+
+    而当时本用例断言的是 `elapsed < bound_s * 3`（`bound=0.2` ⇒ 0.6s）——
+    **2× 正好落在它里面**，判据形同不存在。现在阈值取 **1.5×**：
+
+    | 实现 | 实测总等待 | 与阈值（1.5×）的关系 |
+    |---|---|---|
+    | 正确（共用一个预算） | ≈ `bound_s` | 通过（余量 0.5×，覆盖线程池/调度开销） |
+    | 串行各等一档（B1） | ≈ `2 × bound_s` | **红**（超出 0.5×） |
+
+    阈值刻意落在两者正中间：两边各有 0.5× 的余量，故它既不会在慢机器上假红，
+    也不会再放过 2×。**MUST NOT** 再放宽回 2× 以上——那等于把这条判据删掉。
+    """
+    assert elapsed < bound_s * 1.5, (
+        f"execute 花了 {elapsed:.3f}s 才返回（一个上界是 {bound_s}s，阈值 {bound_s * 1.5}s）："
+        f"放弃路径**串行等了两档**（`if lease_lost or timed_out:` 一次 + `finally` 兜底一次），"
+        f"而 docstring 承诺的是「最多再**加一个**」——B1 的失效形态"
     )
-    assert "没有响应取消" in caplog.text, (
-        f"超界放手没有记 ERROR：{caplog.text!r}——静默放手会让运维无从发现"
+
+
+async def test_b1_abandon_budget_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**B1 的判别力自证**：把 `finally` 那次调用改回"各等一整档"，判据**必须变红**。
+
+    内存变异（**文件从不被写**）：`finally` 里的
+
+    ```python
+    await self._cancel_heartbeat(heartbeat)
+    await _dissolve_task(handler_task, deadline=abandon_deadline)
+    ```
+
+    换成 `await _dissolve_task(handler_task)`（**丢掉共享预算** = 第一版的形态）。
+    锚点**必须带上前一行**：`await _dissolve_task(handler_task, deadline=…)` 单独一行时
+    是另一处（`if` 里那处，16 空格缩进）的**子串**，`str.count` 会数到 2 次——
+    这正是"锚点必须唯一"这条断言要拦的形态（它当场就拦住了）。
+
+    ## 这个自证打在**同一个场景的接缝**上（方法论）
+
+    控制者曾建议"把处理器改成立即完成"当探针——**那是错的**：产品未变异时也会红
+    （心跳来不及续期，正确实现走的是成功路径）。换了场景就不叫判别力自证。
+    本用例与 `test_dissolve_task_gives_up_after_a_bounded_wait` **逐字同场景**
+    （同一个吞掉取消的处理器、同一份 `renew_result=False`、同一个上界），
+    差别只在产品代码的那一处 `deadline`。
+    """
+    mutant_cls = _mutant_runner_class(
+        (
+            "            await self._cancel_heartbeat(heartbeat)\n"
+            "            await _dissolve_task(handler_task, deadline=abandon_deadline)\n",
+            "            await self._cancel_heartbeat(heartbeat)\n"
+            "            await _dissolve_task(handler_task)\n",
+        ),
     )
-    # 收尾：那个处理器因"吞掉取消"仍在后台（诚实边界：取消不掉它），
-    # **放行**它（而不是再取消一次——再取消也会被吞掉，且会让事件循环关停挂住）。
-    handler.release()
-    await asyncio.sleep(0)  # ai-allow-sleep: 0 秒，让被放行的处理器与 execute 收尾
+    bound_s = 0.2
+    monkeypatch.setattr("aicore.core.task_runner.CANCEL_WAIT_TIMEOUT_S", bound_s, raising=True)
+    # **变异体有自己的模块命名空间**：`monkeypatch` 打在生产模块上对它无效，
+    # 它会用自己那份 `CANCEL_WAIT_TIMEOUT_S`（默认 1.0s），于是本用例要跑 2s。
+    # 把变异模块的那个全局改成同一个上界，两边才是同一个场景（也才跑得动）。
+    mutant_cls.execute.__globals__["CANCEL_WAIT_TIMEOUT_S"] = bound_s
+
+    handler = _HangForeverHandler()
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: handler},
+        handler=handler,
+        renew_result=False,
+        config=RunnerConfig(
+            lease_ms=SHORT_LEASE_MS, max_retries=3, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    runner = mutant_cls(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: handler},
+        policies=REGISTRY,
+        config=harness.runner.config,
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+
+    try:
+        started = time.monotonic()
+        await asyncio.wait_for(
+            runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=bound_s * 5
+        )
+        elapsed = time.monotonic() - started
+
+        assert handler.cancelled_once, "变异体的处理器没有被取消过：自证的前提不成立"
+        # **必须能看到红**：同一个判据助手喂给变异体的读数。
+        assert elapsed >= bound_s * 1.5, (
+            f"变异体只花了 {elapsed:.3f}s（阈值 {bound_s * 1.5}s）：它并没有串行等两档，"
+            f"本自证没有复现 B1 的失效形态"
+        )
+        with pytest.raises(AssertionError, match="串行等了两档"):
+            _assert_abandon_wait_is_bounded(elapsed, bound_s=bound_s)
+    finally:
+        await _reap_hang_forever_handler(handler)
 
 
 async def test_f5_bound_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1722,7 +1866,7 @@ async def test_f5_bound_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> 
     内存变异（**文件从不被写**）：把
 
     ```python
-    await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+    await asyncio.wait_for(asyncio.shield(task), timeout=remaining_s)
     ```
 
     换成裸 `await asyncio.shield(task)`——即修复前那个"无上限地 await"。
@@ -1731,7 +1875,7 @@ async def test_f5_bound_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> 
     """
     mutant_cls = _mutant_runner_class(
         (
-            "        await asyncio.wait_for(asyncio.shield(task), timeout=resolved_timeout_s)\n",
+            "        await asyncio.wait_for(asyncio.shield(task), timeout=remaining_s)\n",
             "        await asyncio.shield(task)\n",
         ),
     )
@@ -1761,18 +1905,22 @@ async def test_f5_bound_guard_discriminates(monkeypatch: pytest.MonkeyPatch) -> 
     executing = asyncio.create_task(
         runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
     )
-    # **判据本体（生产侧那一条）在这里必然撞墙**：`execute` 不会在上界内返回。
-    # 用 `pytest.raises(TimeoutError)` 把它表达成"红"，而不是让套件挂死。
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(asyncio.shield(executing), timeout=bound_s * 5)
+    try:
+        # **判据本体（生产侧那一条）在这里必然撞墙**：`execute` 不会在上界内返回。
+        # 用 `pytest.raises(TimeoutError)` 把它表达成"红"，而不是让套件挂死。
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(executing), timeout=bound_s * 5)
 
-    # 收尾：放行处理器 ⇒ 变异体那个无上限的 `await` 才可能走完。
-    # 这一步同时是"变异体确实卡在等待上"的正面证据（放行之前它一直没返回）。
-    assert not executing.done(), (
-        "变异体的 execute 已经返回了：它并未无上限地等——本自证不成立"
-    )
-    handler.release()
-    await asyncio.wait_for(executing, timeout=5.0)
+        # 这一步同时是"变异体确实卡在等待上"的正面证据（放行之前它一直没返回）。
+        assert not executing.done(), (
+            "变异体的 execute 已经返回了：它并未无上限地等——本自证不成立"
+        )
+    finally:
+        # 放行处理器 ⇒ 变异体那个无上限的 `await` 才可能走完（失败路径也必须收干净）。
+        # `keep=(executing,)`：它是本用例正在等的那个 task，取消它会把结论换成另一种红。
+        await _reap_hang_forever_handler(handler, keep=(executing,))
+        with suppress(TimeoutError):
+            await asyncio.wait_for(executing, timeout=5.0)
 
 
 async def _assert_no_heartbeat_leak(harness: Harness, task_id: str) -> None:
@@ -1872,7 +2020,12 @@ async def test_external_cancel_of_execute_does_not_leak_the_heartbeat() -> None:
     with pytest.raises(asyncio.CancelledError):
         await executing
 
-    assert not handler.entered or gate is not None  # 处理器确实开工过
+    # **这里曾有一条恒真断言**（B6）：`assert not handler.entered or gate is not None`
+    # —— `gate` 在构造处赋值后从未重新赋值，故右半边恒为真、整个表达式恒真。
+    # 「处理器确实开工过」这件事**已经**由上面那句
+    # `await asyncio.wait_for(handler.started.wait(), timeout=5)` 承担：
+    # 它能返回就说明 `handle` 至少执行到了 `started.set()`（`entered = True` 在它之前一行）。
+    # 故删掉而不改写——重复的弱断言比没有断言更糟（它会被算进"有覆盖"）。
     await _assert_no_heartbeat_leak(harness, "task-a")
 
 
@@ -1928,22 +2081,53 @@ async def test_missing_handle_attribute_does_not_leak_the_heartbeat() -> None:
     await _assert_no_heartbeat_leak(harness, "task-a")
 
 
+#: 兜底路径上那条 ERROR 的两半：**非有限值 / `<= 0`** 与 **无法解析成数值**。
+#:
+#: B2 的修复点：这两半是"**没有被采用**"的唯一可观测证据。
+_REFUSED_VALUE_ERROR = "非有限值或 <= 0"
+_UNPARSEABLE_ERROR = "无法解析成数值"
+
+
 @pytest.mark.parametrize(
-    "bad_value",
-    [float("nan"), float("inf"), 0.0, -1.5, "abc"],
+    ("bad_value", "expected_error"),
+    [
+        (float("nan"), _REFUSED_VALUE_ERROR),
+        (float("inf"), _REFUSED_VALUE_ERROR),
+        (0.0, _REFUSED_VALUE_ERROR),
+        (-1.5, _REFUSED_VALUE_ERROR),
+        ("abc", _UNPARSEABLE_ERROR),
+    ],
     ids=["nan", "inf", "0.0", "-1.5", "非数值"],
 )
 async def test_unusable_timeout_declaration_falls_back_and_still_times_out(
-    bad_value: object, monkeypatch: pytest.MonkeyPatch
+    bad_value: object,
+    expected_error: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """**F4**：`timeout_s()` 返回 `nan`/`inf`/`<=0`/非数值 → **不采用**，改走兜底超时。
+    """**F4 + B2**：`timeout_s()` 返回 `nan`/`inf`/`<=0`/非数值 → **不采用**，改走兜底超时。
 
     判据是**后果**而不是"读到了哪个数"：让兜底值变小（`monkeypatch` 模块常量），
     然后断言一个**挂死的**处理器确实被超时掐掉（`5002`）。
     修复前 `nan`/`inf` 会被 `float()` 原样放行 ⇒ `asyncio.wait(timeout=nan)` 永不超时
     ⇒ 这个用例会挂到外层 `wait_for` 上（红）。
 
-    `<= 0` 的后果不同（"立即超时"）但处置相同：与"没有声明"同一档，MUST NOT 采用。
+    ## B2：为什么还要断言那条 ERROR 日志（`<= 0` 那一半）
+
+    复核者实测：把校验改成 `if False:`（其余不动）后，`[nan]`/`[inf]` **FAILED**，
+    而 `0.0`/`-1.5`/`abc` **照样 green**——因为"**采用它**（`wait(timeout=0)` ⇒ 立即超时）"
+    与"**兜底**（0.05s 后超时）"的**可观测后果完全相同**（都是 `mark_failed=1` + `5002`）。
+    也就是说那两条后果断言对 `<= 0` 这一半是**零判别力**的。
+
+    分开两者的东西只有一件：**产品到底走了哪条分支**——而那条分支会记一条 ERROR。
+    故逐参数断言日志里出现对应的那一半：
+
+    | 参数 | 期望的分支 | 日志片段 |
+    |---|---|---|
+    | `nan` / `inf` / `0.0` / `-1.5` | "非有限值或 `<= 0`" | `_REFUSED_VALUE_ERROR` |
+    | `"abc"` | `float()` 抛 | `_UNPARSEABLE_ERROR` |
+
+    判别力自证见 `test_b2_zero_timeout_guard_discriminates`。
     """
     fallback = 0.05
     monkeypatch.setattr(
@@ -1967,15 +2151,106 @@ async def test_unusable_timeout_declaration_falls_back_and_still_times_out(
     claimed = await harness.runner.claim_once()
     assert claimed is not None
 
-    await asyncio.wait_for(
-        harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=5.0
-    )
+    with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
+        await asyncio.wait_for(
+            harness.runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=5.0
+        )
 
+    _assert_unusable_timeout_was_refused(harness, caplog.text, expected_error=expected_error)
+
+
+def _assert_unusable_timeout_was_refused(
+    harness: Harness, log_text: str, *, expected_error: str
+) -> None:
+    """**F4/B2 的判据本体**：不可用的声明 MUST 被拒（不采用）+ 走兜底失败分流。
+
+    三条都必须有，且**只有第三条有判别力**：
+
+    1. 任务被掐掉（`mark_failed == 1`）——`<= 0` 那一档"采用"也能满足它（立即超时）；
+    2. `error_code == 5002`——同上，两条分支都会写 5002；
+    3. **那条分支日志**——**唯一**能区分"采用"与"兜底"的可观测量（B2 的诊断）。
+
+    抽成函数是为了让判别力自证把同一份判据喂给变异体。
+    """
     assert harness.store.count("mark_failed") == 1, (
-        f"timeout_s() 返回 {bad_value!r} 时任务没有被超时掐掉："
-        f"该值被静默采用了（nan/inf 会关掉任务级超时；<=0 会把正常任务全判超时）"
+        "任务没有被超时掐掉：该值被静默采用了（nan/inf 会关掉任务级超时；"
+        "<=0 会把正常任务全判超时）"
     )
     assert "error_code=5002" in harness.events, "兜底超时必须按 5002 走失败分流"
+    assert expected_error in log_text, (
+        f"日志里没有 {expected_error!r}：产品**采用了**那个不可用的声明，而不是退到兜底——"
+        f"上面两条后果断言对 `<= 0` / 非数值那一半是**零判别力**的（B2），"
+        f"只有这一条能分开两者。实际日志：{log_text!r}"
+    )
+
+
+async def test_b2_zero_timeout_guard_discriminates(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**B2 的判别力自证**：撤掉"非有限值 / `<= 0`"那半校验，`0.0` 那一档**必须变红**。
+
+    内存变异（**文件从不被写**）：`if not math.isfinite(value) or value <= 0:` → `if False:`
+    —— 即复核者用来证明"这两个参数零判别力"的那处改动。
+
+    本用例同时断言**两件事**，缺一不可：
+
+    1. 旧的两条后果判据**照样绿**（`mark_failed == 1` 且 `error_code=5002`）——
+       这正是"零判别力"的诊断本身：采用 `0.0` 会**立即超时**，后果与兜底一模一样；
+    2. 新加的那条日志判据**红**（`_assert_unusable_timeout_was_refused` 抛出）。
+
+    `nan`/`inf` 那一半不需要自证：变异后它们是**真红**（`wait(timeout=nan)` 永不超时
+    ⇒ 撞上外层 `wait_for` 抛 `TimeoutError`），复核者已实测。
+    """
+    mutant_cls = _mutant_runner_class(
+        ("        if not math.isfinite(value) or value <= 0:\n", "        if False:\n"),
+    )
+    fallback = 0.05
+    monkeypatch.setattr(
+        "aicore.core.task_runner.FALLBACK_HANDLER_TIMEOUT_S", fallback, raising=True
+    )
+    # 变异体有自己的模块命名空间（见 `test_b1_abandon_budget_guard_discriminates`）。
+    mutant_cls.execute.__globals__["FALLBACK_HANDLER_TIMEOUT_S"] = fallback
+
+    class _ZeroTimeout:
+        def timeout_s(self) -> object:
+            return 0.0
+
+        async def handle(self, task: ClaimedTask) -> None:
+            await asyncio.Event().wait()
+
+    harness = Harness(
+        tasks=[_claimed("task-a")],
+        handlers={TASK_TYPE: _ZeroTimeout()},
+        config=RunnerConfig(
+            lease_ms=LEASE_MS, max_retries=0, concurrency_limit=4, poll_interval_s=0.0
+        ),
+    )
+    runner = mutant_cls(
+        store=harness.store,
+        locks=harness.locks,
+        handlers={TASK_TYPE: _ZeroTimeout()},
+        policies=REGISTRY,
+        config=harness.runner.config,
+    )
+    claimed = await runner.claim_once()
+    assert claimed is not None
+
+    with caplog.at_level(logging.ERROR, logger="aicore.core.task_runner"):
+        await asyncio.wait_for(
+            runner.execute(claimed, claim=harness.locks.claim_of("task-a")), timeout=5.0
+        )
+
+    # ① 旧的两条后果判据**照样绿** —— 它们是零判别力的（这就是 B2 的诊断）。
+    assert harness.store.count("mark_failed") == 1, "变异体没有把任务掐掉：自证前提不成立"
+    assert "error_code=5002" in harness.events, "变异体没有走 5002：自证前提不成立"
+    assert _REFUSED_VALUE_ERROR not in caplog.text, (
+        f"变异体竟然走了拒绝分支：{caplog.text!r}——本自证没有复现「采用它」的形态"
+    )
+    # ② 新加的那条日志判据**必须红**。
+    with pytest.raises(AssertionError, match="零判别力"):
+        _assert_unusable_timeout_was_refused(
+            harness, caplog.text, expected_error=_REFUSED_VALUE_ERROR
+        )
 
 
 
@@ -2141,15 +2416,18 @@ class _PreFixExecuteRunner(TaskRunner):
 
 
 @pytest.mark.parametrize(
-    "handler_factory",
+    ("handler_factory", "expected_exc", "expected_message"),
     [
-        lambda: _ValueErrorHandler(),
-        lambda: _SyncHandleHandler(),
+        (lambda: _ValueErrorHandler(), ValueError, "payload 拼错了"),
+        (lambda: _SyncHandleHandler(), TypeError, "a coroutine was expected"),
     ],
     ids=["F1:处理器抛 ValueError", "F3:handle 是同步函数"],
 )
 async def test_f1_f3_guard_discriminates(
-    handler_factory: Callable[[], object], caplog: pytest.LogCaptureFixture
+    handler_factory: Callable[[], object],
+    expected_exc: type[BaseException],
+    expected_message: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """**F1/F3 的判别力自证**：在修复前的结构上，共用判据 `_assert_no_heartbeat_leak`
     **必须变红**，且红在**判据 ②（心跳仍在续期）**上。
@@ -2159,8 +2437,12 @@ async def test_f1_f3_guard_discriminates(
     这里显式锚定 ②，是为了说明"用例的红来自失效形态本身"，
     而不是来自任何与判据无关的偶然（例如变异体写错了导致不是 `ValueError`/`TypeError`）。
 
-    若变异体**没有**红，说明 F1/F3 的用例另有来源、或该结构其实无害——两种情况都必须查清，
-    故这里把"变异体自己也要真的失效"写进断言。
+    ## B8：异常类型与消息**逐参数钉死**，不再两型合一
+
+    第一版写 `pytest.raises((ValueError, TypeError))` —— 一个元组把两种类型合成一条判据，
+    于是"F1 那一档实际抛的是 `TypeError`"这种错位**照样是绿的**。
+    现在每个参数各自声明 `(异常类型, 消息片段)`，并把 `match=` 也用上：
+    F3 那一档若退化成 `ValueError`，或消息换了成因，都会当场红。
     """
     handler = handler_factory()
     harness = Harness(
@@ -2182,7 +2464,7 @@ async def test_f1_f3_guard_discriminates(
     assert claimed is not None
 
     with caplog.at_level(logging.WARNING, logger="aicore.core.task_runner"):
-        with pytest.raises((ValueError, TypeError)):
+        with pytest.raises(expected_exc, match=expected_message):
             await runner.execute(claimed, claim=harness.locks.claim_of("task-a"))
 
         # 判据 ② 必须红 —— 这正是修复前"租约被永久续期"的失效形态。
@@ -2859,12 +3141,16 @@ async def test_m1_abandon_guard_discriminates() -> None:
 
     本用例与签名用例共用 `_assert_lease_lost_abandons`（**同一份判据、同一个调用形态**），
     差别只在产品代码的那两行。
+
+    > **第 5 批跟进**：第 2 处锚点从 `await _dissolve_task(handler_task)` 改成了带
+    > `deadline=` 的形态——B1 的修复给那次调用加了共享预算。变异仍然"整条删掉那行"
+    > （= 撤销 F2 的兜底取消），语义不变。
     """
     mutant_cls = _mutant_runner_class(
         ("if lease_lost or timed_out:", "if timed_out:"),
         (
             "            await self._cancel_heartbeat(heartbeat)\n"
-            "            await _dissolve_task(handler_task)\n",
+            "            await _dissolve_task(handler_task, deadline=abandon_deadline)\n",
             "            await self._cancel_heartbeat(heartbeat)\n",
         ),
     )

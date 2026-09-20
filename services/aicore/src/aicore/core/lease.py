@@ -323,14 +323,27 @@ class InvalidLeaseArgumentError(ValueError):
 def _require_lease_ms(lease_ms: int) -> int:
     """`lease_ms` 必须是**正整数**（真 Redis 对 `PX` 的要求），否则抛 `InvalidLeaseArgumentError`。
 
-    真 Redis 的实测口径（工单 §F9）：
+    真 Redis + redis-py 8.1.0 的实测口径（工单 §F9）：
 
     - `SET k v NX PX 0`（含负数）→ `invalid expire time in 'set' command`；
-    - `PX 1000.5` → `value is not an integer or out of range`。
+    - `PX 1000.5` → `value is not an integer or out of range`；
+    - `PX True` → **客户端编码期**就抛 `DataError: Invalid input of type: 'bool'`
+      （**不是**"服务端把它当成 1 毫秒"）。
 
-    第三类被拒的是 `bool`：`isinstance(True, int)` 为真，`lease_ms=True` 会被 `PX 1`
-    悄悄接受成"1 毫秒的租约"——一个几乎立刻过期的租约看起来像"领取成功"，
-    实际下一次 `renew` 就已经不是自己的了。这类"看起来成对的类型"必须显式挡掉。
+    ## `bool` 那一档的理由（B5：此前这里写的是**假的**）
+
+    第一版写着「`lease_ms=True` 会被 `PX 1` 悄悄接受成"1 毫秒的租约"」——
+    **那句话是错的**：redis-py 在把参数编码成 RESP 时就拒绝 `bool`，请求根本发不出去。
+    复核者实测后指出，而本轮的主题正是"文档与代码不符"，故这里改成实测的那条。
+
+    守卫本身**保留**，理由换成两条**真实的**：
+
+    1. **两侧同判**：我们两边都在发命令之前拒绝它，于是判据是**同一个异常类型**
+       （`InvalidLeaseArgumentError`），而不是"一侧 `DataError`、另一侧看实现"；
+    2. **不依赖客户端的编码时机**：`PX True` 的拒绝发生在 redis-py 内部（`DataError`），
+       而那是**三方库的实现细节**——`isinstance(True, int)` 在 Python 里为真，
+       总有一天会有某条路径绕过编码器（例如我们自己拼脚本参数）。
+       显式挡掉，语义就落在我们自己的契约里。
     """
     if isinstance(lease_ms, bool) or not isinstance(lease_ms, int) or lease_ms <= 0:
         raise InvalidLeaseArgumentError(

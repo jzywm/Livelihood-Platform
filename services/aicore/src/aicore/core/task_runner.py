@@ -255,6 +255,11 @@ CLAIM_FAILURE_BACKOFF_MAX_S: Final = 30.0
 #: **超界的后果是"放手"而不是"更强硬地取消"**：Python 没有"强制结束协程"这回事，
 #: 超界之后那个处理器**仍在后台跑**（仍可能发出外部调用）。这一点写在 `_dissolve_task`
 #: 与类 docstring 的诚实边界里，MUST NOT 被读成"取消一定生效"。
+#:
+#: **这是"整条放弃路径"的预算，不是"每次调用"的预算（B1）**：`execute` 的放弃路径上有
+#: 两次 `_dissolve_task`（放弃分支一次 + `finally` 兜底一次），它们**共享同一个截止时刻**
+#: ⇒ 总等待 ≤ 本值。第一版两次各等一整档，`execute` 的返回时间变成两倍
+#: （复核者实测 **2.031s**，而文档承诺的是"最多再加一个"）。实测修复后为 **1.034s**。
 CANCEL_WAIT_TIMEOUT_S: Final = 1.0
 
 #: 领取时写回的进度值（`er.md` §6.1 L293：`progress` 是进度百分比，刚领到即已开始）。
@@ -681,6 +686,16 @@ class TaskRunner:
         error: AiCoreError | None = None
         #: 处理器 task（`None` = 还没创建 / 装配缺失）。`finally` 里要收它，故先声明。
         handler_task: asyncio.Task[None] | None = None
+        #: 放弃路径的**绝对**截止时刻（`loop.time()` 口径）；`None` = 还没进入放弃路径。
+        #:
+        #: **整个放弃路径共用一个预算（B1）**：进入放弃路径时算一次，之后每一次
+        #: `_dissolve_task`（含 `finally` 里那次兜底）都传它。第一版没传，于是下面那个
+        #: 放弃分支里的一次与 `finally` 里的一次**各等一整档** ⇒ `execute` 的返回时间变成
+        #: `timeout_s + 2 × CANCEL_WAIT_TIMEOUT_S`（复核者实测 2.031s），
+        #: 而 `_dissolve_task` 的 docstring 承诺的是"最多再加**一个**"。
+        #: （这里刻意**不逐字引用**那行 `if` 源码：注释里出现同一行会让基于行文本的
+        #: 变异锚点变成两处，而"锚点必须唯一"正是变异工具要拦的形态。）
+        abandon_deadline: float | None = None
 
         async def _heartbeat() -> None:
             """独立 task 的续期心跳（间隔 `lease_ms / HEARTBEAT_DIVISOR`）。
@@ -780,7 +795,11 @@ class TaskRunner:
                 # 两种情况下处理器都还可能在跑，**必须**取消并等它结束（有界，见 F5）：
                 # - 租约丢失 → 放弃执行（§二之二）；
                 # - 任务级超时 → 「不再等它」（超时的处置本来就是掐掉）。
-                await _dissolve_task(handler_task)
+                #
+                # **进入放弃路径时算一次总预算**（B1）：`finally` 里还有一次兜底调用，
+                # 它 MUST 复用同一个截止时刻，否则两次各等一整档 ⇒ 2×。
+                abandon_deadline = asyncio.get_running_loop().time() + CANCEL_WAIT_TIMEOUT_S
+                await _dissolve_task(handler_task, deadline=abandon_deadline)
 
             if not lease_lost:
                 if succeeded:
@@ -798,8 +817,12 @@ class TaskRunner:
             # 顺序是"先取消处理、再收心跳"？**不是**：先收心跳更安全——
             # 心跳若还活着，它会在我们收处理器期间继续续期；先把它停掉，
             # 后续收尾期间的租约状态就与本协程的判断一致。
+            #
+            # **`deadline=abandon_deadline`（B1）**：若上面那条放弃路径已经等过，
+            # 这里就只剩**剩余**预算（可能为 0）；没进入过放弃路径时它是 `None`，
+            # 于是这里拿到一整档（那种情况下只会有这一次调用）。
             await self._cancel_heartbeat(heartbeat)
-            await _dissolve_task(handler_task)
+            await _dissolve_task(handler_task, deadline=abandon_deadline)
 
     async def run_once(self) -> bool:
         """跑一轮：**没有可领取任务返回 `False`**，且此时**不调用 `acquire`**。
@@ -1238,7 +1261,7 @@ class TaskRunner:
 
 
 async def _dissolve_task(
-    task: asyncio.Task[None] | None, *, timeout_s: float | None = None
+    task: asyncio.Task[None] | None, *, deadline: float | None = None
 ) -> None:
     """取消一个 task 并**有界地**等它结束（`None` 与已结束的 task 都是空操作）。
 
@@ -1253,35 +1276,58 @@ async def _dissolve_task(
     - **吞掉 `CancelledError`**：本函数是"清理"动作，不该把它传播给调用方
       （调用方正处在"外部取消"路径上时会自己上抛）。
 
-    ## 为什么默认值写成 `None` 而不是 `= CANCEL_WAIT_TIMEOUT_S`
+    ## `deadline` 是**绝对**时刻，且是"整条放弃路径共用一个预算"的载体（B1）
 
-    `CANCEL_WAIT_TIMEOUT_S` 在 `__all__` 里是**公开常量**。写成默认参数的话，
-    它在**函数定义时**就被求值并固化，于是"改这个常量"变成一个**没有任何效果**的动作
-    ——那正是本文件反复在防的"会骗人的接缝"（调用方以为控制了行为）。
-    故改在**调用时**解析，让常量真的是常量、也让用例能把上界调小来压测这条路径。
+    省略 `deadline` ⇒ 从此刻起 `CANCEL_WAIT_TIMEOUT_S`。传它则是为了让**同一条放弃路径上的
+    多次调用共享同一个截止时刻**：`execute` 的放弃路径有**两次**调用（`if lease_lost or
+    timed_out:` 里那次 + `finally` 里的兜底那次），第一版两次都省略 ⇒ **各等一整档** ⇒
+    `execute` 的返回时间变成 `timeout_s + 2 × CANCEL_WAIT_TIMEOUT_S`（复核者实测 **2.031s**），
+    而本文档承诺的是"最多再**加一个**"。现在预算只算一次，**总等待 ≤ 一个上界**。
+
+    预算用尽（`remaining <= 0`）时本函数**直接返回**，不再 `cancel()` 也不再等：
+
+    - **再取消一次是零收益**：一个已经吞掉第一次 `cancel()` 的 task，照样会吞第二次
+      （这正是 F5 那个不合作的处理器在做的事）；
+    - **不再记日志**：上一次超界时已经记过一条 ERROR，再记一条会让"一次放弃"在日志里
+      看起来像两次，也会把"总预算是 1 档"这件事重新弄糊。
+
+    ### 这个预算**不覆盖**的部分（诚实边界）
+
+    两次 `_dissolve_task` 之间的 `_cancel_heartbeat(heartbeat)` 不在预算内：它 `await` 的是
+    心跳 task 自己响应取消的时间（心跳要么在 `asyncio.sleep`、要么在一次 `renew` 里）。
+    Redis 被"黑洞"（连接既不回也不断）时那一次 `renew` 会把这段等待拉长。
+    本函数管的是**处理器那一侧**的上界，`_cancel_heartbeat` 的上界不在本次修复范围内，
+    故在这里点名，MUST NOT 被读成"`execute` 的返回时间一定有硬上界"。
 
     ## 它做不到的事（诚实边界，MUST NOT 被读成"取消一定生效"）
 
     - **取消不掉已经交给线程的工作**（`run_cpu_bound`）：那个线程会继续跑到结束
       （Python 不能安全强杀线程）。这一点在类 docstring 的 §二之二 表格里；
-    - **取消不掉"吞掉取消的处理器"**：本函数等 `timeout_s` 之后就放手，
+    - **取消不掉"吞掉取消的处理器"**：本函数等预算用完之后就放手，
       那个处理器**仍在后台跑**，仍可能发出付费调用。故 `execute` 的返回时间
-      **不是**只由 `timeout_s` 决定（最多再加上这里的 `CANCEL_WAIT_TIMEOUT_S`），
+      **不是**只由 `timeout_s` 决定（最多再加上**一个** `CANCEL_WAIT_TIMEOUT_S`），
       而"放弃之后一定没有副作用"这句话**不成立**。
     """
-    resolved_timeout_s = CANCEL_WAIT_TIMEOUT_S if timeout_s is None else timeout_s
     if task is None or task.done():
+        return
+    loop = asyncio.get_running_loop()
+    resolved_deadline = (
+        loop.time() + CANCEL_WAIT_TIMEOUT_S if deadline is None else deadline
+    )
+    remaining_s = resolved_deadline - loop.time()
+    if remaining_s <= 0:
+        # 预算已用尽：见 docstring "预算用尽时本函数直接返回"。
         return
     task.cancel()
     try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=resolved_timeout_s)
+        await asyncio.wait_for(asyncio.shield(task), timeout=remaining_s)
     except TimeoutError:
         # 处理器不合作：记 ERROR 后**放手**。`shield` 让超时不会把 task 再取消一次
         # （它已经在取消中了），也让我们能区分"它结束了"与"我们不等了"。
         _logger.error(
             "处理器在 %.1fs 内没有响应取消：不再等它（它可能仍在后台运行、"
             "仍可能发出外部调用），本协程就此返回",
-            resolved_timeout_s,
+            remaining_s,
         )
     except asyncio.CancelledError:
         # 两种来源：① 处理器响应了取消（正常路径，吞掉）；② 调用方取消本协程

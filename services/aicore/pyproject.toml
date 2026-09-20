@@ -99,6 +99,11 @@ asyncio_mode = "auto"
 # 裸 `pytest` 会真的收集并执行集成用例（它们会构造真实 `RedisLockStore`）。
 # CLI 上传 `-m integration` 会**覆盖** ini 的这一项，故两条门禁命令的行为逐字不变。
 # 该承诺由 `tests/structural/test_pytest_config.py` 机械核对（删掉本行即变红）。
+#
+# ⚠ 反向的坑（B4）：命令行传 `-o addopts=""` 会**连这一项一起清掉** ⇒ 那一次运行会
+# **静默恢复 50 条真连 Redis / MySQL 的集成用例**（实测：裸收集 1304 → 1354）。
+# 本任务的门禁用它来清掉 `-q` 看清汇总行，故凡是"默认段"的命令都必须由 CLI 显式给
+# `-m "not integration"`。完整说明见 tests/structural/test_pytest_config.py 的模块 docstring。
 addopts = "-q -m \"not integration\""
 markers = [
     "integration: 需要真实 MySQL / Redis 的端到端用例，默认不执行",

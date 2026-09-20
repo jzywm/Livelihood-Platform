@@ -533,6 +533,17 @@ def test_f7_shutdown_order_guard_discriminates(
     变异为什么现在会红：`_RecordingRunner` 在 `stop` 置位后还需要 `_SETTLE_TURNS`
     轮才记 `run_forever.end`，而关停块在一次让出之后就走到 `runner.stop()` ⇒
     `runner.stop` 抢在 `run_forever.end` 前面（或者 `run_forever.end` 干脆赶不上断言）。
+
+    ## B8：断言钉到**成因**上，不只是钉一条消息
+
+    第一版只写 `pytest.raises(AssertionError, match="关停顺序不对")` ——
+    **空的 `_EVENTS` 也能满足它**（`[] != 期望序列`，消息一模一样）。
+    那等于没有证明"红是因为关停没等执行器退出"。现在三段一起断言：
+
+    1. 判据抛错且消息是顺序那条；
+    2. **序列非空**且第一项是 `run_forever.start`（排除"什么都没跑到"这种红）；
+    3. `runner.stop` **先于** `run_forever.end` 出现（这才是"没等执行器退出"的成因；
+       `run_forever.end` 缺席时用"序列长度"代替它的位置，同样算没等到）。
     """
     with _mutant_main(
         ("            await runner_task\n", "            await asyncio.sleep(0)\n"),
@@ -541,6 +552,17 @@ def test_f7_shutdown_order_guard_discriminates(
 
     with pytest.raises(AssertionError, match="关停顺序不对"):
         _assert_shutdown_order(_EVENTS)
+
+    assert _EVENTS, "变异体的关停序列是空的：那说明它什么都没跑到，本自证不成立"
+    assert _EVENTS[0] == "run_forever.start", (
+        f"变异体的第一个事件是 {_EVENTS[0]!r}（期望 'run_forever.start'）："
+        f"启动路径都没走到，红了也说明不了 join 的问题"
+    )
+    end_index = _EVENTS.index("run_forever.end") if "run_forever.end" in _EVENTS else len(_EVENTS)
+    assert _EVENTS.index("runner.stop") < end_index, (
+        f"成因不对：{_EVENTS} 里 `runner.stop` 并不早于 `run_forever.end`——"
+        f"那说明红的不是「关停没等执行器退出」"
+    )
 
 
 def test_shutdown_cleanup_completes_even_if_the_runner_died(

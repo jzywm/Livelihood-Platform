@@ -418,12 +418,17 @@ async def test_defer_with_positive_delay_still_blocks() -> None:
 async def test_acquire_rejects_lease_ms_redis_would_reject(bad_lease_ms: object) -> None:
     """**F9**：真 Redis 会拒绝的 `lease_ms`，替身 MUST 也拒绝（且**同一个异常类型**）。
 
-    真 Redis 实测口径：`SET k v NX PX 0` / `PX -5` → `invalid expire time in 'set' command`；
-    `PX 1000.5` → `value is not an integer or out of range`。
+    真 Redis + redis-py 8.1.0 实测口径：`SET k v NX PX 0` / `PX -5` →
+    `invalid expire time in 'set' command`；`PX 1000.5` →
+    `value is not an integer or out of range`。
     替身此前**照发租约并计数**——即"替身比真实现宽松"，它让离线段全绿、生产段一启动就抛。
 
-    `True` 单列一条：`isinstance(True, int)` 为真，若不显式挡掉，`PX 1` 会被悄悄接受成
-    "1 毫秒的租约"——它看起来像"领取成功"，而下一次 `renew` 时已经不是自己的了。
+    `True` 单列一条，但**理由按实测写**（B5 更正）：
+    `PX True` 在真 Redis 上会在 **redis-py 的客户端编码期**抛
+    `DataError: Invalid input of type: 'bool'`——**不是**"被悄悄接受成 1 毫秒的租约"
+    （第一版这里写的就是后一句，是**假的**）。
+    守卫保留的理由是"**两侧同判**（同一个异常类型）+ 不依赖三方库的编码时机"，
+    详见 `core/lease.py::_require_lease_ms` 的 docstring。
 
     断言的是**两件事**：抛出的类型（`ValueError` 子类，好让跨实现一致性用例能断言"同判"）
     与**没有留下任何键**（"抛之前先写了一半"是更隐蔽的形态）。
