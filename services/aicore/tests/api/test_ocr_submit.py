@@ -18,16 +18,31 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import sys
+import types
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import IntegrityError
 
 from aicore.api.deps import ACCOUNT_ID_HEADER, get_now
-from aicore.api.ocr import IDEMPOTENCY_KEY_HEADER, TaskAccepted
+from aicore.api.ocr import IDEMPOTENCY_KEY_HEADER, SUBMITTED_TASK_TYPE, TaskAccepted
+from aicore.core.lease import InMemoryLockStore
+from aicore.core.task_runner import ClaimedTask, RunnerConfig, TaskRunner
+from aicore.repository.task_lease_store import SqlTaskLeaseStore
+from aicore.repository.task_repo import TaskRepo
+from aicore.service.task.registry import REGISTRY, assert_submittable
+from aicore.service.task.submit import submit_ocr_task
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+#: 被变异/被直接驱动的生产模块（Task 4.9 的两条自证与"防御性分支"用例都要读它）。
+SUBMIT_PATH = PROJECT_ROOT / "src" / "aicore" / "service" / "task" / "submit.py"
 
 ACCOUNT_ID = "acc_ocr_owner"
 OTHER_ACCOUNT_ID = "acc_ocr_other"
@@ -205,12 +220,79 @@ def test_different_doc_type_makes_a_different_task(
 
     同 imageKey 换了证照类型就是另一件事：同一张图按「营业执照」和按「许可证」解析，
     结果结构不同，故 MUST NOT 被幂等合并。
+
+    判据本体抽到 `_assert_distinct_tasks`（Task 4.9 §2.4）：它同时被下面那条
+    **"把 key 写死"的判别力自证**使用——同一份判据，两个场景，防止"自证"与"真判据"漂移。
     """
     license_task = _post(api_client, doc_type="BUSINESS_LICENSE")
     permit_task = _post(api_client, doc_type="PERMIT")
 
-    assert license_task.json()["data"]["taskId"] != permit_task.json()["data"]["taskId"]
-    assert len(_task_rows(sandbox_engine)) == 2
+    _assert_distinct_tasks(license_task, permit_task, sandbox_engine, expected_rows=2)
+
+
+def _assert_distinct_tasks(
+    first: Response, second: Response, engine: Engine, *, expected_rows: int
+) -> None:
+    """**"两次提交是两个任务"的判据本体**（Task 4.9 §2.4）。
+
+    两条缺一不可：
+
+    1. 两次的 `taskId` **不同**——这是"没有互相幂等"的直接证据；
+    2. 库里**恰好 `expected_rows` 行**——只比 `taskId` 会漏掉「新建后又把号改回去」
+       的实现（行数才是"不重复产生任务"的可观测形式）。
+
+    抽成函数是为了让判别力自证把**同一个场景**喂给同一条判据
+    （见 `test_hard_coded_idem_key_guard_discriminates`）：只写"相同键幂等"的话，
+    一个把幂等键**写死成常量**的实现照样绿——那正是这条判据要防的形态。
+    """
+    assert first.status_code == 202, f"第一次提交失败：{first.text[:200]}"
+    assert second.status_code == 202, f"第二次提交失败：{second.text[:200]}"
+    assert first.json()["data"]["taskId"] != second.json()["data"]["taskId"], (
+        f"两次不同的提交拿到了同一个 taskId（{first.json()['data']['taskId']}）："
+        f"幂等键把两次独立提交合并了——「相同键幂等」这条要求被实现成了「键恒定」"
+    )
+    assert len(_task_rows(engine)) == expected_rows, (
+        f"库里应有 {expected_rows} 行，实际 {len(_task_rows(engine))} 行："
+        f"「不重复产生任务」不成立"
+    )
+
+
+def test_hard_coded_idem_key_guard_discriminates(
+    api_client: TestClient, sandbox_engine: Engine, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**§2.4 的判别力自证**：把幂等键**写死成常量**，上面的阴性判据**必须变红**。
+
+    内存变异（**文件从不被写**）：把 `aicore.service.task.submit.compute_idem_key` 换成
+    一个**恒返回同一个常量**的实现——即"键写死"。这是"只测相同键幂等"会放过的那个实现：
+    它对「同 imageKey + 同 docType 重提 → 同 taskId」**照样绿**，而真实语义已经没了
+    （所有账号的所有提交都会命中同一个键）。
+
+    ## 为什么要两条一起看（这才是这条判据的价值）
+
+    本用例在**同一个场景**（同一账号、同 imageKey、**换 docType**）下：
+
+    1. 先断言变异**真的生效**了（两次拿到同一个 taskId）——否则"判据红了"可能只是因为变异
+       没打上；
+    2. 再把这两次响应喂给 `_assert_distinct_tasks`（**与第 13 条逐字同一份判据**）：
+       它**必须抛**。
+
+    即"键写死 ⇒ 阴性判据必红"是**被看见**的，而不是被推断的。
+    """
+    monkeypatch.setattr(
+        "aicore.service.task.submit.compute_idem_key",
+        lambda **_kwargs: "hard-coded-idem-key",
+    )
+
+    license_task = _post(api_client, doc_type="BUSINESS_LICENSE")
+    permit_task = _post(api_client, doc_type="PERMIT")
+
+    assert license_task.status_code == permit_task.status_code == 202
+    assert (
+        license_task.json()["data"]["taskId"] == permit_task.json()["data"]["taskId"]
+    ), "变异没有生效（两次仍是不同任务）：本自证的前提不成立"
+    with pytest.raises(AssertionError, match="同一个 taskId"):
+        _assert_distinct_tasks(license_task, permit_task, sandbox_engine, expected_rows=2)
+
 
 
 def test_different_account_with_same_image_key_makes_a_different_task(
@@ -225,9 +307,8 @@ def test_different_account_with_same_image_key_makes_a_different_task(
     mine = _post(api_client, user=ACCOUNT_ID)
     theirs = _post(api_client, user=OTHER_ACCOUNT_ID)
 
-    assert mine.json()["data"]["taskId"] != theirs.json()["data"]["taskId"]
+    _assert_distinct_tasks(mine, theirs, sandbox_engine, expected_rows=2)
     rows = _task_rows(sandbox_engine)
-    assert len(rows) == 2
     assert {row["account_id"] for row in rows} == {ACCOUNT_ID, OTHER_ACCOUNT_ID}
     assert {row["idem_key"] for row in rows} == {_derived_key(IMAGE_KEY, DOC_TYPE)}, (
         "两行的 idem_key 应相同（派生不吃账号）：不同即说明账号被拼进了幂等键"
@@ -378,3 +459,409 @@ def test_month_boundary_resubmit_creates_a_second_task_by_design(
     )
     assert len(_task_rows(sandbox_engine, month="202607")) == 1
     assert len(_task_rows(sandbox_engine, month="202608")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 4.9 §2.1：幂等的「调用费用」代理判据（处理器只被调用一次）
+# ---------------------------------------------------------------------------
+class _CountingHandler:
+    """**计数处理器**：把"被调用了几次"记下来（Task 4.9 §2.1）。
+
+    它就是 `spec.md:25`「不重复产生任务**与调用费用**」里"调用费用"的可观测代理：
+    执行器把一个任务交给处理器一次，就等于对该任务发起了一次（真实世界里的）付费模型调用。
+    替身即可，**MUST NOT** 依赖第 5 组的真 OCR 处理器——那条端到端用例登记为待补（见报告）。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def timeout_s(self) -> float:
+        return 5.0
+
+    async def handle(self, task: ClaimedTask) -> None:
+        self.calls.append(task.task_id)
+
+
+async def test_duplicate_submit_yields_one_claimable_task_and_one_handler_call(
+    api_client: TestClient, sandbox_engine: Engine, clock: _Clock
+) -> None:
+    """**§2.1**：同一 `(account_id, idem_key)` 提交两次 ⇒ 处理器**只被调用一次**。
+
+    ## 为什么判据长这样（工单 §2.1 的裁定）
+
+    字面判据是"Provider 调用次数不增加"，但 M1 的受理路径**根本不调 Provider**
+    （`main.py` 注的是 `handlers={}`、`service/ocr_service.py` 还是空壳）⇒ 字面判据没有落点。
+    等价且可测的形态（照工单执行）：计数 handler 的 `TaskRunner` + 三件事一起断言——
+
+    1. `ai_task` 只多一行；
+    2. 第二次返回**原 `taskId`**；
+    3. **可领取任务只有一条** ⇒ 执行器只会把它交给处理器一次 ⇒ 处理器**只被调用一次**。
+
+    第 3 条是这条用例的核心：前两条只说明"库里没有第二行"，而**执行器看到几条**才是
+    "会不会产生第二次调用费用"的直接原因（一个写了两行但只让一行 PROCESSING 的实现，
+    行数断言会红、而它其实不会多花钱——反过来，一个多写一行 PROCESSING 的实现，
+    行数断言也会红但**原因不同**；两条一起才能定位）。
+
+    ## 为什么用 `list_claimable` + `execute`，而不是 `runner.run_once()`
+
+    `run_once()` 会用执行器**自己的墙钟**（`TaskRunner.now` 现取 `datetime.now(UTC)`）算分片月，
+    而沙盒只有 `ai_task_202607` / `ai_task_202608` 两张表（今天是 2026-09）
+    ——`run_once()` 会去扫一张不存在的月表。
+    执行器的时钟**没有注入点**（A9 刻意删掉了 `TaskRunner(clock=)`：`finished_at` 这类
+    写库时间不该被假时钟改写），故这里显式把 `now=JULY` 交给**执行器自己的**
+    `list_claimable`（`claim_once` 内部那一步），再按执行器的顺序把这一条交给处理器。
+    窗口本身（"只扫当月"）由集成用例覆盖，不在这里重复。
+    """
+    first = _post(api_client)
+    second = _post(api_client)
+    task_id = first.json()["data"]["taskId"]
+
+    assert second.json()["data"]["taskId"] == task_id, "同 imageKey + docType 重提应返回原任务号"
+    assert len(_task_rows(sandbox_engine)) == 1, "重复提交不得新建行"
+
+    handler = _CountingHandler()
+    locks = InMemoryLockStore()
+    store = SqlTaskLeaseStore(api_client.app.state.engine_factory)
+    runner = TaskRunner(
+        store=store,
+        locks=locks,
+        handlers={SUBMITTED_TASK_TYPE: handler},
+        policies=dict(REGISTRY),
+        config=RunnerConfig(
+            lease_ms=30_000, max_retries=3, concurrency_limit=2, poll_interval_s=0.0
+        ),
+    )
+    try:
+        claimable = store.list_claimable(limit=10, now=clock.now)
+        assert [task.task_id for task in claimable] == [task_id], (
+            f"可领取任务应恰好是那一条（{task_id}），实际 "
+            f"{[task.task_id for task in claimable]}：重复提交让执行器看到了两条 ⇒ 会产生第二次调用"
+        )
+
+        claim = await locks.acquire(task_id, lease_ms=30_000)
+        assert claim is not None
+        await runner.execute(claimable[0], claim=claim)
+    finally:
+        await runner.aclose()
+
+    assert handler.calls == [task_id], (
+        f"处理器被调用了 {len(handler.calls)} 次（{handler.calls}）："
+        f"「不重复调用模型」不成立——每一次调用在真实世界里都是一笔费用"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 4.9 §2.2：并发同键 —— 撞 uk_idem 之后回读原任务（不是 5000）
+# ---------------------------------------------------------------------------
+def test_racing_duplicate_submit_returns_the_original_task(
+    api_client: TestClient,
+    sandbox_engine: Engine,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """**§2.2**：并发同键 —— 第二个 `insert` 撞 `uk_idem` 后 MUST **回读并返回原任务**。
+
+    ## 怎么在不必真并发的前提下复现这个竞态
+
+    竞态在**代码视角**下的形态只有一种：`find_by_idem_key` 返回 `None`（查的时候对方还没提交），
+    紧随其后的 `insert` 撞唯一键（提交发生在这两步之间）。故本用例让**第一次**幂等查询
+    故意返回 `None`（`miss_once`），其余查询走真实现——这是对"两个请求交错执行"的**忠实等价物**，
+    而且是**确定性**的（真起两个线程去撞，在 sqlite 沙盒上受单连接序列化影响，反而不稳定）。
+
+    第一次请求正常提交（行已落库、事务已提交），第二次请求因此**必然**在 `insert` 上撞
+    `uk_idem`（沙盒的表是从 `models.py` 复制的，**带着** `UniqueConstraint` ⇒ sqlite 真的会拒）。
+
+    ## 判据（四条，缺一条就会被"吸收掉但答错"的实现蒙混过去）
+
+    1. HTTP **202**（不是 5000）——工单要求"两个响应都必须成功"；
+    2. 返回的 `taskId` 是**原任务**（第一次那个）——幂等的语义就在这一条；
+    3. 库里仍然**只有一行**（被丢弃的那个 `task_id` 没有落库）；
+    4. **成因**：日志里出现"撞了 uk_idem …… 已回读"——否则"返回原任务号"也可能是
+       由别的原因造成的（例如第二次查询恰好命中了），那条本身不构成"冲突被吸收"的证据。
+
+    ## 这条覆盖不到什么（如实登记，MUST NOT 当成 MySQL 判据）
+
+    它覆盖的是**冲突分支的处置逻辑**（捕获 → 回滚 → 回读 → 返回）。
+    真 MySQL 上的 `uk_idem` 行为、**真并发**（两个连接同时提交）与"回读确实走在主库上"
+    这三件事**必须**由集成用例在真库上验——本轮 MySQL 停摆，故登记为**待补**，
+    **不用本用例顶替**（详见 `task-4.9-report.md` 的待补清单）。
+    """
+    first = _post(api_client, idempotency_key="idem-race")
+    assert first.status_code == 202
+    original_task_id = first.json()["data"]["taskId"]
+
+    real_find = TaskRepo.find_by_idem_key
+    calls: list[int] = []
+
+    def miss_once(self: TaskRepo, session: Any, **kwargs: Any) -> Any:
+        """第一次返回 `None`（= 对方还没提交），之后走真实现（= 回读那一步）。"""
+        calls.append(1)
+        if len(calls) == 1:
+            return None
+        return real_find(self, session, **kwargs)
+
+    monkeypatch.setattr(TaskRepo, "find_by_idem_key", miss_once)
+
+    with caplog.at_level(logging.INFO, logger="aicore.service.task.submit"):
+        second = _post(api_client, idempotency_key="idem-race")
+
+    assert second.status_code == 202, (
+        f"并发同键的第二个请求应回 202（返回原任务），实际 {second.status_code}："
+        f"{second.text[:300]}——这正是 T1 登记的缺口（撞 uk_idem 变成 5000）"
+    )
+    assert second.json()["data"]["taskId"] == original_task_id, (
+        f"返回的不是原任务号：{second.json()['data']['taskId']} != {original_task_id}"
+    )
+    assert len(_task_rows(sandbox_engine)) == 1, (
+        f"库里应只有原任务那一行，实际 {len(_task_rows(sandbox_engine))} 行"
+    )
+    assert any("撞了 uk_idem" in record.getMessage() for record in caplog.records), (
+        f"没有冲突被吸收的日志：{caplog.text!r}——"
+        f"「返回原任务号」必须来自回读那一步，而不是别的原因"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 4.9 复核补漏：**"回读为空 ⇒ 重抛"这条安全分支**的判据
+# ---------------------------------------------------------------------------
+#: 变异体模块名（`sys.modules` 里的临时条目，用完即撤；见 `_mutant_submit_module`）。
+_MUTANT_SUBMIT_MODULE = "dsh_mutant_submit"
+
+#: 强制固定的 `task_id`（让 `insert` 撞**主键**而不是 `uk_idem`）。
+_CLASHING_TASK_ID = "task_20260700000000000000000000000001"
+
+#: 预置行的 `created_at`：`created_at` **必须绑字符串**（裸 `text()` 把 `datetime` 交给
+#: sqlite3 会报 `InterfaceError`——驱动只认 str/int/float/bytes/None；与 `test_task_poll.py`
+#: 的 `FINISHED_AT_TEXT` 同一处置）。值落在注入时钟那个月内，与接口写的是同一张月表。
+_CLASH_CREATED_AT_TEXT = "2026-07-15 10:30:00.000000"
+
+
+def _mutant_submit_module(anchor: str, replacement: str) -> Any:
+    """把 `service/task/submit.py` 的源码在**内存里**改一处，编译出一个变异模块。
+
+    与 `tests/unit/test_task_runner.py::_mutant_runner_class` 同一取向
+    （工单纪律：MUST NOT「改 `src/` + `finally` 还原」——那条路一旦被打断就把变异体留在工作树里）。
+    返回**模块**而不是函数：调用方还要改它自己的全局（例如把 `new_id` 换掉）。
+    """
+    source = SUBMIT_PATH.read_text(encoding="utf-8")
+    count = source.count(anchor)
+    assert count == 1, (
+        f"变异锚点在 service/task/submit.py 里出现 {count} 次（要求恰好 1 次）：{anchor!r}——"
+        f"锚点漂了就必须先修锚点，MUST NOT 让它静默变成'什么都没变'"
+    )
+    module = types.ModuleType(_MUTANT_SUBMIT_MODULE)
+    module.__file__ = str(SUBMIT_PATH)
+    code = compile(source.replace(anchor, replacement), str(SUBMIT_PATH), "exec")
+    sys.modules[_MUTANT_SUBMIT_MODULE] = module
+    try:
+        exec(code, module.__dict__)
+    finally:
+        del sys.modules[_MUTANT_SUBMIT_MODULE]
+    return module
+
+
+def _insert_row_with_a_taken_primary_key(engine: Engine, *, idem_key: str) -> str:
+    """先插一行**占了 `_CLASHING_TASK_ID` 这个主键**、但幂等键**不同**的行。
+
+    于是下一次 `insert` 会撞**主键**（不是 `uk_idem`），而按 `(account_id, 幂等键)` 回读
+    **必然为空**——这正是"安全分支"（读不到 ⇒ 原样重抛）唯一能被触发的形态。
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "insert into ai_task_202607 "
+                "(task_id, account_id, idem_key, type, status, progress, "
+                " error_code, model_meta, is_eval_sample, created_at, finished_at) "
+                "values (:task_id, :account_id, :idem_key, 'OCR', 'PROCESSING', 0, "
+                " null, null, 0, :created_at, null)"
+            ),
+            {
+                "task_id": _CLASHING_TASK_ID,
+                "account_id": ACCOUNT_ID,
+                "idem_key": idem_key,
+                "created_at": _CLASH_CREATED_AT_TEXT,
+            },
+        )
+    return _CLASHING_TASK_ID
+
+
+def test_conflict_without_a_rereadable_row_is_not_absorbed(
+    api_client: TestClient,
+    sandbox_engine: Engine,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """**"回读为空 ⇒ 重抛"**：不是 `uk_idem` 的冲突 MUST NOT 被当成幂等命中。
+
+    ## 这条守的是什么（复核者点出的危险方向）
+
+    吸收分支的判据只有 `test_racing_duplicate_submit_returns_the_original_task` 一条，
+    而它覆盖的是**吸收成功**那一侧。若哪天有人把
+
+    ```python
+    if absorbed is not None:
+        return absorbed
+    raise
+    ```
+
+    改成"读不到也返回成功"，那么**一个根本没落库的任务会被当成创建成功返回给调用方**
+    （回执里给一个查不到的任务号，调用方随后轮询永远 404），而"吸收"那条用例**照样绿**。
+
+    ## 怎么造出"幂等键在、但回读为空"
+
+    两个条件同时给：
+
+    1. **幂等键走显式头**（`Idempotency-Key`）——于是 `effective_key` 非空，回读那一步
+       真的会执行（`effective_key is None` 时会直接重抛，那是另一条分支）；
+    2. **冲突来自主键而不是 `uk_idem`**——先插一行占住即将生成的 `task_id`
+       （`new_id` 被固定成 `_CLASHING_TASK_ID`，**内存变异**），而那行的 `idem_key` 是**别的值**。
+       于是 `insert` 撞主键 ⇒ `rollback` 后按 `(account_id, 幂等键)` 回读**必然为空**。
+
+    ## 观测形态：`TestClient` 会把"没被吞掉的服务端异常"原样抛回
+
+    `TestClient` 的默认是 `raise_server_exceptions=True`，故"产品**没有**吞掉这个异常"
+    在这里表现为**调用处抛出 `IntegrityError`**（这正是想要的）；而"吞掉了"会得到
+    一个正常返回的响应——两种形态都由同一个判据助手 `_assert_conflict_was_not_absorbed` 判。
+    **`caplog` 那一半补上"HTTP 层确实映射成了 500/5000"**：异常处理器跑了，
+    只是被测试客户端又抛了回来（否则"抛出来了"并不能证明平台信封是对的）。
+    """
+    monkeypatch.setattr("aicore.service.task.submit.new_id", lambda *_a, **_k: _CLASHING_TASK_ID)
+    _insert_row_with_a_taken_primary_key(sandbox_engine, idem_key="idem-other-row")
+
+    outcome: Any
+    with caplog.at_level(logging.ERROR, logger="aicore.core.errors"):
+        try:
+            outcome = _post(api_client, idempotency_key="idem-pk-clash")
+        except IntegrityError as exc:
+            outcome = exc
+
+    assert "code=5000" in caplog.text, (
+        f"这次冲突没有按内部错误（5000）落一条 ERROR：{caplog.text!r}——"
+        f"「没被吞掉」必须同时意味着「平台信封把它报成了 5000」"
+    )
+    _assert_conflict_was_not_absorbed(outcome, sandbox_engine)
+
+
+def _assert_conflict_was_not_absorbed(outcome: Any, engine: Engine) -> None:
+    """**"回读为空 ⇒ 重抛"的判据本体**（Task 4.9 复核补漏）。
+
+    `outcome` 有两种形态，取决于被测实现有没有吞掉那个异常：
+
+    - **`IntegrityError`（异常对象）**：产品**没有**吞——`TestClient` 默认
+      `raise_server_exceptions=True`，服务端未处理的异常会原样抛回调用方；
+    - **`Response`**：产品吞掉了异常并回了一个响应——此时 MUST 是失败响应；
+      "回 2xx + 一个查不到的任务号"正是要防的那一类。
+
+    两种形态下都还要断言**库里没有幻影行**（`len(rows) == 1` 即只有测试预置的那一行）：
+    只断言"没成功"不够——一个"回了 500 却已经把半行写进去/没回滚干净"的实现也会漏过。
+
+    抽成函数是为了让判别力自证把**同一个场景**喂给同一条判据。
+    """
+    if isinstance(outcome, BaseException):
+        assert isinstance(outcome, IntegrityError), (
+            f"抛出来的不是那个约束冲突，而是 {type(outcome).__name__}：{outcome!r}"
+        )
+    else:
+        assert outcome.status_code == 500, (
+            f"本应抛出却返回了成功：HTTP {outcome.status_code} {outcome.text[:200]}——"
+            f"一个**根本没落库**的任务被当成了创建成功返回"
+        )
+        assert outcome.json()["code"] == 5000, (
+            f"业务码应为 5000（内部错误），实际 {outcome.json()['code']}"
+        )
+        assert outcome.json()["data"] is None, (
+            f"失败的冲突回执带了 data：{outcome.json()['data']!r}——"
+            f"调用方会拿着一个查不到的任务号去轮询（永远 404）"
+        )
+    assert len(_task_rows(engine)) == 1, (
+        f"库里应只有测试预置的那一行，实际 {len(_task_rows(engine))} 行："
+        f"失败路径上又落了行（或回读为空却没回滚干净）"
+    )
+
+
+def test_conflict_safety_guard_discriminates(
+    api_client: TestClient, sandbox_engine: Engine, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**判别力自证**：把吸收分支改成"读不到也返回成功"，上一条判据**必须变红**。
+
+    内存变异（**文件从不被写**）——正是复核者点名的那个改法：
+
+    ```python
+    if absorbed is not None:
+        return absorbed
+    raise
+    ```
+
+    改成"读不到就返回本次刚造的那个对象"（`created=True`）⇒ 接口会回 **202 + 一个库里
+    不存在的 `taskId`**。本用例在**同一个场景**（同一个主键冲突、同一个显式幂等键）下：
+
+    1. 先断言变异**生效**（响应不再是异常，而是 202）；
+    2. 再把响应喂给 `_assert_conflict_was_not_absorbed`（**与上一条逐字同一份判据**）
+       ⇒ **必须抛**，且红在"本应抛出却返回了成功"那一条上。
+    """
+    mutant = _mutant_submit_module(
+        "        if absorbed is not None:\n"
+        "            return absorbed\n"
+        "        raise\n",
+        "        if absorbed is None:\n"
+        "            return SubmitOutcome(task=task, created=True)\n"
+        "        return absorbed\n",
+    )
+    monkeypatch.setattr("aicore.api.ocr.submit_ocr_task", mutant.submit_ocr_task)
+    mutant.__dict__["new_id"] = lambda *_a, **_k: _CLASHING_TASK_ID
+    _insert_row_with_a_taken_primary_key(sandbox_engine, idem_key="idem-other-row")
+
+    response = _post(api_client, idempotency_key="idem-pk-clash")
+
+    assert response.status_code == 202, (
+        f"变异没有生效（响应是 {response.status_code}）：本自证的前提不成立"
+    )
+    with pytest.raises(AssertionError, match="本应抛出却返回了成功"):
+        _assert_conflict_was_not_absorbed(response, sandbox_engine)
+
+
+def test_none_idem_key_conflict_is_not_absorbed(
+    api_client: TestClient, sandbox_engine: Engine, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`effective_key is None` 时的冲突 MUST 原样上抛——**防御性分支，经 API 不可达**。
+
+    ## 它为什么不可达（如实登记，MUST NOT 当成"已覆盖的行为"）
+
+    `effective_key` 只有在 `compute_idem_key(...)` 返回 `None` 时才为空，而那个函数的
+    docstring 逐字写着"**当前实现永远不会返回 `None`**"：显式键非空即原样返回，
+    否则 `sha256(...)` 的 hex 切片——两条分支都产出字符串。
+    经 API 更绕不到：`imageKey` 缺失会先被 `require_image_key` 挡成 `400/1001`
+    （见 `test_invalid_doc_type_and_missing_image_key_are_400_not_422`）。
+
+    ## 那还测它干什么
+
+    因为它是**唯一的"不吸收"出口之一**，而它的判据是"没有幂等键 ⇒ 这个冲突不可能是
+    `uk_idem` ⇒ MUST NOT 吸收"。这条语义**可以被写错**（例如把守卫删掉，让一个外键/主键
+    冲突也走回读并返回"成功"）。故这里**绕过 API 直接驱动 service**，
+    把触发条件（`compute_idem_key` 返回 `None`）显式注入，断言它**抛出**而不是被吞。
+
+    `compute_idem_key` 的返回值被注入，是这条分支**唯一**的入口；注入它不等于"造了一个
+    产品里不存在的场景"——产品里写的就是"若返回 None 则不查幂等"，
+    本用例验的是那半句话的后果。
+    """
+    monkeypatch.setattr("aicore.service.task.submit.compute_idem_key", lambda **_k: None)
+    monkeypatch.setattr("aicore.service.task.submit.new_id", lambda *_a, **_k: _CLASHING_TASK_ID)
+    _insert_row_with_a_taken_primary_key(sandbox_engine, idem_key="idem-other-row")
+
+    with (
+        pytest.raises(IntegrityError, match="task_id"),
+        api_client.app.state.engine_factory.write_session() as session,
+    ):
+        submit_ocr_task(
+            session,
+            account_id=ACCOUNT_ID,
+            image_key=IMAGE_KEY,
+            doc_type=DOC_TYPE,
+            idem_key="idem-explicit-ignored",
+            now=JULY,
+            policy=assert_submittable(SUBMITTED_TASK_TYPE),
+        )
+
+    assert len(_task_rows(sandbox_engine)) == 1, "失败路径上又落了行"

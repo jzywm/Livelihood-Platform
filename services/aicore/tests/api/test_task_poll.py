@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from sqlalchemy import Engine, text
 
 from aicore.api.deps import ACCOUNT_ID_HEADER, get_now
 from aicore.api.tasks import DECLARED_STATUSES, TaskResult
+from aicore.core import errors as errors_module
 from aicore.core.idgen import new_id
 from aicore.service.task.state import ALL_STATUSES
 
@@ -38,6 +40,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI = PROJECT_ROOT / "docs" / "openapi.yaml"
 TASKS_PY = PROJECT_ROOT / "src" / "aicore" / "api" / "tasks.py"
 OCR_PY = PROJECT_ROOT / "src" / "aicore" / "api" / "ocr.py"
+#: 提交编排（Task 4.9 §2.2 的补充判据：它 MUST NOT 自己开会话）。
+SUBMIT_PY = PROJECT_ROOT / "src" / "aicore" / "service" / "task" / "submit.py"
 
 ACCOUNT_ID = "acc_poll_owner"
 OTHER_ACCOUNT_ID = "acc_poll_other"
@@ -293,35 +297,142 @@ def test_unknown_task_id_is_404_with_code_3006(
 
 
 def test_cross_account_poll_is_403_and_leaks_nothing(
-    api_client: TestClient, clock: _Clock
+    api_client: TestClient, sandbox_engine: Engine, clock: _Clock
 ) -> None:
-    """第 22 条：跨账号 → `403` + `2002`，且响应体**不含**任何任务字段。
+    """第 22 条：跨账号 → `403` + `2002`，且响应体**不含**任何任务内容。
 
     `spec.md:32-35` 逐字：「返回 `2002` **且不泄露该任务的任何结果内容**」，
     按最严解读处理：连 `status` / `progress` 都不给——能拿到状态就能推断出
     「这个 taskId 真实存在」，而持有人未必有权知道这件事。
+
+    ## Task 4.9 §2.3：判据从"字段名不出现"补严到**取值也不出现**
+
+    第一版只断言两件事：`data is None`、以及八个**字段名**的字符串不在响应体里。
+    它挡不住一个"码对但把结果塞进 `data`"的实现——那类响应里字段名照样可能一个都不出现
+    （键名换成 `payload` / `detail` 之类），而**业务取值**已经泄露了。
+    故现在把判据收到 `_assert_denial_leaks_nothing`：字段集合**恰好**是信封那五个、
+    `data` 为 `null`、且**该任务的真实取值一个都不出现**。
+
+    为了让"取值不出现"这条有判别力，先用裸 SQL 把这行改成**有辨识度的终态**
+    （`FAILED` / `4003` / `progress=100`）：默认的 `PROCESSING` / `0` 太常见，
+    "响应里没有 PROCESSING"这种断言可能因为别的原因成立。
     """
     task_id = _submit(api_client)  # 属于 ACCOUNT_ID
+    _set_task_columns(
+        sandbox_engine,
+        task_id,
+        status="FAILED",
+        error_code="4003",
+        progress=100,
+        finished_at=FINISHED_AT_TEXT,
+    )
 
     response = _get(api_client, task_id, user=OTHER_ACCOUNT_ID)
 
+    _assert_denial_leaks_nothing(
+        response,
+        forbidden_values=(task_id, ACCOUNT_ID, "FAILED", "4003", FINISHED_AT_ISO),
+    )
+
+
+def _assert_denial_leaks_nothing(
+    response: Response, *, forbidden_values: Sequence[str]
+) -> None:
+    """**越权拒绝的判据本体（Task 4.9 §2.3）**：码对 + 只含信封 + 无任何业务内容。
+
+    四条，缺一条都会被某一类"看起来对"的实现蒙混过去：
+
+    | 断言 | 挡住的形态 |
+    |---|---|
+    | `status_code == 403` | 越权被判成 404（与"不存在"混同，`spec.md:32-35` 要的正是区分） |
+    | `code == 2002` | 状态码对但业务码写错（前端按业务码分支） |
+    | 字段集合**恰好**是信封那五个 | 顺手多带一个 `detail` / `task` / `result` 字段 |
+    | `data is None` | **"码对但把结果塞进 data"**——§2.3 点名要防的那一类 |
+    | `forbidden_values` 一个都不出现 | 把状态/结论写进 `message` 或别的字段（字段名判据看不见） |
+
+    抽成函数是为了让判别力自证把**同一个场景**喂给同一条判据
+    （见 `test_cross_account_leak_guard_discriminates`）。
+    """
     assert response.status_code == 403, f"跨账号应回 403：{response.text[:200]}"
     body = response.json()
-    assert body["code"] == 2002
-    assert body["data"] is None
-    assert set(body) <= {"code", "message", "data", "traceId", "timestamp"}
-    for field in (
-        "taskId",
-        "type",
-        "status",
-        "progress",
-        "result",
-        "errorCode",
-        "createdAt",
-        "finishedAt",
-    ):
-        assert f'"{field}"' not in response.text, (
-            f"跨账号响应体里出现了 {field}（spec.md:35 要求不泄露任何内容）：{response.text}"
+    assert body["code"] == 2002, f"业务码应为 2002（无权限/越权）：{body}"
+    assert set(body) == {"code", "message", "traceId", "timestamp", "data"}, (
+        f"失败响应只允许信封的四个必填字段 + data，实际字段：{sorted(body)}——"
+        f"多出来的字段就是一条泄露通道"
+    )
+    assert body["data"] is None, (
+        f"越权响应的 data 必须是 null（spec.md:35 不泄露任何结果内容），实际 {body['data']!r}"
+    )
+    for value in forbidden_values:
+        assert value not in response.text, (
+            f"越权响应里出现了该任务的业务取值 {value!r}：{response.text}——"
+            f"字段名判据看不见这一种泄露（内容可以藏在 message 或别的字段里）"
+        )
+
+
+def test_cross_account_leak_guard_discriminates(
+    api_client: TestClient,
+    sandbox_engine: Engine,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**§2.3 的判别力自证**：「码对但把结果塞进 `data`」的实现**必须**让判据变红。
+
+    ## 变异（**内存变异，文件从不被写**）
+
+    失败响应的 body 由 `core/errors.py::_error_body(code, message)` 唯一构造
+    （它返回 `{code, message, data: None, traceId, timestamp}`）。
+    把它换成"顺手把上下文带上"的版本——`data` 里塞该任务的行、`message` 里带状态——
+    就得到一个**真的经由应用响应路径**产生的"403 + 2002 + 泄露"响应，
+    而不是测试自己拼的一个 dict。
+
+    这正是工单点名的那一类实现（"码对但把结果塞进了 `data`"），
+    也正好说明为什么只断言状态码是不够的：**它对这种实现完全无感**。
+
+    ## 断言（两半）
+
+    1. 变异**真的生效**：响应仍是 `403` + `2002`（"码对"），且 `data` 非空
+       —— 否则"判据红了"可能只是因为变异把状态码也改坏了；
+    2. 同一个场景喂给 `_assert_denial_leaks_nothing`：**必须抛**，
+       且红在 `data` 那一条上（不是别的偶然原因）。
+    """
+    task_id = _submit(api_client)
+    _set_task_columns(
+        sandbox_engine,
+        task_id,
+        status="FAILED",
+        error_code="4003",
+        progress=100,
+        finished_at=FINISHED_AT_TEXT,
+    )
+
+    real_error_body = errors_module._error_body
+
+    def leaky_error_body(code: int, message: str) -> dict[str, Any]:
+        body = real_error_body(code, message)
+        body["data"] = {
+            "taskId": task_id,
+            "status": "FAILED",
+            "errorCode": "4003",
+            "result": {"conclusion": "REJECTED"},
+        }
+        body["message"] = f"任务 {task_id} 属于账号 {ACCOUNT_ID}，无权访问"
+        return body
+
+    monkeypatch.setattr("aicore.core.errors._error_body", leaky_error_body)
+
+    response = _get(api_client, task_id, user=OTHER_ACCOUNT_ID)
+
+    # ① 变异生效：**码还是对的**（这就是"码对但泄露"），只是 data 里多了东西。
+    assert response.status_code == 403
+    assert response.json()["code"] == 2002
+    assert response.json()["data"] is not None, "变异没有生效：本自证的前提不成立"
+
+    # ② 同一份判据必须判红，且红在"data 必须是 null"那一条上。
+    with pytest.raises(AssertionError, match="data 必须是 null"):
+        _assert_denial_leaks_nothing(
+            response,
+            forbidden_values=(task_id, ACCOUNT_ID, "FAILED", "4003", FINISHED_AT_ISO),
         )
 
 
@@ -436,17 +547,26 @@ def test_session_entries_match_the_declared_split() -> None:
     - `api/ocr.py` MUST 只用 `write_session()`；
     - `api/tasks.py` MUST 只用 `primary_read_session()`——`er.md:252` 逐字
       「任务提交后立即轮询」属写后立即读，MUST NOT 用 `read_session()`
-      （`repository/session.py:243-249` 的 `session_needs_primary` 守卫会拒绝）。
+      （`repository/session.py:243-249` 的 `session_needs_primary` 守卫会拒绝）；
+    - `service/task/submit.py` MUST **一个会话入口都不调**（Task 4.9 §2.2 的补充）：
+      幂等冲突后的回读必须走**调用方给的那个会话**（路由用 `write_session()` 建的、即主库），
+      service 自开会话就有可能开到从库上去——那时"回读为空 ⇒ 原样重抛"会变成常态，
+      收口反而把并发冲突重新变回 5000（`er.md:287` 的「写后立即读强制走主库」）。
 
     用 AST 而不是字符串搜索：两个模块的 docstring 里都**写着** `read_session()` 这个反例，
     字符串搜索会假红——判据必须只看真正的调用。
     """
     ocr_entries = _called_session_entries(OCR_PY.read_text(encoding="utf-8"))
     tasks_entries = _called_session_entries(TASKS_PY.read_text(encoding="utf-8"))
+    submit_entries = _called_session_entries(SUBMIT_PY.read_text(encoding="utf-8"))
 
     assert ocr_entries == {"write_session"}, f"提交路由的会话入口应为 write_session：{ocr_entries}"
     assert tasks_entries == {"primary_read_session"}, (
         f"轮询路由的会话入口应为 primary_read_session（写后立即读走主库）：{tasks_entries}"
+    )
+    assert submit_entries == set(), (
+        f"service/task/submit.py 不得自己开会话（会话由调用方传入，见 §2.2 的回读口径）："
+        f"{submit_entries}"
     )
 
 

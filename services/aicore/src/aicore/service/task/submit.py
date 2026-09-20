@@ -65,6 +65,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from aicore.core.config import is_blank
@@ -218,10 +219,30 @@ def submit_ocr_task(
     本函数不重复判定，只取 `policy.task_type` 落库。把「准入」与「使用」分成两步，
     是为了让「未实现类型被拒」只发生在受理处一个地方（两处判定必然漂移）。
 
-    **已知边界（如实登记，MUST NOT 当成已解决）**：查幂等与插入是两次独立语句，
-    **同一 `(account_id, idem_key)` 的并发提交**可能同时通过第 1 步，第二个 `insert` 撞
-    `uk_idem` 唯一键失败（表现为 5000，而不是返回原任务号）。要收口需要捕获唯一键冲突后重查，
-    那不属本工单的 1~4 步，故**没有**在这里自行加分支（改幂等口径须先回工单）。
+    ## 并发同键：撞 `uk_idem` 之后**回读原任务**，而不是报 5000（Task 4.9 收口）
+
+    第 1 步（查幂等）与第 3 步（插入）是两次独立语句，**并发**请求可能同时通过第 1 步，
+    于是第二个 `insert` 撞 `uk_idem(account_id, idem_key)` 唯一键。T1 把它登记为已知缺口；
+    本任务按 `spec.md:25`「重复提交 MUST 幂等，返回**原任务标识**而不重复产生任务与调用费用」
+    收口——**并发重复是"重复提交"的一种**，故处置与串行重复一致：**返回原任务**。
+
+    实现要点（三条都必须做对）：
+
+    1. **只捕 `IntegrityError`，且只在"确实能回读到原任务"时才吸收**：回读成功 ⇒ 返回原任务
+       （`created=False`）；回读为空 ⇒ **原样重抛**。冲突可能来自别的约束（外键等），
+       把"读不到"也当成幂等命中会把一次真实的写失败伪装成成功——那比报错危险得多；
+    2. **回读前必须 `rollback()`**：`IntegrityError` 之后会话处于"失败事务"状态，
+       不先回滚的话后续 `SELECT` 会被驱动/ORM 直接拒绝（psycopg 的
+       `current transaction is aborted` 同族形态）。事务边界归 service（`repository/base.py`
+       的 `_insert` 明说"不 commit、不 flush，事务边界归调用方"）；
+    3. **回读走的是同一个会话**——它来自 `factory.write_session()`（**主库**）：
+       `er.md:287` 逐字「关键**写后立即读**（任务提交后立即轮询）**强制走主库**，
+       避免主从延迟读到旧状态」。若这里另开一个只读会话，恰好会从从库读到一个**还没同步**
+       的空结果，于是"回读为空 ⇒ 重抛"变成常态——收口反而把冲突重新变成 5000。
+
+    吸收成功时记一条 **INFO**（不是 WARNING）：这是**设计内的**并发形态、且已经正确收口，
+    运维看到它应当知道"有一次并发重复提交被吸收了"，而不是"出错了"。
+    `_resubmit_after_key_conflict` 是这段逻辑的唯一落点（含上面三条的逐条注释）。
     """
     shard = ShardKey(account_id=account_id, created_at=now)
     repo = TaskRepo()
@@ -241,7 +262,24 @@ def submit_ocr_task(
         idem_key=effective_key,
         now=now,
     )
-    repo.insert(session, task)
+    try:
+        repo.insert(session, task)
+    except IntegrityError:
+        if effective_key is None:
+            # 没有幂等键就不可能撞 `uk_idem`（NULL 豁免），故这次冲突来自别的约束
+            # ⇒ 不吸收，原样上抛（不把别的写失败伪装成幂等命中）。
+            raise
+        absorbed = _resubmit_after_key_conflict(
+            session,
+            repo,
+            shard=shard,
+            account_id=account_id,
+            idem_key=effective_key,
+            task_id=task.task_id,
+        )
+        if absorbed is not None:
+            return absorbed
+        raise
     persisted = repo.get_by_id(session, task.task_id, shard=shard)
     if persisted is None:
         _logger.error(
@@ -250,3 +288,45 @@ def submit_ocr_task(
         )
         raise TaskNotPersistedError
     return SubmitOutcome(task=persisted, created=True)
+
+
+def _resubmit_after_key_conflict(
+    session: Session,
+    repo: TaskRepo,
+    *,
+    shard: ShardKey,
+    account_id: str,
+    idem_key: str,
+    task_id: str,
+) -> SubmitOutcome | None:
+    """`uk_idem` 冲突后的回读：拿到**原任务**就返回它，读不到返回 `None`（由调用方重抛）。
+
+    三条要求的落点（理由全在 `submit_ocr_task` 的"并发同键"一节，这里只写怎么做）：
+
+    1. `session.rollback()`——把会话从"失败事务"状态里带出来，之后的 `SELECT` 才执行得了；
+    2. 用**同一个会话**（主库）按 `(account_id, idem_key)` + **同一个分片月**回读：
+       月必须与插入用的是同一个 `now` 派生的月，否则会去另一张表里找一个不在那里的行；
+    3. 回读带 `account_id`（`uk_idem` 是两列）：只按 `idem_key` 查会让 A 账号的键
+       命中 B 账号的任务——那正是 R6 禁的形态。
+
+    `task_id` 只用于日志（把"被丢弃的那个号"与"留下来的那个号"都记下来，
+    排查并发问题时能对上）。
+    """
+    session.rollback()
+    existing = repo.find_by_idem_key(
+        session,
+        shard=shard,
+        account_id=account_id,
+        idem_key=idem_key,
+    )
+    if existing is None:
+        return None
+    _logger.info(
+        "并发同幂等键提交：本次插入的 %s 撞了 uk_idem，已回读并返回原任务 %s"
+        "（account=%s、分片月=%s；spec.md:25 的「返回原任务标识」对并发同样成立）",
+        task_id,
+        existing.task_id,
+        account_id,
+        shard.month,
+    )
+    return SubmitOutcome(task=existing, created=False)
